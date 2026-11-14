@@ -70,3 +70,23 @@ test('vendored mux-mp4.min.js exposes muxjs.Transmuxer in browser UMD context', 
   assert.equal(typeof instance.push, 'function');
   assert.equal(typeof instance.flush, 'function');
 });
+
+test('transmuxTsSegmentsToMp4 throws on missing transmuxer or empty output and accepts ArrayBuffer', () => {
+  const prevMux = globalThis.muxjs;
+  delete globalThis.muxjs;
+  try {
+    assert.throws(() => transmuxTsSegmentsToMp4([new Uint8Array([0x47])]), /TRANSMUXER_UNAVAILABLE/);
+  } finally {
+    globalThis.muxjs = prevMux;
+  }
+
+  class EmptyTransmuxer {
+    on() {}
+    push() {}
+    flush() {}
+  }
+  assert.throws(
+    () => transmuxTsSegmentsToMp4([new Uint8Array([0x47]).buffer], EmptyTransmuxer),
+    /TRANSMUX_EMPTY/
+  );
+});

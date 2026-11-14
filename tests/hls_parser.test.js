@@ -71,3 +71,29 @@ test('parseHlsPlaylist flags encrypted streams explicitly', () => {
   assert.equal(parsed.encrypted, true);
   assert.equal(parsed.encryptionMethod, 'AES-128');
 });
+
+test('parseHlsPlaylist handles METHOD=NONE, EXT-X-SESSION-KEY, and boundary helpers', () => {
+  const clear = [
+    '#EXTM3U',
+    '#EXT-X-KEY:METHOD=NONE',
+    '#EXTINF:2.0,',
+    'seg1.ts'
+  ].join('\n');
+  const clearParsed = parseHlsPlaylist(clear, 'https://example.com/clear.m3u8');
+  assert.equal(clearParsed.encrypted, false);
+  assert.equal(clearParsed.outputExtension, 'ts');
+
+  const sessionEncrypted = [
+    '#EXTM3U',
+    '#EXT-X-SESSION-KEY:METHOD=SAMPLE-AES,URI="skd://key"',
+    '#EXT-X-STREAM-INF:BANDWIDTH=1000000',
+    '720p.m3u8'
+  ].join('\n');
+  const sessionParsed = parseHlsPlaylist(sessionEncrypted, 'https://example.com/master.m3u8');
+  assert.equal(sessionParsed.encrypted, true);
+  assert.equal(sessionParsed.encryptionMethod, 'SAMPLE-AES');
+
+  assert.equal(estimateHlsBytes(0, 10), 0);
+  assert.equal(estimateHlsBytes(1000000, -5), 0);
+  assert.equal(selectBestVariant([]), null);
+});

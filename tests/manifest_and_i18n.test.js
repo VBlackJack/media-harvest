@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
+const SKIP_DIRS = new Set(['.git', 'node_modules', 'local']);
 
 test('manifest.json references existing files and valid MV3 structure', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
@@ -42,7 +43,7 @@ test('manifest.json references existing files and valid MV3 structure', () => {
   }
 });
 
-test('en and fr locale files have matching valid Chrome i18n keys', () => {
+test('en and fr locale files have matching valid Chrome i18n keys used by popup.html', () => {
   const en = JSON.parse(fs.readFileSync(path.join(ROOT, '_locales/en/messages.json'), 'utf8'));
   const fr = JSON.parse(fs.readFileSync(path.join(ROOT, '_locales/fr/messages.json'), 'utf8'));
 
@@ -55,20 +56,50 @@ test('en and fr locale files have matching valid Chrome i18n keys', () => {
     assert.ok(en[key].message.length > 0, `Empty en message for ${key}`);
     assert.ok(fr[key].message.length > 0, `Empty fr message for ${key}`);
   }
+
+  const popupHtml = fs.readFileSync(path.join(ROOT, 'src/popup/popup.html'), 'utf8');
+  const htmlKeys = [...popupHtml.matchAll(/data-i18n(?:-title)?="([^"]+)"/g)].map((m) => m[1]);
+  assert.ok(htmlKeys.length > 0);
+  for (const key of htmlKeys) {
+    assert.ok(Object.hasOwn(en, key), `Missing i18n key in en: ${key}`);
+    assert.ok(Object.hasOwn(fr, key), `Missing i18n key in fr: ${key}`);
+  }
 });
 
-test('no forbidden typographic dashes exist in project files', () => {
-  const forbidden = /[\u2013\u2014]/;
+test('no forbidden typographic characters exist in tracked text files (recursively)', () => {
+  const forbidden = /[\u2010\u2013\u2014\u2212\u2018\u2019\u201c\u201d\u00ab\u00bb\u2026\u00a0\u202f\u200b\ufeff\u0152\u0153\u00c6\u00e6]/;
+  const scannedFiles = [];
+
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        walk(full);
-      } else if (/\.(js|json|html|css|md)$/i.test(entry.name)) {
+        if (!SKIP_DIRS.has(entry.name)) {
+          walk(path.join(dir, entry.name));
+        }
+        continue;
+      }
+      if (/\.(js|json|html|css|md|yml|yaml)$/i.test(entry.name)) {
+        const full = path.join(dir, entry.name);
+        const rel = path.relative(ROOT, full).replace(/\\/g, '/');
+        scannedFiles.push(rel);
         const content = fs.readFileSync(full, 'utf8');
-        assert.equal(forbidden.test(content), false, `Forbidden dash found in ${full}`);
+        const match = content.match(forbidden);
+        assert.equal(
+          match,
+          null,
+          `Forbidden typography character U+${match ? match[0].codePointAt(0).toString(16).toUpperCase() : ''} found in ${rel}`
+        );
       }
     }
   };
+
   walk(ROOT);
+  assert.ok(
+    scannedFiles.includes('src/shared/media_classifier.js'),
+    'Recursive typography guard must traverse nested subdirectories (src/shared/)'
+  );
+  assert.ok(
+    scannedFiles.includes('_locales/fr/messages.json'),
+    'Recursive typography guard must traverse _locales/fr/'
+  );
 });

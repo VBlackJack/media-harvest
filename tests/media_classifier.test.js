@@ -21,9 +21,11 @@ import {
   deduplicateMedia,
   deriveFilenameStem,
   extractUrlExtension,
+  isHttpUrl,
+  normalizeMimeType,
   sanitizeFilename
 } from '../src/shared/media_classifier.js';
-import { MEDIA_TYPES } from '../src/config/constants.js';
+import { LIMITS, MEDIA_SOURCES, MEDIA_TYPES } from '../src/config/constants.js';
 
 test('extractUrlExtension ignores query strings and handles missing extensions', () => {
   assert.equal(extractUrlExtension('https://video.twimg.com/ext_tw_video/123/pu/vid/1280x720/cat.mp4?tag=12'), 'mp4');
@@ -78,4 +80,63 @@ test('deduplicateMedia merges metadata for identical URLs', () => {
   assert.equal(merged[0].sizeBytes, 2048);
   assert.equal(merged[0].width, 1280);
   assert.equal(merged[0].title, 'Cat');
+});
+
+test('normalizeMimeType and isHttpUrl validate inputs safely', () => {
+  assert.equal(normalizeMimeType('Video/MP4; codecs="avc1"'), 'video/mp4');
+  assert.equal(normalizeMimeType(null), '');
+  assert.equal(isHttpUrl('https://example.com/a.mp4'), true);
+  assert.equal(isHttpUrl('http://example.com/a.mp4'), true);
+  assert.equal(isHttpUrl('javascript:alert(1)'), false);
+  assert.equal(isHttpUrl('blob:https://x.com/1'), false);
+  assert.equal(isHttpUrl(undefined), false);
+});
+
+test('classifyMedia rejects HTML/JSON error pages while keeping octet-stream and text/plain HLS', () => {
+  assert.equal(classifyMedia('https://example.com/video.mp4', 'text/html; charset=utf-8'), null);
+  assert.equal(classifyMedia('https://example.com/api.json', 'application/json'), null);
+  assert.equal(classifyMedia('https://example.com/readme.mp4', 'text/plain'), null);
+  assert.deepEqual(
+    classifyMedia('https://cdn.example.com/stream.m3u8', 'text/plain'),
+    { type: MEDIA_TYPES.STREAM, ext: 'm3u8', isStream: true }
+  );
+  assert.deepEqual(
+    classifyMedia('https://cdn.example.com/clip.mp4', 'application/octet-stream'),
+    { type: MEDIA_TYPES.VIDEO, ext: 'mp4', isStream: false }
+  );
+});
+
+test('sanitizeFilename enforces MAX_FILENAME_LENGTH and handles missing extensions', () => {
+  const longName = 'a'.repeat(LIMITS.MAX_FILENAME_LENGTH + 30);
+  const sanitized = sanitizeFilename(longName, '');
+  assert.equal(sanitized.length, LIMITS.MAX_FILENAME_LENGTH + '.bin'.length);
+  assert.ok(sanitized.endsWith('.bin'));
+});
+
+test('deduplicateMedia preserves network stream metadata when DOM fallback shares URL', () => {
+  const merged = deduplicateMedia([
+    {
+      url: 'https://cdn.example.com/live',
+      type: MEDIA_TYPES.STREAM,
+      ext: 'm3u8',
+      isStream: true,
+      source: MEDIA_SOURCES.NETWORK,
+      mimeType: 'application/vnd.apple.mpegurl'
+    },
+    {
+      url: 'https://cdn.example.com/live',
+      type: MEDIA_TYPES.VIDEO,
+      ext: '',
+      isStream: false,
+      source: MEDIA_SOURCES.DOM,
+      width: 1280,
+      height: 720
+    }
+  ]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].type, MEDIA_TYPES.STREAM);
+  assert.equal(merged[0].ext, 'm3u8');
+  assert.equal(merged[0].isStream, true);
+  assert.equal(merged[0].source, MEDIA_SOURCES.NETWORK);
+  assert.equal(merged[0].width, 1280);
 });

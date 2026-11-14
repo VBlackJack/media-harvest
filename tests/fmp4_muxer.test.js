@@ -107,3 +107,37 @@ test('mergeFmp4VideoAndAudio combines two track_ID=1 streams into dual-track MP4
   const audioTfhd = parseIsoBoxes(merged, audioTraf.start + 8, audioTraf.end)[0];
   assert.equal(new DataView(audioTfhd.data.buffer, audioTfhd.data.byteOffset).getUint32(12, false), 2);
 });
+
+test('mergeFmp4VideoAndAudio supports unequal chunk counts and rejects malformed init segments', () => {
+  const videoInit = makeFmp4Init(1);
+  const audioInit = makeFmp4Init(1);
+  const merged = mergeFmp4VideoAndAudio(
+    videoInit,
+    [makeMediaChunk(1, 0x01), makeMediaChunk(1, 0x02)],
+    audioInit,
+    [makeMediaChunk(1, 0x03)]
+  );
+  const topBoxes = parseIsoBoxes(merged);
+  assert.deepEqual(
+    topBoxes.map((b) => b.type),
+    ['ftyp', 'moov', 'moof', 'mdat', 'moof', 'mdat', 'moof', 'mdat']
+  );
+
+  assert.throws(
+    () => mergeFmp4VideoAndAudio(new Uint8Array([0, 0, 0, 8]), [], audioInit, []),
+    /INVALID_FMP4_INIT/
+  );
+
+  const emptyMoovInit = buildIsoBox('moov', [makeMvhd(2)]);
+  assert.throws(
+    () => mergeFmp4VideoAndAudio(videoInit, [], emptyMoovInit, []),
+    /MISSING_AUDIO_TRACK/
+  );
+});
+
+test('parseIsoBoxes stops cleanly on truncated or invalid box sizes', () => {
+  const truncated = new Uint8Array([0x00, 0x00, 0x00, 0x40, 0x6d, 0x6f, 0x6f, 0x76]);
+  assert.deepEqual(parseIsoBoxes(truncated), []);
+  const zeroSize = new Uint8Array([0x00, 0x00, 0x00, 0x00, 0x6d, 0x6f, 0x6f, 0x76]);
+  assert.deepEqual(parseIsoBoxes(zeroSize), []);
+});
