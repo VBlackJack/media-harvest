@@ -115,10 +115,10 @@ export function classifyMedia(rawUrl, mimeHeader = '') {
 
   const mime = normalizeMimeType(mimeHeader);
   if (mime) {
-    if (NON_MEDIA_MIME_SET.has(mime)) {
-      return null;
+    if ((mime === 'text/plain' || mime === 'application/xml' || mime === 'text/xml') && STREAM_EXT_SET.has(ext)) {
+      return { ...EXTENSION_LOOKUP.get(ext) };
     }
-    if (mime === 'text/plain' && !STREAM_EXT_SET.has(ext)) {
+    if (NON_MEDIA_MIME_SET.has(mime) || mime === 'text/plain') {
       return null;
     }
   }

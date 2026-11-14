@@ -36,7 +36,8 @@ export const VIDEO_EXTENSIONS = Object.freeze([
 ]);
 
 export const STREAM_EXTENSIONS = Object.freeze([
-  'm3u8'
+  'm3u8',
+  'mpd'
 ]);
 
 export const IMAGE_EXTENSIONS = Object.freeze([
@@ -70,7 +71,8 @@ export const STREAM_MIME_TYPES = Object.freeze([
   'application/vnd.apple.mpegurl',
   'application/x-mpegurl',
   'audio/mpegurl',
-  'audio/x-mpegurl'
+  'audio/x-mpegurl',
+  'application/dash+xml'
 ]);
 
 export const MIME_PREFIX_MAP = Object.freeze({
@@ -98,7 +100,8 @@ export const MIME_EXTENSION_MAP = Object.freeze({
   'audio/wav': 'wav',
   'audio/flac': 'flac',
   'application/vnd.apple.mpegurl': 'm3u8',
-  'application/x-mpegurl': 'm3u8'
+  'application/x-mpegurl': 'm3u8',
+  'application/dash+xml': 'mpd'
 });
 
 export const HLS_TAGS = Object.freeze({
@@ -107,6 +110,7 @@ export const HLS_TAGS = Object.freeze({
   KEY: '#EXT-X-KEY:',
   SESSION_KEY: '#EXT-X-SESSION-KEY:',
   MAP: '#EXT-X-MAP:',
+  BYTERANGE: '#EXT-X-BYTERANGE:',
   EXTINF: '#EXTINF:'
 });
 
@@ -128,6 +132,10 @@ export const LIMITS = Object.freeze({
   MIN_VIDEO_BYTES: 1024,
   MAX_FILENAME_LENGTH: 96,
   HLS_FETCH_CONCURRENCY: 4,
+  MIN_HLS_CONCURRENCY: 1,
+  MAX_HLS_CONCURRENCY: 8,
+  MAX_HLS_BUFFER_BYTES: 512 * 1024 * 1024,
+  DEFAULT_LARGE_STREAM_WARNING_MB: 250,
   FETCH_TIMEOUT_MS: 20000,
   RELOAD_TIMEOUT_MS: 15000,
   BATCH_DOWNLOAD_DELAY_MS: 180,
@@ -141,7 +149,8 @@ export const LIMITS = Object.freeze({
 export const STORAGE_KEYS = Object.freeze({
   TAB_MEDIA_PREFIX: 'tab_media_',
   TAB_ROUTE_PREFIX: 'tab_route_',
-  DOWNLOAD_BLOB_PREFIX: 'download_blob_'
+  DOWNLOAD_BLOB_PREFIX: 'download_blob_',
+  USER_SETTINGS: 'user_settings'
 });
 
 export const OFFSCREEN_DOCUMENT_PATH = 'src/offscreen/offscreen.html';
@@ -152,11 +161,33 @@ export const MESSAGE_TYPES = Object.freeze({
   DOWNLOAD_MEDIA: 'DOWNLOAD_MEDIA',
   DOWNLOAD_BATCH: 'DOWNLOAD_BATCH',
   DOWNLOAD_TWEET_VIDEO: 'DOWNLOAD_TWEET_VIDEO',
+  CANCEL_DOWNLOAD: 'CANCEL_DOWNLOAD',
   INSPECT_HLS: 'INSPECT_HLS',
   OFFSCREEN_BUILD_HLS_BLOB: 'OFFSCREEN_BUILD_HLS_BLOB',
+  OFFSCREEN_CANCEL_BUILD: 'OFFSCREEN_CANCEL_BUILD',
   OFFSCREEN_REVOKE_BLOB: 'OFFSCREEN_REVOKE_BLOB',
   DOWNLOAD_PROGRESS: 'DOWNLOAD_PROGRESS',
   MEDIA_UPDATED: 'MEDIA_UPDATED'
+});
+
+export const QUALITY_PREFERENCES = Object.freeze({
+  BEST: 'best',
+  LOWEST: 'lowest'
+});
+
+export const FILENAME_TEMPLATES = Object.freeze({
+  DEFAULT: 'default',
+  HOST_STEM: 'host_stem',
+  DATE_STEM: 'date_stem'
+});
+
+export const DEFAULT_SETTINGS = Object.freeze({
+  defaultQuality: QUALITY_PREFERENCES.BEST,
+  filenameTemplate: FILENAME_TEMPLATES.DEFAULT,
+  minImageDimensionPx: LIMITS.MIN_IMAGE_DIMENSION_PX,
+  hlsFetchConcurrency: LIMITS.HLS_FETCH_CONCURRENCY,
+  largeStreamWarningMb: LIMITS.DEFAULT_LARGE_STREAM_WARNING_MB,
+  enableXOverlay: true
 });
 
 export const BADGE_CONFIG = Object.freeze({

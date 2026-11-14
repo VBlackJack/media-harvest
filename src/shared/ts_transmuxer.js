@@ -15,6 +15,55 @@
  */
 
 /**
+ * Transmuxes MPEG-TS or ADTS segments into fragmented MP4 parts without allocating a single
+ * contiguous output buffer.
+ * @param {Array<ArrayBuffer | Uint8Array>} tsSegments
+ * @param {new (opts?: object) => object} [TransmuxerCtor]
+ * @param {{ flushPerSegment?: boolean }} [options]
+ * @returns {{ initSegment: Uint8Array | null, dataChunks: Array<Uint8Array>, parts: Array<Uint8Array> }}
+ */
+export function transmuxTsSegmentsToMp4Parts(tsSegments, TransmuxerCtor, { flushPerSegment = false } = {}) {
+  const Ctor = TransmuxerCtor || (globalThis.muxjs && globalThis.muxjs.Transmuxer);
+  if (typeof Ctor !== 'function') {
+    throw new Error('TRANSMUXER_UNAVAILABLE');
+  }
+
+  const transmuxer = new Ctor({ keepOriginalTimestamps: false });
+  let initSegment = null;
+  const dataChunks = [];
+  const parts = [];
+
+  transmuxer.on('data', (segment) => {
+    if (!initSegment && segment.initSegment && segment.initSegment.byteLength > 0) {
+      initSegment = new Uint8Array(segment.initSegment);
+      parts.push(initSegment);
+    }
+    if (segment.data && segment.data.byteLength > 0) {
+      const dataPart = new Uint8Array(segment.data);
+      dataChunks.push(dataPart);
+      parts.push(dataPart);
+    }
+  });
+
+  for (const chunk of tsSegments) {
+    const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+    transmuxer.push(bytes);
+    if (flushPerSegment) {
+      transmuxer.flush();
+    }
+  }
+  if (!flushPerSegment) {
+    transmuxer.flush();
+  }
+
+  if (parts.length === 0) {
+    throw new Error('TRANSMUX_EMPTY');
+  }
+
+  return { initSegment, dataChunks, parts };
+}
+
+/**
  * Transmuxes MPEG-TS segments into a single fragmented MP4 byte buffer.
  * Accepts an optional Transmuxer constructor for testability; defaults to global muxjs.
  * @param {Array<ArrayBuffer | Uint8Array>} tsSegments
@@ -22,35 +71,7 @@
  * @returns {Uint8Array}
  */
 export function transmuxTsSegmentsToMp4(tsSegments, TransmuxerCtor) {
-  const Ctor = TransmuxerCtor || (globalThis.muxjs && globalThis.muxjs.Transmuxer);
-  if (typeof Ctor !== 'function') {
-    throw new Error('TRANSMUXER_UNAVAILABLE');
-  }
-
-  const transmuxer = new Ctor({ keepOriginalTimestamps: false });
-  const parts = [];
-  let wroteInitSegment = false;
-
-  transmuxer.on('data', (segment) => {
-    if (!wroteInitSegment && segment.initSegment && segment.initSegment.byteLength > 0) {
-      parts.push(new Uint8Array(segment.initSegment));
-      wroteInitSegment = true;
-    }
-    if (segment.data && segment.data.byteLength > 0) {
-      parts.push(new Uint8Array(segment.data));
-    }
-  });
-
-  for (const chunk of tsSegments) {
-    const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-    transmuxer.push(bytes);
-  }
-  transmuxer.flush();
-
-  if (parts.length === 0) {
-    throw new Error('TRANSMUX_EMPTY');
-  }
-
+  const { parts } = transmuxTsSegmentsToMp4Parts(tsSegments, TransmuxerCtor);
   const totalBytes = parts.reduce((sum, part) => sum + part.byteLength, 0);
   const out = new Uint8Array(totalBytes);
   let cursor = 0;

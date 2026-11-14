@@ -201,22 +201,68 @@ function cloneMvhdWithNextTrackId(mvhdBytes, minNextTrackId) {
   return cloned;
 }
 
+function toUint8(input) {
+  return input instanceof Uint8Array ? input : new Uint8Array(input);
+}
+
 /**
- * Merges separate fMP4 video and audio init/media chunks into a single valid dual-track MP4 buffer.
+ * Counts how many trak boxes exist inside an fMP4 init segment.
+ * @param {ArrayBuffer | Uint8Array} initInput
+ * @returns {number}
+ */
+export function countTracksInInit(initInput) {
+  const bytes = toUint8(initInput);
+  const top = parseIsoBoxes(bytes);
+  const moov = top.find((b) => b.type === 'moov');
+  if (!moov) {
+    return 0;
+  }
+  return parseIsoBoxes(bytes, moov.start + BOX_HEADER_SIZE, moov.end)
+    .filter((b) => b.type === 'trak')
+    .length;
+}
+
+/**
+ * Splits a combined fMP4 buffer (e.g. from mux.js) into its init box bytes and moof+mdat fragment views.
+ * @param {ArrayBuffer | Uint8Array} input
+ * @returns {{ initSegment: Uint8Array, fragments: Array<Uint8Array> }}
+ */
+export function splitFmp4InitAndFragments(input) {
+  const bytes = toUint8(input);
+  const topBoxes = parseIsoBoxes(bytes);
+  const moovIndex = topBoxes.findIndex((b) => b.type === 'moov');
+  if (moovIndex < 0) {
+    throw new Error('INVALID_FMP4_INIT');
+  }
+  const initEnd = topBoxes[moovIndex].end;
+  const initSegment = bytes.subarray(0, initEnd);
+  const fragments = [];
+  for (let i = moovIndex + 1; i < topBoxes.length; i += 1) {
+    if (topBoxes[i].type === 'moof' && i + 1 < topBoxes.length && topBoxes[i + 1].type === 'mdat') {
+      fragments.push(bytes.subarray(topBoxes[i].start, topBoxes[i + 1].end));
+      i += 1;
+    }
+  }
+  return { initSegment, fragments };
+}
+
+/**
+ * Merges separate fMP4 video and audio init/media chunks into an ordered array of Uint8Array parts,
+ * avoiding a single large contiguous buffer copy for Blob creation.
  * @param {ArrayBuffer | Uint8Array} videoInitInput
  * @param {Array<ArrayBuffer | Uint8Array>} videoChunkInputs
  * @param {ArrayBuffer | Uint8Array} audioInitInput
  * @param {Array<ArrayBuffer | Uint8Array>} audioChunkInputs
- * @returns {Uint8Array}
+ * @returns {Array<Uint8Array>}
  */
-export function mergeFmp4VideoAndAudio(
+export function mergeFmp4VideoAndAudioParts(
   videoInitInput,
   videoChunkInputs,
   audioInitInput,
   audioChunkInputs
 ) {
-  const videoInit = new Uint8Array(videoInitInput);
-  const audioInit = new Uint8Array(audioInitInput);
+  const videoInit = toUint8(videoInitInput);
+  const audioInit = toUint8(audioInitInput);
 
   const videoTopBoxes = parseIsoBoxes(videoInit);
   const audioTopBoxes = parseIsoBoxes(audioInit);
@@ -285,13 +331,36 @@ export function mergeFmp4VideoAndAudio(
   const maxPairs = Math.max(videoChunkInputs.length, audioChunkInputs.length);
   for (let i = 0; i < maxPairs; i += 1) {
     if (i < videoChunkInputs.length) {
-      outputParts.push(new Uint8Array(videoChunkInputs[i]));
+      outputParts.push(toUint8(videoChunkInputs[i]));
     }
     if (i < audioChunkInputs.length) {
-      outputParts.push(rewriteFragmentTrackId(new Uint8Array(audioChunkInputs[i]), audioTrackId));
+      outputParts.push(rewriteFragmentTrackId(toUint8(audioChunkInputs[i]), audioTrackId));
     }
   }
 
+  return outputParts;
+}
+
+/**
+ * Merges separate fMP4 video and audio init/media chunks into a single valid dual-track MP4 buffer.
+ * @param {ArrayBuffer | Uint8Array} videoInitInput
+ * @param {Array<ArrayBuffer | Uint8Array>} videoChunkInputs
+ * @param {ArrayBuffer | Uint8Array} audioInitInput
+ * @param {Array<ArrayBuffer | Uint8Array>} audioChunkInputs
+ * @returns {Uint8Array}
+ */
+export function mergeFmp4VideoAndAudio(
+  videoInitInput,
+  videoChunkInputs,
+  audioInitInput,
+  audioChunkInputs
+) {
+  const outputParts = mergeFmp4VideoAndAudioParts(
+    videoInitInput,
+    videoChunkInputs,
+    audioInitInput,
+    audioChunkInputs
+  );
   const totalBytes = outputParts.reduce((sum, part) => sum + part.byteLength, 0);
   const merged = new Uint8Array(totalBytes);
   let cursor = 0;

@@ -70,17 +70,43 @@ function parseResolution(resolution) {
 }
 
 /**
+ * Parses an HLS BYTERANGE specification ("length[@offset]") into numeric range bounds.
+ * @param {string} spec
+ * @param {number} [defaultOffset=0]
+ * @returns {{ length: number, offset: number } | null}
+ */
+export function parseByteRangeSpec(spec, defaultOffset = 0) {
+  if (typeof spec !== 'string' || !spec.trim()) {
+    return null;
+  }
+  const [lenStr, offStr] = spec.trim().split('@');
+  const length = Number.parseInt(lenStr, 10);
+  if (!Number.isFinite(length) || length <= 0) {
+    return null;
+  }
+  const offset = offStr !== undefined ? Number.parseInt(offStr, 10) : defaultOffset;
+  if (!Number.isFinite(offset) || offset < 0) {
+    return null;
+  }
+  return { length, offset };
+}
+
+/**
  * Parses an HLS playlist text, handling both master playlists and media playlists.
+ * Supports EXT-X-KEY, EXT-X-SESSION-KEY, EXT-X-MAP (with optional BYTERANGE), and EXT-X-BYTERANGE.
  * @param {string} text
  * @param {string} baseUrl
  * @returns {{
+ *   format: string,
  *   isMaster: boolean,
  *   encrypted: boolean,
  *   encryptionMethod: string,
  *   variants: Array<{ bandwidth: number, width: number, height: number, resolution: string, audioGroup: string, url: string }>,
  *   audioTracks: Array<{ groupId: string, name: string, language: string, url: string }>,
  *   initSegmentUrl: string | null,
- *   segments: Array<{ url: string, duration: number }>,
+ *   initSegmentByteRange: { length: number, offset: number } | null,
+ *   segments: Array<{ url: string, duration: number, byteRange: { length: number, offset: number } | null }>,
+ *   totalDurationSec: number,
  *   outputExtension: string
  * }}
  */
@@ -89,10 +115,13 @@ export function parseHlsPlaylist(text, baseUrl) {
   const variants = [];
   const audioTracks = [];
   const segments = [];
+  const prevByteRangeEndByUrl = new Map();
 
   let initSegmentUrl = null;
+  let initSegmentByteRange = null;
   let pendingStreamAttrs = null;
   let pendingSegmentDuration = 0;
+  let pendingByteRangeSpec = null;
   let encrypted = false;
   let encryptionMethod = 'NONE';
 
@@ -135,8 +164,14 @@ export function parseHlsPlaylist(text, baseUrl) {
         const resolvedMapUrl = resolveHlsUrl(attrs.URI, baseUrl);
         if (resolvedMapUrl) {
           initSegmentUrl = resolvedMapUrl;
+          initSegmentByteRange = attrs.BYTERANGE ? parseByteRangeSpec(attrs.BYTERANGE, 0) : null;
         }
       }
+      continue;
+    }
+
+    if (line.startsWith(HLS_TAGS.BYTERANGE)) {
+      pendingByteRangeSpec = line.slice(HLS_TAGS.BYTERANGE.length).trim();
       continue;
     }
 
@@ -154,6 +189,7 @@ export function parseHlsPlaylist(text, baseUrl) {
     if (!resolvedUrl) {
       pendingStreamAttrs = null;
       pendingSegmentDuration = 0;
+      pendingByteRangeSpec = null;
       continue;
     }
     if (pendingStreamAttrs) {
@@ -170,9 +206,20 @@ export function parseHlsPlaylist(text, baseUrl) {
       continue;
     }
 
+    let byteRange = null;
+    if (pendingByteRangeSpec) {
+      const prevEnd = prevByteRangeEndByUrl.get(resolvedUrl) ?? 0;
+      byteRange = parseByteRangeSpec(pendingByteRangeSpec, prevEnd);
+      if (byteRange) {
+        prevByteRangeEndByUrl.set(resolvedUrl, byteRange.offset + byteRange.length);
+      }
+      pendingByteRangeSpec = null;
+    }
+
     segments.push({
       url: resolvedUrl,
-      duration: pendingSegmentDuration
+      duration: pendingSegmentDuration,
+      byteRange
     });
     pendingSegmentDuration = 0;
   }
@@ -188,12 +235,14 @@ export function parseHlsPlaylist(text, baseUrl) {
     : DEFAULT_FILENAMES.HLS_TS_EXT;
 
   return {
+    format: 'hls',
     isMaster,
     encrypted,
     encryptionMethod,
     variants,
     audioTracks,
     initSegmentUrl,
+    initSegmentByteRange,
     segments,
     totalDurationSec,
     outputExtension
