@@ -19,6 +19,10 @@
     "message": "Réanalyser la page active",
     "description": "Infobulle du bouton actualiser."
   },
+  "popup_header_options_title": {
+    "message": "Paramètres de l'extension",
+    "description": "Infobulle du bouton paramètres."
+  },
   "popup_filter_all": {
     "message": "Tout",
     "description": "Filtre pour tous les médias."
@@ -60,6 +64,14 @@
   "popup_badge_stream": {
     "message": "HLS",
     "description": "Badge pour les flux HLS."
+  },
+  "popup_badge_dash": {
+    "message": "DASH",
+    "description": "Badge pour les flux DASH."
+  },
+  "popup_badge_large_stream": {
+    "message": "Flux volumineux",
+    "description": "Badge affiché si la taille estimée dépasse le seuil d'avertissement."
   },
   "popup_badge_dom": {
     "message": "Page",
@@ -192,5 +204,91 @@
   "x_btn_error": {
     "message": "Erreur",
     "description": "Libellé d'erreur sur le bouton intégré."
+  },
+  "popup_action_cancel": {
+    "message": "Annuler",
+    "description": "Bouton pour annuler un téléchargement de flux en cours."
+  },
+  "popup_status_download_cancelled": {
+    "message": "Téléchargement annulé.",
+    "description": "Message affiché après annulation par l'utilisateur."
+  },
+  "popup_error_stream_too_large": {
+    "message": "Ce flux dépasse la limite d'assemblage en mémoire ($LIMIT_MB$ Mo).",
+    "description": "Erreur si le flux dépasse la limite de sécurité mémoire.",
+    "placeholders": {
+      "limit_mb": {
+        "content": "$1",
+        "example": "512"
+      }
+    }
+  },
+  "options_title": {
+    "message": "Paramètres de Media Harvest",
+    "description": "Titre de la page d'options."
+  },
+  "options_subtitle": {
+    "message": "Configurer la qualité par défaut, le nommage des fichiers et les seuils de détection.",
+    "description": "Sous-titre de la page d'options."
+  },
+  "options_default_quality": {
+    "message": "Qualité vidéo par défaut",
+    "description": "Libellé pour la qualité par défaut."
+  },
+  "options_quality_best": {
+    "message": "Meilleure disponible",
+    "description": "Option pour la plus haute résolution/débit."
+  },
+  "options_quality_lowest": {
+    "message": "Plus légère disponible",
+    "description": "Option pour la plus basse résolution/débit."
+  },
+  "options_filename_template": {
+    "message": "Modèle de nom de fichier",
+    "description": "Libellé du modèle de nommage."
+  },
+  "options_template_default": {
+    "message": "Standard ({nom}.{ext})",
+    "description": "Modèle de nom par défaut."
+  },
+  "options_template_host_stem": {
+    "message": "Préfixe site ({hôte}_{nom}.{ext})",
+    "description": "Modèle avec nom d'hôte en préfixe."
+  },
+  "options_template_date_stem": {
+    "message": "Préfixe date ({AAAA-MM-JJ}_{nom}.{ext})",
+    "description": "Modèle avec date ISO en préfixe."
+  },
+  "options_min_image_px": {
+    "message": "Taille minimale des images (px)",
+    "description": "Dimension minimale en pixels pour détecter les images dans le DOM."
+  },
+  "options_hls_concurrency": {
+    "message": "Téléchargements parallèles de segments (1-8)",
+    "description": "Nombre maximal de segments téléchargés simultanément."
+  },
+  "options_large_stream_mb": {
+    "message": "Seuil d'alerte flux volumineux (Mo, 0 pour désactiver)",
+    "description": "Seuil en mégaoctets signalant les flux volumineux."
+  },
+  "options_enable_x_overlay": {
+    "message": "Afficher le bouton de téléchargement sur les vidéos X / Twitter",
+    "description": "Interrupteur pour le script sur X/Twitter."
+  },
+  "options_action_save": {
+    "message": "Enregistrer",
+    "description": "Bouton d'enregistrement des paramètres."
+  },
+  "options_action_reset": {
+    "message": "Réinitialiser",
+    "description": "Bouton de réinitialisation des paramètres."
+  },
+  "options_status_saved": {
+    "message": "Paramètres enregistrés.",
+    "description": "Confirmation après sauvegarde."
+  },
+  "options_status_reset": {
+    "message": "Paramètres par défaut restaurés.",
+    "description": "Confirmation après réinitialisation."
   }
 }

@@ -343,6 +343,12 @@ select:focus-visible {
   border-color: rgba(56, 189, 248, 0.4);
 }
 
+.badge-warning {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.45);
+  background: rgba(251, 191, 36, 0.1);
+}
+
 .controls {
   display: flex;
   align-items: center;
@@ -392,6 +398,16 @@ select:focus-visible {
 
 .btn-secondary:hover:not(:disabled) {
   background: var(--surface-hover);
+}
+
+.btn-cancel {
+  background: var(--danger-bg);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  color: var(--danger);
+}
+
+.btn-cancel:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.24);
 }
 
 .progress-line {

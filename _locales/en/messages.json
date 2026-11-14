@@ -19,6 +19,10 @@
     "message": "Rescan current page",
     "description": "Tooltip for refresh button."
   },
+  "popup_header_options_title": {
+    "message": "Extension settings",
+    "description": "Tooltip for options button."
+  },
   "popup_filter_all": {
     "message": "All",
     "description": "Filter tab for all media types."
@@ -60,6 +64,14 @@
   "popup_badge_stream": {
     "message": "HLS",
     "description": "Badge shown on HLS stream items."
+  },
+  "popup_badge_dash": {
+    "message": "DASH",
+    "description": "Badge shown on DASH stream items."
+  },
+  "popup_badge_large_stream": {
+    "message": "Large stream",
+    "description": "Badge shown when estimated stream size exceeds the user warning threshold."
   },
   "popup_badge_dom": {
     "message": "Page",
@@ -192,5 +204,91 @@
   "x_btn_error": {
     "message": "Error",
     "description": "Inline button error label."
+  },
+  "popup_action_cancel": {
+    "message": "Cancel",
+    "description": "Button label to cancel an active stream download."
+  },
+  "popup_status_download_cancelled": {
+    "message": "Download cancelled.",
+    "description": "Status message when the user cancels a stream download."
+  },
+  "popup_error_stream_too_large": {
+    "message": "Stream exceeds the in-browser assembly limit ($LIMIT_MB$ MB).",
+    "description": "Error when an HLS or DASH stream exceeds maximum safe memory size.",
+    "placeholders": {
+      "limit_mb": {
+        "content": "$1",
+        "example": "512"
+      }
+    }
+  },
+  "options_title": {
+    "message": "Media Harvest Settings",
+    "description": "Heading on the options page."
+  },
+  "options_subtitle": {
+    "message": "Configure quality defaults, filename templates, and capture thresholds.",
+    "description": "Subtitle on the options page."
+  },
+  "options_default_quality": {
+    "message": "Default stream quality",
+    "description": "Label for default stream quality setting."
+  },
+  "options_quality_best": {
+    "message": "Best available",
+    "description": "Option for highest resolution/bitrate."
+  },
+  "options_quality_lowest": {
+    "message": "Lowest available",
+    "description": "Option for lowest resolution/bitrate."
+  },
+  "options_filename_template": {
+    "message": "Filename template",
+    "description": "Label for filename template setting."
+  },
+  "options_template_default": {
+    "message": "Standard ({name}.{ext})",
+    "description": "Default filename template."
+  },
+  "options_template_host_stem": {
+    "message": "Site prefix ({host}_{name}.{ext})",
+    "description": "Filename template prefixed with hostname."
+  },
+  "options_template_date_stem": {
+    "message": "Date prefix ({YYYY-MM-DD}_{name}.{ext})",
+    "description": "Filename template prefixed with ISO date."
+  },
+  "options_min_image_px": {
+    "message": "Minimum image size (px)",
+    "description": "Minimum width/height in pixels for DOM image detection."
+  },
+  "options_hls_concurrency": {
+    "message": "Parallel segment downloads (1-8)",
+    "description": "Maximum concurrent segment fetch count."
+  },
+  "options_large_stream_mb": {
+    "message": "Large stream warning threshold (MB, 0 to disable)",
+    "description": "Threshold in megabytes to flag large streams."
+  },
+  "options_enable_x_overlay": {
+    "message": "Show inline download button on X / Twitter video posts",
+    "description": "Toggle for X/Twitter overlay content script."
+  },
+  "options_action_save": {
+    "message": "Save settings",
+    "description": "Save button on options page."
+  },
+  "options_action_reset": {
+    "message": "Reset defaults",
+    "description": "Reset button on options page."
+  },
+  "options_status_saved": {
+    "message": "Settings saved.",
+    "description": "Confirmation when settings are saved."
+  },
+  "options_status_reset": {
+    "message": "Defaults restored.",
+    "description": "Confirmation when settings are reset."
   }
 }

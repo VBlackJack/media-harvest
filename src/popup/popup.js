@@ -15,15 +15,20 @@
  */
 
 import {
+  DEFAULT_SETTINGS,
   LIMITS,
   MEDIA_SOURCES,
   MEDIA_TYPES,
   MESSAGE_TYPES,
+  QUALITY_PREFERENCES,
+  STORAGE_KEYS,
   UNIT_CONVERSIONS
 } from '../config/constants.js';
+import { parseDashManifest } from '../shared/dash_parser.js';
 import { parseHlsPlaylist, selectBestVariant } from '../shared/hls_parser.js';
 import { applyTranslations, getUiLanguage, t } from '../shared/i18n.js';
-import { isHttpUrl } from '../shared/media_classifier.js';
+import { extractUrlExtension, isHttpUrl } from '../shared/media_classifier.js';
+import { loadSettings, normalizeSettings } from '../shared/settings.js';
 import { transmuxTsSegmentsToMp4 } from '../shared/ts_transmuxer.js';
 
 const state = {
@@ -32,6 +37,7 @@ const state = {
   filter: 'all',
   items: [],
   hasBlobVideo: false,
+  settings: { ...DEFAULT_SETTINGS },
   hlsMetaByUrl: new Map(),
   cardsByUrl: new Map(),
   refreshDebounceTimer: null,
@@ -46,6 +52,7 @@ const els = {
   refreshBtn: document.getElementById('refreshBtn'),
   reloadTabBtn: document.getElementById('reloadTabBtn'),
   clearBtn: document.getElementById('clearBtn'),
+  optionsBtn: document.getElementById('optionsBtn'),
   countAll: document.getElementById('countAll'),
   countVideos: document.getElementById('countVideos'),
   countImages: document.getElementById('countImages'),
@@ -88,21 +95,49 @@ function formatDuration(seconds) {
  * @param {'text' | 'arrayBuffer'} responseType
  * @returns {Promise<string | ArrayBuffer>}
  */
-async function fetchWithTimeout(url, responseType) {
+async function fetchWithTimeout(url, responseType, extraHeaders) {
   if (!isHttpUrl(url)) {
     throw new Error('INVALID_URL');
   }
   const controller = new AbortController();
   const timerId = setTimeout(() => controller.abort(), LIMITS.FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const options = extraHeaders
+      ? { signal: controller.signal, headers: extraHeaders }
+      : { signal: controller.signal };
+    const response = await fetch(url, options);
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
-    return responseType === 'text' ? await response.text() : await response.arrayBuffer();
+    if (responseType === 'text') {
+      return await response.text();
+    }
+    const buffer = await response.arrayBuffer();
+    if (responseType === 'bufferWithStatus') {
+      return { status: response.status, buffer };
+    }
+    return buffer;
   } finally {
     clearTimeout(timerId);
   }
+}
+
+/**
+ * Fetches a single preview segment buffer, honoring byte ranges when specified.
+ * @param {string} url
+ * @param {{ offset: number, length: number } | null} byteRange
+ * @returns {Promise<ArrayBuffer>}
+ */
+async function fetchPreviewSegmentBuffer(url, byteRange) {
+  if (!byteRange) {
+    return fetchWithTimeout(url, 'arrayBuffer');
+  }
+  const headers = { Range: `bytes=${byteRange.offset}-${byteRange.offset + byteRange.length - 1}` };
+  const { status, buffer } = await fetchWithTimeout(url, 'bufferWithStatus', headers);
+  if (status === 200) {
+    return buffer.slice(byteRange.offset, byteRange.offset + byteRange.length);
+  }
+  return buffer;
 }
 
 /**
@@ -153,6 +188,13 @@ function localizeError(errorCode) {
   }
   if (errorCode === 'RESTRICTED_PAGE') {
     return t('popup_error_restricted_page');
+  }
+  if (errorCode === 'DOWNLOAD_CANCELLED') {
+    return t('popup_status_download_cancelled');
+  }
+  if (errorCode === 'STREAM_TOO_LARGE') {
+    const maxMb = String(Math.round(LIMITS.MAX_HLS_BUFFER_BYTES / UNIT_CONVERSIONS.BYTES_PER_MB));
+    return t('popup_error_stream_too_large', [maxMb]);
   }
   return t('popup_error_download_failed', [errorCode || t('popup_error_unknown')]);
 }
@@ -255,25 +297,51 @@ function renderThumbnailContent(thumbEl, item) {
 /**
  * Creates a small metadata badge pill.
  * @param {string} label
- * @param {boolean} [accent=false]
+ * @param {'default' | 'accent' | 'warning'} [variant='default']
  * @returns {HTMLSpanElement}
  */
-function createBadge(label, accent = false) {
+function createBadge(label, variant = 'default') {
   const span = document.createElement('span');
-  span.className = accent ? 'badge badge-accent' : 'badge';
+  if (variant === 'accent') {
+    span.className = 'badge badge-accent';
+  } else if (variant === 'warning') {
+    span.className = 'badge badge-warning';
+  } else {
+    span.className = 'badge';
+  }
   span.textContent = label;
   return span;
+}
+
+/**
+ * Computes estimated byte size for a stream item based on selected variant or default variant.
+ * @param {object} entry
+ * @returns {number}
+ */
+function getEstimatedStreamBytes(entry) {
+  const meta = state.hlsMetaByUrl.get(entry.item.url);
+  if (!meta || !Array.isArray(meta.variants) || meta.variants.length === 0) {
+    return entry.item.estimatedBytes || 0;
+  }
+  const selectedUrl = entry.qualitySelect && !entry.qualitySelect.classList.contains('hidden')
+    ? entry.qualitySelect.value
+    : '';
+  const selectedVariant = meta.variants.find((v) => v.url === selectedUrl) || meta.variants[0];
+  return (selectedVariant && selectedVariant.estimatedBytes) || 0;
 }
 
 /**
  * Renders the metadata badges for a media card.
  * @param {HTMLElement} badgesEl
  * @param {object} item
+ * @param {object | null} [entry=null]
  */
-function renderBadges(badgesEl, item) {
+function renderBadges(badgesEl, item, entry = null) {
   badgesEl.replaceChildren();
+  const meta = state.hlsMetaByUrl.get(item.url);
+  const isDash = extractUrlExtension(item.url) === 'mpd' || (meta && meta.streamFormat === 'dash');
   if (item.isStream) {
-    badgesEl.appendChild(createBadge(t('popup_badge_stream'), true));
+    badgesEl.appendChild(createBadge(t(isDash ? 'popup_badge_dash' : 'popup_badge_stream'), 'accent'));
   } else if (item.ext) {
     badgesEl.appendChild(createBadge(item.ext.toUpperCase()));
   }
@@ -288,19 +356,54 @@ function renderBadges(badgesEl, item) {
   if (sizeText) {
     badgesEl.appendChild(createBadge(sizeText));
   }
+  if (item.isStream && entry) {
+    const estBytes = getEstimatedStreamBytes(entry);
+    const thresholdBytes = state.settings.largeStreamWarningMb * UNIT_CONVERSIONS.BYTES_PER_MB;
+    if (thresholdBytes > 0 && estBytes >= thresholdBytes) {
+      badgesEl.appendChild(createBadge(t('popup_badge_large_stream'), 'warning'));
+    }
+  }
   badgesEl.appendChild(
     createBadge(item.source === MEDIA_SOURCES.NETWORK ? t('popup_badge_network') : t('popup_badge_dom'))
   );
 }
 
 /**
- * Fetches a short fMP4/TS HLS preview clip as a Blob URL.
- * @param {string} playlistUrl
+ * Fetches a short fMP4/TS HLS or DASH preview clip as a Blob URL.
+ * @param {string} selectedUrl
+ * @param {string} originalItemUrl
  * @returns {Promise<string>}
  */
-async function buildHlsPreviewUrl(playlistUrl) {
-  let targetUrl = playlistUrl;
-  let rootText = await fetchWithTimeout(targetUrl, 'text');
+async function buildStreamPreviewUrl(selectedUrl, originalItemUrl) {
+  const looksDash = selectedUrl.includes('#dash-video-') || extractUrlExtension(originalItemUrl) === 'mpd';
+  if (looksDash) {
+    const rootText = await fetchWithTimeout(originalItemUrl, 'text');
+    const parsedDash = parseDashManifest(rootText, originalItemUrl);
+    if (parsedDash.encrypted) {
+      throw new Error('ENCRYPTED_STREAM');
+    }
+    const chosen = parsedDash.variants.find((v) => v.url === selectedUrl) ||
+      parsedDash.variants[parsedDash.variants.length - 1] ||
+      parsedDash.variants[0];
+    if (!chosen || chosen.segments.length === 0) {
+      throw new Error('PREVIEW_UNAVAILABLE');
+    }
+    if (chosen.isProgressive) {
+      if (!isHttpUrl(chosen.segments[0].url)) {
+        throw new Error('INVALID_URL');
+      }
+      return chosen.segments[0].url;
+    }
+    const clipUrls = chosen.initSegmentUrl
+      ? [chosen.initSegmentUrl, ...chosen.segments.slice(0, LIMITS.PREVIEW_HLS_SEGMENTS).map((s) => s.url)]
+      : chosen.segments.slice(0, LIMITS.PREVIEW_HLS_SEGMENTS).map((s) => s.url);
+    const buffers = await Promise.all(clipUrls.map((segmentUrl) => fetchWithTimeout(segmentUrl, 'arrayBuffer')));
+    const mime = chosen.mimeType === 'video/webm' ? 'video/webm' : 'video/mp4';
+    return URL.createObjectURL(new Blob(buffers, { type: mime }));
+  }
+
+  let targetUrl = selectedUrl;
+  const rootText = await fetchWithTimeout(targetUrl, 'text');
   let parsed = parseHlsPlaylist(rootText, targetUrl);
 
   if (parsed.encrypted) {
@@ -324,13 +427,16 @@ async function buildHlsPreviewUrl(playlistUrl) {
     throw new Error('PREVIEW_UNAVAILABLE');
   }
 
-  const leadingSegments = parsed.segments.slice(0, LIMITS.PREVIEW_HLS_SEGMENTS).map((s) => s.url);
-  const clipUrls = parsed.initSegmentUrl
-    ? [parsed.initSegmentUrl, ...leadingSegments]
-    : leadingSegments;
+  const leadingSegments = parsed.segments.slice(0, LIMITS.PREVIEW_HLS_SEGMENTS);
+  const requests = parsed.initSegmentUrl
+    ? [
+        { url: parsed.initSegmentUrl, byteRange: parsed.initSegmentByteRange || null },
+        ...leadingSegments.map((s) => ({ url: s.url, byteRange: s.byteRange || null }))
+      ]
+    : leadingSegments.map((s) => ({ url: s.url, byteRange: s.byteRange || null }));
 
   const buffers = await Promise.all(
-    clipUrls.map((segmentUrl) => fetchWithTimeout(segmentUrl, 'arrayBuffer'))
+    requests.map((req) => fetchPreviewSegmentBuffer(req.url, req.byteRange))
   );
 
   const outputBuffers = parsed.initSegmentUrl
@@ -383,14 +489,18 @@ async function toggleVideoPreview(entry) {
     const selectedUrl = !qualitySelect.classList.contains('hidden') ? qualitySelect.value : item.url;
     let playableUrl = item.url;
     if (item.isStream) {
-      const blobUrl = await buildHlsPreviewUrl(selectedUrl);
+      const previewUrl = await buildStreamPreviewUrl(selectedUrl, item.url);
       if (!entry.card.isConnected || previewBox.classList.contains('hidden')) {
-        URL.revokeObjectURL(blobUrl);
+        if (previewUrl.startsWith('blob:')) {
+          URL.revokeObjectURL(previewUrl);
+        }
         return;
       }
-      revokeCardPreviewBlob(entry);
-      entry.previewBlobUrl = blobUrl;
-      playableUrl = blobUrl;
+      if (previewUrl.startsWith('blob:')) {
+        revokeCardPreviewBlob(entry);
+        entry.previewBlobUrl = previewUrl;
+      }
+      playableUrl = previewUrl;
     } else if (!entry.card.isConnected || previewBox.classList.contains('hidden')) {
       return;
     }
@@ -438,8 +548,14 @@ async function toggleVideoPreview(entry) {
  * @param {string | undefined} selectedPlaylistUrl
  */
 async function triggerDownload(entry, selectedPlaylistUrl) {
-  const { item, downloadBtn, progressEl } = entry;
+  const { item, downloadBtn, cancelBtn, progressEl } = entry;
+  const requestId = `dl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  entry.activeRequestId = requestId;
   downloadBtn.disabled = true;
+  if (item.isStream && cancelBtn) {
+    cancelBtn.disabled = false;
+    cancelBtn.classList.remove('hidden');
+  }
   progressEl.className = 'progress-line';
   progressEl.textContent = item.isStream ? t('popup_status_hls_preparing') : '';
   progressEl.classList.toggle('hidden', !item.isStream);
@@ -452,7 +568,8 @@ async function triggerDownload(entry, selectedPlaylistUrl) {
         playlistUrl: selectedPlaylistUrl || item.url,
         isStream: Boolean(item.isStream),
         filename: item.suggestedFilename,
-        saveAs: false
+        saveAs: false,
+        requestId
       }
     });
 
@@ -464,16 +581,30 @@ async function triggerDownload(entry, selectedPlaylistUrl) {
       progressEl.classList.add('hidden');
     }
   } catch (err) {
-    progressEl.className = 'error-line';
-    progressEl.textContent = localizeError(err.message);
-    progressEl.classList.remove('hidden');
+    if (err && err.message === 'DOWNLOAD_CANCELLED') {
+      progressEl.className = 'progress-line';
+      progressEl.textContent = localizeError(err.message);
+      progressEl.classList.remove('hidden');
+      setStatusBanner(t('popup_status_download_cancelled'));
+    } else {
+      progressEl.className = 'error-line';
+      progressEl.textContent = localizeError(err.message);
+      progressEl.classList.remove('hidden');
+    }
   } finally {
+    if (entry.activeRequestId === requestId) {
+      entry.activeRequestId = '';
+    }
+    if (cancelBtn) {
+      cancelBtn.classList.add('hidden');
+      cancelBtn.disabled = false;
+    }
     downloadBtn.disabled = false;
   }
 }
 
 /**
- * Inspects HLS master playlists on demand to expose quality options and encrypted state.
+ * Inspects HLS/DASH manifests on demand to expose quality options, warnings, and encrypted state.
  * @param {object} entry
  */
 async function hydrateHlsVariants(entry) {
@@ -523,13 +654,18 @@ async function hydrateHlsVariants(entry) {
         || t('popup_quality_best');
       qualitySelect.appendChild(option);
     }
+    if (state.settings.defaultQuality === QUALITY_PREFERENCES.LOWEST) {
+      qualitySelect.selectedIndex = qualitySelect.options.length - 1;
+    } else {
+      qualitySelect.selectedIndex = 0;
+    }
     qualitySelect.classList.remove('hidden');
   }
 
   if (meta.totalDurationSec && !item.duration) {
     item.duration = meta.totalDurationSec;
-    renderBadges(entry.badgesEl, item);
   }
+  renderBadges(entry.badgesEl, item, entry);
 }
 
 /**
@@ -646,10 +782,18 @@ function createMediaCard(item) {
     qualitySelect,
     previewBtn: null,
     downloadBtn: null,
+    cancelBtn: null,
     progressEl: null,
     previewBlobUrl: '',
+    activeRequestId: '',
     hlsHydrated: false
   };
+
+  renderBadges(badgesEl, item, entry);
+
+  qualitySelect.addEventListener('change', () => {
+    renderBadges(entry.badgesEl, entry.item, entry);
+  });
 
   if (isVideoLike) {
     const previewBtn = document.createElement('button');
@@ -665,6 +809,22 @@ function createMediaCard(item) {
 
   controls.appendChild(createCopyButton(entry));
 
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'btn btn-cancel hidden';
+  cancelBtn.textContent = t('popup_action_cancel');
+  cancelBtn.addEventListener('click', () => {
+    if (!entry.activeRequestId) {
+      return;
+    }
+    cancelBtn.disabled = true;
+    chrome.runtime.sendMessage({
+      type: MESSAGE_TYPES.CANCEL_DOWNLOAD,
+      requestId: entry.activeRequestId
+    }).catch(() => {});
+  });
+  controls.appendChild(cancelBtn);
+
   const downloadBtn = document.createElement('button');
   downloadBtn.type = 'button';
   downloadBtn.className = 'btn btn-primary';
@@ -677,6 +837,7 @@ function createMediaCard(item) {
   card.appendChild(progressEl);
 
   entry.downloadBtn = downloadBtn;
+  entry.cancelBtn = cancelBtn;
   entry.progressEl = progressEl;
 
   downloadBtn.addEventListener('click', () => {
@@ -701,7 +862,7 @@ function updateCardEntry(entry, nextItem) {
   entry.nameEl.textContent = nextItem.suggestedFilename || nextItem.url;
   entry.nameEl.title = nextItem.url;
   renderThumbnailContent(entry.thumbEl, nextItem);
-  renderBadges(entry.badgesEl, nextItem);
+  renderBadges(entry.badgesEl, nextItem, entry);
   if (nextItem.isStream && nextItem.type === MEDIA_TYPES.STREAM && !entry.hlsHydrated) {
     hydrateHlsVariants(entry);
   }
@@ -936,7 +1097,17 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 
   if (message.type === MESSAGE_TYPES.DOWNLOAD_PROGRESS) {
-    const entry = state.cardsByUrl.get(message.url);
+    let entry = null;
+    if (message.requestId) {
+      for (const candidate of state.cardsByUrl.values()) {
+        if (candidate.activeRequestId === message.requestId) {
+          entry = candidate;
+          break;
+        }
+      }
+    } else if (message.url) {
+      entry = state.cardsByUrl.get(message.url) || null;
+    }
     if (!entry) {
       return;
     }
@@ -1027,8 +1198,33 @@ els.downloadAllBtn.addEventListener('click', async () => {
   }
 });
 
+if (els.optionsBtn) {
+  els.optionsBtn.addEventListener('click', () => {
+    chrome.runtime.openOptionsPage();
+  });
+}
+
+if (chrome.storage && chrome.storage.onChanged) {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'sync' || !changes[STORAGE_KEYS.USER_SETTINGS]) {
+      return;
+    }
+    state.settings = normalizeSettings(changes[STORAGE_KEYS.USER_SETTINGS].newValue);
+    for (const entry of state.cardsByUrl.values()) {
+      renderBadges(entry.badgesEl, entry.item, entry);
+    }
+  });
+}
+
 window.addEventListener('unload', revokeAllPreviewBlobs);
 
 document.documentElement.lang = getUiLanguage();
 applyTranslations(document);
-loadActiveTabMedia();
+loadSettings()
+  .then((settings) => {
+    state.settings = settings;
+  })
+  .catch(() => {})
+  .finally(() => {
+    loadActiveTabMedia();
+  });
