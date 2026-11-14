@@ -27,6 +27,8 @@ test('manifest.json references existing files and valid MV3 structure', () => {
   assert.equal(manifest.manifest_version, 3);
   assert.ok(fs.existsSync(path.join(ROOT, manifest.background.service_worker)));
   assert.ok(fs.existsSync(path.join(ROOT, manifest.action.default_popup)));
+  assert.ok(manifest.options_ui && manifest.options_ui.page);
+  assert.ok(fs.existsSync(path.join(ROOT, manifest.options_ui.page)));
   assert.ok(fs.existsSync(path.join(ROOT, 'src/vendor/mux-mp4.min.js')));
 
   for (const cs of manifest.content_scripts || []) {
@@ -57,12 +59,15 @@ test('en and fr locale files have matching valid Chrome i18n keys used by popup.
     assert.ok(fr[key].message.length > 0, `Empty fr message for ${key}`);
   }
 
-  const popupHtml = fs.readFileSync(path.join(ROOT, 'src/popup/popup.html'), 'utf8');
-  const htmlKeys = [...popupHtml.matchAll(/data-i18n(?:-title)?="([^"]+)"/g)].map((m) => m[1]);
-  assert.ok(htmlKeys.length > 0);
-  for (const key of htmlKeys) {
-    assert.ok(Object.hasOwn(en, key), `Missing i18n key in en: ${key}`);
-    assert.ok(Object.hasOwn(fr, key), `Missing i18n key in fr: ${key}`);
+  const htmlPaths = ['src/popup/popup.html', 'src/options/options.html'];
+  for (const relHtml of htmlPaths) {
+    const html = fs.readFileSync(path.join(ROOT, relHtml), 'utf8');
+    const htmlKeys = [...html.matchAll(/data-i18n(?:-title)?="([^"]+)"/g)].map((m) => m[1]);
+    assert.ok(htmlKeys.length > 0, `No i18n keys found in ${relHtml}`);
+    for (const key of htmlKeys) {
+      assert.ok(Object.hasOwn(en, key), `Missing i18n key in en (${relHtml}): ${key}`);
+      assert.ok(Object.hasOwn(fr, key), `Missing i18n key in fr (${relHtml}): ${key}`);
+    }
   }
 });
 

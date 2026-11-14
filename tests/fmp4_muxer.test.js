@@ -18,9 +18,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildIsoBox,
+  countTracksInInit,
   mergeFmp4VideoAndAudio,
+  mergeFmp4VideoAndAudioParts,
   parseIsoBoxes,
-  readTrackIdFromTrak
+  readTrackIdFromTrak,
+  splitFmp4InitAndFragments
 } from '../src/shared/fmp4_muxer.js';
 
 function makeFullBoxPayload(version, bodySize) {
@@ -140,4 +143,30 @@ test('parseIsoBoxes stops cleanly on truncated or invalid box sizes', () => {
   assert.deepEqual(parseIsoBoxes(truncated), []);
   const zeroSize = new Uint8Array([0x00, 0x00, 0x00, 0x00, 0x6d, 0x6f, 0x6f, 0x76]);
   assert.deepEqual(parseIsoBoxes(zeroSize), []);
+});
+
+test('countTracksInInit, splitFmp4InitAndFragments, and mergeFmp4VideoAndAudioParts avoid contiguous copies', () => {
+  const videoInit = makeFmp4Init(1);
+  const audioInit = makeFmp4Init(1);
+  const vChunk1 = makeMediaChunk(1, 0xaa);
+  const vChunk2 = makeMediaChunk(1, 0xbb);
+  const aChunk1 = makeMediaChunk(1, 0xcc);
+
+  assert.equal(countTracksInInit(videoInit), 1);
+
+  const parts = mergeFmp4VideoAndAudioParts(videoInit, [vChunk1, vChunk2], audioInit, [aChunk1]);
+  assert.equal(parts.length, 5);
+
+  const combinedLen = parts.reduce((sum, p) => sum + p.byteLength, 0);
+  const combined = new Uint8Array(combinedLen);
+  let cursor = 0;
+  for (const p of parts) {
+    combined.set(p, cursor);
+    cursor += p.byteLength;
+  }
+
+  assert.equal(countTracksInInit(parts[1]), 2);
+  const split = splitFmp4InitAndFragments(combined);
+  assert.equal(countTracksInInit(split.initSegment), 2);
+  assert.equal(split.fragments.length, 3);
 });

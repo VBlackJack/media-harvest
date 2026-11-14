@@ -97,3 +97,32 @@ test('parseHlsPlaylist handles METHOD=NONE, EXT-X-SESSION-KEY, and boundary help
   assert.equal(estimateHlsBytes(1000000, -5), 0);
   assert.equal(selectBestVariant([]), null);
 });
+
+test('parseHlsPlaylist parses EXT-X-BYTERANGE and EXT-X-MAP BYTERANGE per target URL', () => {
+  const byterangePlaylist = [
+    '#EXTM3U',
+    '#EXT-X-MAP:URI="media.mp4",BYTERANGE="800@0"',
+    '#EXTINF:4.0,',
+    '#EXT-X-BYTERANGE:1000@800',
+    'media.mp4',
+    '#EXTINF:4.0,',
+    '#EXT-X-BYTERANGE:1200',
+    'media.mp4',
+    '#EXTINF:4.0,',
+    '#EXT-X-BYTERANGE:500@200',
+    'other.mp4',
+    '#EXTINF:4.0,',
+    '#EXT-X-BYTERANGE:600',
+    'media.mp4',
+    '#EXT-X-ENDLIST'
+  ].join('\n');
+
+  const parsed = parseHlsPlaylist(byterangePlaylist, 'https://cdn.example.com/hls/playlist.m3u8');
+  assert.equal(parsed.format, 'hls');
+  assert.deepEqual(parsed.initSegmentByteRange, { offset: 0, length: 800 });
+  assert.equal(parsed.segments.length, 4);
+  assert.deepEqual(parsed.segments[0].byteRange, { offset: 800, length: 1000 });
+  assert.deepEqual(parsed.segments[1].byteRange, { offset: 1800, length: 1200 });
+  assert.deepEqual(parsed.segments[2].byteRange, { offset: 200, length: 500 });
+  assert.deepEqual(parsed.segments[3].byteRange, { offset: 3000, length: 600 });
+});

@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-import { transmuxTsSegmentsToMp4 } from '../src/shared/ts_transmuxer.js';
+import { transmuxTsSegmentsToMp4, transmuxTsSegmentsToMp4Parts } from '../src/shared/ts_transmuxer.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 
@@ -89,4 +89,38 @@ test('transmuxTsSegmentsToMp4 throws on missing transmuxer or empty output and a
     () => transmuxTsSegmentsToMp4([new Uint8Array([0x47]).buffer], EmptyTransmuxer),
     /TRANSMUX_EMPTY/
   );
+});
+
+test('transmuxTsSegmentsToMp4Parts exposes initSegment, dataChunks, and flushPerSegment option', () => {
+  class SegTransmuxer {
+    constructor() {
+      this.handlers = {};
+      this.flushCount = 0;
+      this.pending = [];
+    }
+    on(event, fn) {
+      this.handlers[event] = fn;
+    }
+    push(bytes) {
+      this.pending.push(bytes);
+    }
+    flush() {
+      this.flushCount += 1;
+      for (const chunk of this.pending.splice(0)) {
+        this.handlers.data({
+          initSegment: new Uint8Array([9, 9]),
+          data: new Uint8Array([chunk[0], chunk[0]])
+        });
+      }
+    }
+  }
+
+  const partsResult = transmuxTsSegmentsToMp4Parts(
+    [new Uint8Array([1]), new Uint8Array([2])],
+    SegTransmuxer,
+    { flushPerSegment: true }
+  );
+  assert.deepEqual(Array.from(partsResult.initSegment), [9, 9]);
+  assert.equal(partsResult.dataChunks.length, 2);
+  assert.equal(partsResult.parts.length, 3);
 });

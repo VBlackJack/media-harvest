@@ -140,3 +140,19 @@ test('deduplicateMedia preserves network stream metadata when DOM fallback share
   assert.equal(merged[0].source, MEDIA_SOURCES.NETWORK);
   assert.equal(merged[0].width, 1280);
 });
+
+test('classifyMedia recognizes DASH .mpd streams with XML and dash+xml MIME types', () => {
+  assert.deepEqual(
+    classifyMedia('https://cdn.example.com/live/manifest.mpd', 'application/dash+xml'),
+    { type: MEDIA_TYPES.STREAM, ext: 'mpd', isStream: true }
+  );
+  assert.deepEqual(
+    classifyMedia('https://cdn.example.com/live/manifest.mpd', 'application/xml; charset=utf-8'),
+    { type: MEDIA_TYPES.STREAM, ext: 'mpd', isStream: true }
+  );
+  assert.deepEqual(
+    classifyMedia('https://cdn.example.com/stream', 'application/dash+xml'),
+    { type: MEDIA_TYPES.STREAM, ext: 'mpd', isStream: true }
+  );
+  assert.equal(classifyMedia('https://cdn.example.com/feed.rss', 'application/xml'), null);
+});
