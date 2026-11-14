@@ -27,17 +27,21 @@ import {
   STORAGE_KEYS,
   VIDEO_EXTENSIONS
 } from '../config/constants.js';
+import { parseDashManifest } from '../shared/dash_parser.js';
 import { estimateHlsBytes, parseHlsPlaylist } from '../shared/hls_parser.js';
 import {
   classifyMedia,
   deduplicateMedia,
   deriveFilenameStem,
+  extractUrlExtension,
   isHttpUrl,
   sanitizeFilename
 } from '../shared/media_classifier.js';
 import { attachVideoPreviews, extractMediaId } from '../shared/preview_matcher.js';
+import { applyFilenameTemplate, loadSettings } from '../shared/settings.js';
 
 const tabWriteQueues = new Map();
+const activeBuilds = new Map();
 let offscreenLifecycleQueue = Promise.resolve();
 let activeOffscreenBuilds = 0;
 
@@ -393,6 +397,7 @@ async function collectMediaForTab(tabId, tabUrl) {
     throw new Error('RESTRICTED_PAGE');
   }
 
+  const settings = await loadSettings();
   const networkItems = await getTabNetworkMedia(tabId);
   let domResult = {
     pageTitle: '',
@@ -404,7 +409,7 @@ async function collectMediaForTab(tabId, tabUrl) {
 
   try {
     const scanConfig = {
-      minImageDimensionPx: LIMITS.MIN_IMAGE_DIMENSION_PX,
+      minImageDimensionPx: settings.minImageDimensionPx,
       previewMaxWidthPx: LIMITS.PREVIEW_MAX_WIDTH_PX,
       previewFrameQuality: LIMITS.PREVIEW_FRAME_QUALITY,
       mediaTypes: {
@@ -459,13 +464,17 @@ async function collectMediaForTab(tabId, tabUrl) {
   const merged = attachVideoPreviews(
     deduplicateMedia([...networkItems, ...normalizedDomItems]),
     domResult.videoElements || []
-  ).map((item) => ({
-    ...item,
-    suggestedFilename: sanitizeFilename(
-      deriveFilenameStem(item.url, item.title || domResult.pageTitle, tabUrl),
-      item.ext
-    )
-  }));
+  ).map((item) => {
+    const baseStem = deriveFilenameStem(item.url, item.title || domResult.pageTitle, tabUrl);
+    const templatedStem = applyFilenameTemplate(settings.filenameTemplate, {
+      stem: baseStem,
+      pageUrl: tabUrl
+    });
+    return {
+      ...item,
+      suggestedFilename: sanitizeFilename(templatedStem, item.ext)
+    };
+  });
 
   await updateTabBadge(tabId, merged);
 
@@ -496,7 +505,7 @@ async function fetchPlaylistText(url) {
 }
 
 /**
- * Fetches and parses an HLS playlist so the UI can list variants, duration, and estimated size.
+ * Fetches and parses an HLS or DASH manifest so the UI can list variants, duration, and size.
  * @param {string} url
  * @returns {Promise<object>}
  */
@@ -505,6 +514,25 @@ async function inspectHlsStream(url) {
     throw new Error('INVALID_URL');
   }
   const text = await fetchPlaylistText(url);
+  const looksDash = extractUrlExtension(url) === 'mpd' ||
+    /<MPD[\s>]/i.test(text.slice(0, 512));
+
+  if (looksDash) {
+    const parsed = parseDashManifest(text, url);
+    const durationSec = parsed.totalDurationSec;
+    const variantsWithEstimate = parsed.variants.map((variant) => ({
+      ...variant,
+      durationSec,
+      estimatedBytes: estimateHlsBytes(variant.bandwidth, durationSec)
+    }));
+    return {
+      ...parsed,
+      streamFormat: 'dash',
+      totalDurationSec: durationSec,
+      variants: variantsWithEstimate
+    };
+  }
+
   const parsed = parseHlsPlaylist(text, url);
 
   let durationSec = parsed.totalDurationSec;
@@ -526,6 +554,7 @@ async function inspectHlsStream(url) {
 
   return {
     ...parsed,
+    streamFormat: 'hls',
     totalDurationSec: durationSec,
     variants: variantsWithEstimate
   };
@@ -537,7 +566,8 @@ async function inspectHlsStream(url) {
  * @param {{ mediaId?: string, directSrc?: string, authorHandle?: string, tweetId?: string }} payload
  * @returns {Promise<{ downloadId: number }>}
  */
-async function handleTweetVideoDownload(tabId, payload) {
+async function handleTweetVideoDownload(tabId, payload, pageUrl = '') {
+  const settings = await loadSettings();
   const networkItems = await getTabNetworkMedia(tabId);
   const videoCandidates = networkItems.filter(
     (item) => item.type === MEDIA_TYPES.STREAM || item.type === MEDIA_TYPES.VIDEO
@@ -561,10 +591,14 @@ async function handleTweetVideoDownload(tabId, payload) {
     throw new Error('PLAY_FIRST');
   }
 
-  const stem = payload.authorHandle && payload.tweetId
+  const baseStem = payload.authorHandle && payload.tweetId
     ? `${payload.authorHandle}_${payload.tweetId}`
-    : deriveFilenameStem(chosen.url, '');
-  const filename = sanitizeFilename(stem, chosen.ext || DEFAULT_FILENAMES.HLS_FMP4_EXT);
+    : deriveFilenameStem(chosen.url, '', pageUrl);
+  const templatedStem = applyFilenameTemplate(settings.filenameTemplate, {
+    stem: baseStem,
+    pageUrl: pageUrl || chosen.url
+  });
+  const filename = sanitizeFilename(templatedStem, chosen.ext || DEFAULT_FILENAMES.HLS_FMP4_EXT);
 
   return handleDownloadMedia({
     url: chosen.url,
@@ -576,9 +610,41 @@ async function handleTweetVideoDownload(tabId, payload) {
 }
 
 /**
- * Starts a download either directly or via HLS offscreen assembly.
- * @param {{ url: string, playlistUrl?: string, isStream?: boolean, filename?: string, saveAs?: boolean }} payload
- * @returns {Promise<{ downloadId: number }>}
+ * Cancels an active offscreen stream build and its Chrome download if already started.
+ * @param {string} [requestId]
+ * @returns {Promise<void>}
+ */
+async function cancelDownloadBuild(requestId) {
+  if (requestId) {
+    const buildState = activeBuilds.get(requestId);
+    if (buildState) {
+      buildState.cancelled = true;
+      if (buildState.downloadId !== null) {
+        await chrome.downloads.cancel(buildState.downloadId).catch(() => {});
+      }
+    }
+  } else {
+    for (const buildState of activeBuilds.values()) {
+      buildState.cancelled = true;
+      if (buildState.downloadId !== null) {
+        await chrome.downloads.cancel(buildState.downloadId).catch(() => {});
+      }
+    }
+  }
+
+  await chrome.runtime.sendMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_CANCEL_BUILD,
+    requestId
+  }).catch(() => {
+    // Offscreen document may not exist or already be closing
+  });
+}
+
+/**
+ * Starts a download either directly or via HLS/DASH offscreen assembly.
+ * @param {{ url: string, playlistUrl?: string, isStream?: boolean, filename?: string, saveAs?: boolean, requestId?: string }} payload
+ * @returns {Promise<{ downloadId: number, requestId: string }>}
  */
 async function handleDownloadMedia(payload) {
   if (!payload || typeof payload !== 'object' || !isHttpUrl(payload.url)) {
@@ -588,6 +654,9 @@ async function handleDownloadMedia(payload) {
   const rawStem = typeof payload.filename === 'string' && payload.filename
     ? payload.filename.replace(/\.[^.]+$/, '')
     : deriveFilenameStem(payload.url, '');
+  const requestId = typeof payload.requestId === 'string' && payload.requestId
+    ? payload.requestId
+    : `dl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
   if (!payload.isStream) {
     const classified = classifyMedia(payload.url);
@@ -601,7 +670,7 @@ async function handleDownloadMedia(payload) {
       filename: directFilename,
       saveAs: Boolean(payload.saveAs)
     });
-    return { downloadId };
+    return { downloadId, requestId };
   }
 
   const targetPlaylist = payload.playlistUrl || payload.url;
@@ -609,16 +678,37 @@ async function handleDownloadMedia(payload) {
     throw new Error('INVALID_URL');
   }
 
+  const buildState = { cancelled: false, downloadId: null };
+  activeBuilds.set(requestId, buildState);
   activeOffscreenBuilds += 1;
   let blobUrl = '';
   try {
+    const settings = await loadSettings();
+    if (buildState.cancelled) {
+      throw new Error('DOWNLOAD_CANCELLED');
+    }
+
     await enqueueOffscreenOp(() => ensureOffscreenDocument());
+    if (buildState.cancelled) {
+      throw new Error('DOWNLOAD_CANCELLED');
+    }
+
     const result = await chrome.runtime.sendMessage({
       target: 'offscreen',
       type: MESSAGE_TYPES.OFFSCREEN_BUILD_HLS_BLOB,
+      requestId,
       playlistUrl: targetPlaylist,
-      originalUrl: payload.url
+      originalUrl: payload.url,
+      concurrency: settings.hlsFetchConcurrency,
+      qualityPreference: settings.defaultQuality
     });
+
+    if (buildState.cancelled) {
+      if (result && result.blobUrl) {
+        await revokeOffscreenBlob(result.blobUrl);
+      }
+      throw new Error('DOWNLOAD_CANCELLED');
+    }
 
     if (!result || !result.ok || !result.blobUrl) {
       throw new Error((result && result.error) || 'HLS_ERROR');
@@ -631,19 +721,28 @@ async function handleDownloadMedia(payload) {
       filename: finalFilename,
       saveAs: Boolean(payload.saveAs)
     });
+    buildState.downloadId = downloadId;
+
+    if (buildState.cancelled) {
+      await chrome.downloads.cancel(downloadId).catch(() => {});
+      await cleanupDownloadBlob(downloadId, blobUrl);
+      blobUrl = '';
+      throw new Error('DOWNLOAD_CANCELLED');
+    }
 
     await chrome.storage.session.set({ [downloadBlobKey(downloadId)]: blobUrl });
     const [dlItem] = await chrome.downloads.search({ id: downloadId });
     if (dlItem && dlItem.state !== 'in_progress') {
       await cleanupDownloadBlob(downloadId, blobUrl);
     }
-    return { downloadId };
+    return { downloadId, requestId };
   } catch (err) {
     if (blobUrl) {
       await revokeOffscreenBlob(blobUrl);
     }
     throw err;
   } finally {
+    activeBuilds.delete(requestId);
     activeOffscreenBuilds -= 1;
     enqueueOffscreenOp(() => maybeCloseOffscreenDocument()).catch(() => {});
   }
@@ -686,13 +785,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === MESSAGE_TYPES.CANCEL_DOWNLOAD) {
+    cancelDownloadBuild(message.requestId)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
   if (message.type === MESSAGE_TYPES.DOWNLOAD_TWEET_VIDEO) {
     const tabId = sender && sender.tab ? sender.tab.id : -1;
     if (tabId < 0) {
       sendResponse({ ok: false, error: 'NO_ACTIVE_TAB' });
       return false;
     }
-    handleTweetVideoDownload(tabId, message.payload || {})
+    const pageUrl = sender && sender.tab && sender.tab.url ? sender.tab.url : '';
+    handleTweetVideoDownload(tabId, message.payload || {}, pageUrl)
       .then((res) => sendResponse({ ok: true, ...res }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;

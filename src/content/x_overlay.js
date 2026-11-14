@@ -21,6 +21,8 @@
     ACTION_GROUP_SELECTOR: '[role="group"]',
     STATUS_LINK_SELECTOR: 'a[href*="/status/"]',
     BUTTON_ATTR: 'data-media-harvest-attached',
+    BUTTON_CLASS: 'mh-x-download-btn',
+    SETTINGS_KEY: 'user_settings',
     MEDIA_ID_PATTERN: /(?:ext_tw_video|amplify_video|tweet_video)(?:_thumb)?\/(\d+)\//i,
     STATUS_PATH_PATTERN: /\/([A-Za-z0-9_]+)\/status\/(\d+)/,
     MESSAGE_TYPE: 'DOWNLOAD_TWEET_VIDEO',
@@ -126,10 +128,15 @@
     }, OVERLAY_CONFIG.RESET_DELAY_MS);
   }
 
+  let isEnabled = true;
+
   /**
    * Injects a download pill button into any tweet article containing a direct video.
    */
   function attachButtons() {
+    if (!isEnabled) {
+      return;
+    }
     for (const article of document.querySelectorAll(OVERLAY_CONFIG.TWEET_SELECTOR)) {
       const video = findDirectTweetElement(article, OVERLAY_CONFIG.VIDEO_SELECTOR);
       if (!video) {
@@ -143,7 +150,7 @@
 
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'mh-x-download-btn';
+      btn.className = OVERLAY_CONFIG.BUTTON_CLASS;
       const labelEl = document.createElement('span');
       labelEl.textContent = msg('x_btn_download');
       btn.append(createDownloadIcon(), labelEl);
@@ -189,8 +196,73 @@
     debounceTimer = setTimeout(attachButtons, OVERLAY_CONFIG.DEBOUNCE_MS);
   });
 
-  if (document.body) {
-    observer.observe(document.body, { childList: true, subtree: true });
-    attachButtons();
+  /**
+   * Starts DOM observation and attaches inline download buttons.
+   */
+  function enableOverlay() {
+    isEnabled = true;
+    if (document.body) {
+      observer.observe(document.body, { childList: true, subtree: true });
+      attachButtons();
+    }
   }
+
+  /**
+   * Stops DOM observation and cleans up all injected download buttons.
+   */
+  function disableOverlay() {
+    isEnabled = false;
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+    observer.disconnect();
+    for (const btn of document.querySelectorAll(`.${OVERLAY_CONFIG.BUTTON_CLASS}`)) {
+      btn.remove();
+    }
+    for (const host of document.querySelectorAll(`[${OVERLAY_CONFIG.BUTTON_ATTR}]`)) {
+      host.removeAttribute(OVERLAY_CONFIG.BUTTON_ATTR);
+    }
+  }
+
+  let settingsResolvedFromChange = false;
+
+  /**
+   * Reads user settings and activates the overlay if enabled.
+   */
+  async function initOverlay() {
+    try {
+      if (chrome && chrome.storage && chrome.storage.sync) {
+        const stored = await chrome.storage.sync.get(OVERLAY_CONFIG.SETTINGS_KEY);
+        if (settingsResolvedFromChange) {
+          return;
+        }
+        const settings = stored && stored[OVERLAY_CONFIG.SETTINGS_KEY];
+        if (settings && settings.enableXOverlay === false) {
+          disableOverlay();
+          return;
+        }
+      }
+    } catch {
+      // Fall back to enabled default when storage is unavailable
+    }
+    if (!settingsResolvedFromChange) {
+      enableOverlay();
+    }
+  }
+
+  if (chrome && chrome.storage && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== 'sync' || !changes[OVERLAY_CONFIG.SETTINGS_KEY]) {
+        return;
+      }
+      settingsResolvedFromChange = true;
+      const nextSettings = changes[OVERLAY_CONFIG.SETTINGS_KEY].newValue;
+      if (nextSettings && nextSettings.enableXOverlay === false) {
+        disableOverlay();
+      } else {
+        enableOverlay();
+      }
+    });
+  }
+
+  initOverlay();
 })();
