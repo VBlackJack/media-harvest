@@ -38,12 +38,20 @@ export function parseHlsAttributes(rawAttributes) {
 
 /**
  * Resolves a possibly relative HLS URI against the playlist URL.
+ * Returns an empty string if the URI cannot be resolved.
  * @param {string} uri
  * @param {string} baseUrl
  * @returns {string}
  */
 export function resolveHlsUrl(uri, baseUrl) {
-  return new URL(uri.trim(), baseUrl).href;
+  if (typeof uri !== 'string' || !uri.trim()) {
+    return '';
+  }
+  try {
+    return new URL(uri.trim(), baseUrl).href;
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -89,8 +97,11 @@ export function parseHlsPlaylist(text, baseUrl) {
   let encryptionMethod = 'NONE';
 
   for (const line of lines) {
-    if (line.startsWith(HLS_TAGS.KEY)) {
-      const attrs = parseHlsAttributes(line.slice(HLS_TAGS.KEY.length));
+    if (line.startsWith(HLS_TAGS.KEY) || line.startsWith(HLS_TAGS.SESSION_KEY)) {
+      const tagLength = line.startsWith(HLS_TAGS.SESSION_KEY)
+        ? HLS_TAGS.SESSION_KEY.length
+        : HLS_TAGS.KEY.length;
+      const attrs = parseHlsAttributes(line.slice(tagLength));
       const method = (attrs.METHOD || 'NONE').toUpperCase();
       if (method !== 'NONE') {
         encrypted = true;
@@ -101,12 +112,13 @@ export function parseHlsPlaylist(text, baseUrl) {
 
     if (line.startsWith(HLS_TAGS.MEDIA)) {
       const attrs = parseHlsAttributes(line.slice(HLS_TAGS.MEDIA.length));
-      if (attrs.TYPE === 'AUDIO' && attrs.URI) {
+      const resolvedAudioUrl = attrs.URI ? resolveHlsUrl(attrs.URI, baseUrl) : '';
+      if (attrs.TYPE === 'AUDIO' && resolvedAudioUrl) {
         audioTracks.push({
           groupId: attrs['GROUP-ID'] || '',
           name: attrs.NAME || attrs.LANGUAGE || 'audio',
           language: attrs.LANGUAGE || '',
-          url: resolveHlsUrl(attrs.URI, baseUrl)
+          url: resolvedAudioUrl
         });
       }
       continue;
@@ -120,7 +132,10 @@ export function parseHlsPlaylist(text, baseUrl) {
     if (line.startsWith(HLS_TAGS.MAP)) {
       const attrs = parseHlsAttributes(line.slice(HLS_TAGS.MAP.length));
       if (attrs.URI) {
-        initSegmentUrl = resolveHlsUrl(attrs.URI, baseUrl);
+        const resolvedMapUrl = resolveHlsUrl(attrs.URI, baseUrl);
+        if (resolvedMapUrl) {
+          initSegmentUrl = resolvedMapUrl;
+        }
       }
       continue;
     }
@@ -136,6 +151,11 @@ export function parseHlsPlaylist(text, baseUrl) {
     }
 
     const resolvedUrl = resolveHlsUrl(line, baseUrl);
+    if (!resolvedUrl) {
+      pendingStreamAttrs = null;
+      pendingSegmentDuration = 0;
+      continue;
+    }
     if (pendingStreamAttrs) {
       const { width, height } = parseResolution(pendingStreamAttrs.RESOLUTION);
       variants.push({

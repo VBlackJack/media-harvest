@@ -17,6 +17,7 @@
 import { DEFAULT_FILENAMES, LIMITS, MESSAGE_TYPES } from '../config/constants.js';
 import { mergeFmp4VideoAndAudio } from '../shared/fmp4_muxer.js';
 import { parseHlsPlaylist, selectBestVariant } from '../shared/hls_parser.js';
+import { isHttpUrl } from '../shared/media_classifier.js';
 import { transmuxTsSegmentsToMp4 } from '../shared/ts_transmuxer.js';
 
 const activeBlobUrls = new Set();
@@ -113,8 +114,9 @@ async function resolvePlaylists(masterOrMediaUrl, preferredVariantUrl) {
   }
 
   let audioParsed = null;
-  const matchingAudio = rootParsed.audioTracks.find((a) => a.groupId === chosenVariant.audioGroup)
-    || rootParsed.audioTracks[0];
+  const matchingAudio = chosenVariant.audioGroup
+    ? rootParsed.audioTracks.find((a) => a.groupId === chosenVariant.audioGroup) || null
+    : null;
 
   if (matchingAudio && matchingAudio.url && matchingAudio.url !== chosenVariant.url) {
     const audioText = await fetchWithTimeout(matchingAudio.url, 'text');
@@ -135,6 +137,9 @@ async function resolvePlaylists(masterOrMediaUrl, preferredVariantUrl) {
  * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number }>}
  */
 async function buildHlsBlob(playlistUrl, originalUrl) {
+  if (!isHttpUrl(originalUrl) || !isHttpUrl(playlistUrl)) {
+    throw new Error('INVALID_URL');
+  }
   const { mediaPlaylist, audioPlaylist } = await resolvePlaylists(originalUrl, playlistUrl);
   if (mediaPlaylist.segments.length === 0) {
     throw new Error('EMPTY_PLAYLIST');
@@ -144,10 +149,11 @@ async function buildHlsBlob(playlistUrl, originalUrl) {
     ? [mediaPlaylist.initSegmentUrl, ...mediaPlaylist.segments.map((s) => s.url)]
     : mediaPlaylist.segments.map((s) => s.url);
 
-  const audioUrls = audioPlaylist
-    ? (audioPlaylist.initSegmentUrl
-      ? [audioPlaylist.initSegmentUrl, ...audioPlaylist.segments.map((s) => s.url)]
-      : audioPlaylist.segments.map((s) => s.url))
+  const shouldMuxFmp4Audio = Boolean(
+    audioPlaylist && mediaPlaylist.initSegmentUrl && audioPlaylist.initSegmentUrl
+  );
+  const audioUrls = shouldMuxFmp4Audio
+    ? [audioPlaylist.initSegmentUrl, ...audioPlaylist.segments.map((s) => s.url)]
     : [];
 
   let completed = 0;
@@ -171,9 +177,7 @@ async function buildHlsBlob(playlistUrl, originalUrl) {
   let mimeType = outputExtension === DEFAULT_FILENAMES.HLS_FMP4_EXT ? 'video/mp4' : 'video/mp2t';
 
   if (
-    audioPlaylist &&
-    mediaPlaylist.initSegmentUrl &&
-    audioPlaylist.initSegmentUrl &&
+    shouldMuxFmp4Audio &&
     videoBuffers.length > 1 &&
     audioBuffers.length > 1
   ) {
@@ -198,6 +202,8 @@ async function buildHlsBlob(playlistUrl, originalUrl) {
   }
 
   const blob = new Blob(outputParts, { type: mimeType });
+  videoBuffers.length = 0;
+  audioBuffers.length = 0;
   const blobUrl = URL.createObjectURL(blob);
   activeBlobUrls.add(blobUrl);
 

@@ -105,18 +105,33 @@ export const HLS_TAGS = Object.freeze({
   STREAM_INF: '#EXT-X-STREAM-INF:',
   MEDIA: '#EXT-X-MEDIA:',
   KEY: '#EXT-X-KEY:',
+  SESSION_KEY: '#EXT-X-SESSION-KEY:',
   MAP: '#EXT-X-MAP:',
   EXTINF: '#EXTINF:'
 });
 
+export const NON_MEDIA_MIME_TYPES = Object.freeze([
+  'text/html',
+  'application/xhtml+xml',
+  'application/json',
+  'application/xml',
+  'text/xml',
+  'text/css',
+  'application/javascript',
+  'text/javascript'
+]);
+
 export const LIMITS = Object.freeze({
   MAX_CAPTURED_PER_TAB: 120,
   MIN_IMAGE_DIMENSION_PX: 64,
+  MIN_IMAGE_BYTES: 1024,
   MIN_VIDEO_BYTES: 1024,
   MAX_FILENAME_LENGTH: 96,
   HLS_FETCH_CONCURRENCY: 4,
   FETCH_TIMEOUT_MS: 20000,
+  RELOAD_TIMEOUT_MS: 15000,
   BATCH_DOWNLOAD_DELAY_MS: 180,
+  COPY_FEEDBACK_MS: 1500,
   PREVIEW_MAX_WIDTH_PX: 240,
   PREVIEW_FRAME_QUALITY: 0.7,
   PREVIEW_HLS_SEGMENTS: 1,
@@ -124,7 +139,9 @@ export const LIMITS = Object.freeze({
 });
 
 export const STORAGE_KEYS = Object.freeze({
-  TAB_MEDIA_PREFIX: 'tab_media_'
+  TAB_MEDIA_PREFIX: 'tab_media_',
+  TAB_ROUTE_PREFIX: 'tab_route_',
+  DOWNLOAD_BLOB_PREFIX: 'download_blob_'
 });
 
 export const OFFSCREEN_DOCUMENT_PATH = 'src/offscreen/offscreen.html';
@@ -143,7 +160,7 @@ export const MESSAGE_TYPES = Object.freeze({
 });
 
 export const BADGE_CONFIG = Object.freeze({
-  BACKGROUND_COLOR: '#0284c7'
+  BACKGROUND_COLOR: '#0369a1'
 });
 
 export const X_INTEGRATION = Object.freeze({
@@ -159,4 +176,11 @@ export const DEFAULT_FILENAMES = Object.freeze({
   FALLBACK_EXT: 'bin',
   HLS_FMP4_EXT: 'mp4',
   HLS_TS_EXT: 'ts'
+});
+
+export const UNIT_CONVERSIONS = Object.freeze({
+  BYTES_PER_KB: 1024,
+  BYTES_PER_MB: 1024 * 1024,
+  BITS_PER_KBPS: 1000,
+  SECONDS_PER_MINUTE: 60
 });

@@ -38,12 +38,12 @@ import {
 import { attachVideoPreviews, extractMediaId } from '../shared/preview_matcher.js';
 
 const tabWriteQueues = new Map();
-const tabRouteKeys = new Map();
-const downloadBlobMap = new Map();
-let offscreenSetupPromise = null;
+let offscreenLifecycleQueue = Promise.resolve();
+let activeOffscreenBuilds = 0;
 
 /**
  * Serializes async storage updates per tabId to prevent concurrent race conditions.
+ * Never call enqueueTabWrite recursively from inside its own task callback.
  * @param {number} tabId
  * @param {() => Promise<void>} task
  * @returns {Promise<void>}
@@ -60,12 +60,41 @@ function enqueueTabWrite(tabId, task) {
 }
 
 /**
+ * Serializes offscreen document creation and teardown to avoid lifecycle races.
+ * @param {() => Promise<void>} task
+ * @returns {Promise<void>}
+ */
+function enqueueOffscreenOp(task) {
+  const next = offscreenLifecycleQueue.then(task, task);
+  offscreenLifecycleQueue = next.catch(() => {});
+  return next;
+}
+
+/**
  * Builds the session storage key for a given tab ID.
  * @param {number} tabId
  * @returns {string}
  */
 function tabStorageKey(tabId) {
   return `${STORAGE_KEYS.TAB_MEDIA_PREFIX}${tabId}`;
+}
+
+/**
+ * Builds the session storage key for a tab's last SPA route key.
+ * @param {number} tabId
+ * @returns {string}
+ */
+function tabRouteStorageKey(tabId) {
+  return `${STORAGE_KEYS.TAB_ROUTE_PREFIX}${tabId}`;
+}
+
+/**
+ * Builds the session storage key mapping a download ID to its offscreen Blob URL.
+ * @param {number} downloadId
+ * @returns {string}
+ */
+function downloadBlobKey(downloadId) {
+  return `${STORAGE_KEYS.DOWNLOAD_BLOB_PREFIX}${downloadId}`;
 }
 
 /**
@@ -118,15 +147,22 @@ async function updateTabBadge(tabId, items) {
 }
 
 /**
+ * Clears captured media and badge without re-entering enqueueTabWrite.
+ * @param {number} tabId
+ * @returns {Promise<void>}
+ */
+async function clearTabMediaUnlocked(tabId) {
+  await chrome.storage.session.remove(tabStorageKey(tabId));
+  await updateTabBadge(tabId, []);
+}
+
+/**
  * Clears all captured network media and resets the badge for a tab.
  * @param {number} tabId
  * @returns {Promise<void>}
  */
 function clearTabMedia(tabId) {
-  return enqueueTabWrite(tabId, async () => {
-    await chrome.storage.session.remove(tabStorageKey(tabId));
-    await updateTabBadge(tabId, []);
-  });
+  return enqueueTabWrite(tabId, () => clearTabMediaUnlocked(tabId));
 }
 
 /**
@@ -162,12 +198,16 @@ function recordNetworkMedia(tabId, entry) {
     }).catch(() => {
       // Popup is not open
     });
+  }).catch(() => {
+    // Session storage write failed or tab was closed
   });
 }
 
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
-    if (details.tabId < 0 || details.statusCode >= 400) {
+    const isSuccessOrCached = (details.statusCode >= 200 && details.statusCode < 300)
+      || details.statusCode === 304;
+    if (details.tabId < 0 || !isSuccessOrCached) {
       return;
     }
 
@@ -183,6 +223,13 @@ chrome.webRequest.onHeadersReceived.addListener(
       classified.type === MEDIA_TYPES.VIDEO &&
       sizeBytes > 0 &&
       sizeBytes < LIMITS.MIN_VIDEO_BYTES
+    ) {
+      return;
+    }
+    if (
+      classified.type === MEDIA_TYPES.IMAGE &&
+      sizeBytes > 0 &&
+      sizeBytes < LIMITS.MIN_IMAGE_BYTES
     ) {
       return;
     }
@@ -207,8 +254,11 @@ chrome.webRequest.onHeadersReceived.addListener(
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (details.tabId >= 0 && details.type === 'main_frame') {
-      tabRouteKeys.set(details.tabId, toRouteKey(details.url));
-      clearTabMedia(details.tabId);
+      const route = toRouteKey(details.url);
+      enqueueTabWrite(details.tabId, async () => {
+        await chrome.storage.session.set({ [tabRouteStorageKey(details.tabId)]: route });
+        await clearTabMediaUnlocked(details.tabId);
+      }).catch(() => {});
     }
   },
   { urls: ['<all_urls>'], types: ['main_frame'] }
@@ -219,22 +269,26 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     return;
   }
   const nextRoute = toRouteKey(changeInfo.url);
-  const prevRoute = tabRouteKeys.get(tabId);
-  tabRouteKeys.set(tabId, nextRoute);
-  if (prevRoute && prevRoute !== nextRoute) {
-    clearTabMedia(tabId);
-  }
+  const routeKey = tabRouteStorageKey(tabId);
+  enqueueTabWrite(tabId, async () => {
+    const stored = await chrome.storage.session.get(routeKey);
+    const prevRoute = typeof stored[routeKey] === 'string' ? stored[routeKey] : '';
+    await chrome.storage.session.set({ [routeKey]: nextRoute });
+    if (prevRoute && prevRoute !== nextRoute) {
+      await clearTabMediaUnlocked(tabId);
+    }
+  }).catch(() => {});
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  tabRouteKeys.delete(tabId);
   enqueueTabWrite(tabId, async () => {
-    await chrome.storage.session.remove(tabStorageKey(tabId));
-  });
+    await chrome.storage.session.remove([tabStorageKey(tabId), tabRouteStorageKey(tabId)]);
+  }).catch(() => {});
 });
 
 /**
  * Ensures the offscreen document exists for HLS Blob creation.
+ * Must run inside enqueueOffscreenOp.
  * @returns {Promise<void>}
  */
 async function ensureOffscreenDocument() {
@@ -246,36 +300,83 @@ async function ensureOffscreenDocument() {
     return;
   }
 
-  if (!offscreenSetupPromise) {
-    offscreenSetupPromise = chrome.offscreen
-      .createDocument({
-        url: OFFSCREEN_DOCUMENT_PATH,
-        reasons: ['BLOBS'],
-        justification: 'Assemble non-DRM HLS segments into a downloadable Blob URL.'
-      })
-      .finally(() => {
-        offscreenSetupPromise = null;
-      });
+  await chrome.offscreen.createDocument({
+    url: OFFSCREEN_DOCUMENT_PATH,
+    reasons: ['BLOBS'],
+    justification: 'Assemble non-DRM HLS segments into a downloadable Blob URL.'
+  });
+}
+
+/**
+ * Closes the offscreen document when no builds or active Blob downloads remain.
+ * Must run inside enqueueOffscreenOp.
+ * @returns {Promise<void>}
+ */
+async function maybeCloseOffscreenDocument() {
+  if (activeOffscreenBuilds > 0) {
+    return;
   }
-  await offscreenSetupPromise;
+  const allSession = await chrome.storage.session.get(null);
+  const hasPendingBlobs = Object.keys(allSession).some((key) =>
+    key.startsWith(STORAGE_KEYS.DOWNLOAD_BLOB_PREFIX)
+  );
+  if (hasPendingBlobs) {
+    return;
+  }
+
+  const existingContexts = await chrome.runtime.getContexts({
+    contextTypes: ['OFFSCREEN_DOCUMENT'],
+    documentUrls: [chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH)]
+  });
+  if (existingContexts.length > 0) {
+    await chrome.offscreen.closeDocument();
+  }
+}
+
+/**
+ * Revokes a Blob URL inside the offscreen document and closes it if idle.
+ * @param {string} blobUrl
+ * @returns {Promise<void>}
+ */
+async function revokeOffscreenBlob(blobUrl) {
+  if (!blobUrl) {
+    return;
+  }
+  await chrome.runtime.sendMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_REVOKE_BLOB,
+    blobUrl
+  }).catch(() => {
+    // Offscreen document may already be closed
+  });
+  await enqueueOffscreenOp(() => maybeCloseOffscreenDocument()).catch(() => {});
+}
+
+/**
+ * Removes persisted download Blob mapping and revokes its offscreen Blob URL.
+ * @param {number} downloadId
+ * @param {string} [knownBlobUrl='']
+ * @returns {Promise<void>}
+ */
+async function cleanupDownloadBlob(downloadId, knownBlobUrl = '') {
+  const key = downloadBlobKey(downloadId);
+  let blobUrl = knownBlobUrl;
+  if (!blobUrl) {
+    const stored = await chrome.storage.session.get(key);
+    blobUrl = typeof stored[key] === 'string' ? stored[key] : '';
+  }
+  await chrome.storage.session.remove(key);
+  if (blobUrl) {
+    await revokeOffscreenBlob(blobUrl);
+  }
 }
 
 chrome.downloads.onChanged.addListener((delta) => {
-  if (!downloadBlobMap.has(delta.id)) {
+  const state = delta.state && delta.state.current;
+  if (state !== 'complete' && state !== 'interrupted') {
     return;
   }
-  const state = delta.state && delta.state.current;
-  if (state === 'complete' || state === 'interrupted') {
-    const blobUrl = downloadBlobMap.get(delta.id);
-    downloadBlobMap.delete(delta.id);
-    chrome.runtime.sendMessage({
-      target: 'offscreen',
-      type: MESSAGE_TYPES.OFFSCREEN_REVOKE_BLOB,
-      blobUrl
-    }).catch(() => {
-      // Offscreen document may already be closed
-    });
-  }
+  cleanupDownloadBlob(delta.id).catch(() => {});
 });
 
 /**
@@ -285,6 +386,9 @@ chrome.downloads.onChanged.addListener((delta) => {
  * @returns {Promise<object>}
  */
 async function collectMediaForTab(tabId, tabUrl) {
+  if (typeof tabId !== 'number' || tabId < 0) {
+    throw new Error('NO_ACTIVE_TAB');
+  }
   if (!isHttpUrl(tabUrl)) {
     throw new Error('RESTRICTED_PAGE');
   }
@@ -299,11 +403,6 @@ async function collectMediaForTab(tabId, tabUrl) {
   };
 
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['src/content/dom_scanner.js']
-    });
-
     const scanConfig = {
       minImageDimensionPx: LIMITS.MIN_IMAGE_DIMENSION_PX,
       previewMaxWidthPx: LIMITS.PREVIEW_MAX_WIDTH_PX,
@@ -317,11 +416,27 @@ async function collectMediaForTab(tabId, tabUrl) {
       directExtensions: [...VIDEO_EXTENSIONS, ...IMAGE_EXTENSIONS, ...AUDIO_EXTENSIONS]
     };
 
-    const execResults = await chrome.scripting.executeScript({
+    const runScan = (cfg) => (
+      typeof window.__mediaHarvestScan === 'function' ? window.__mediaHarvestScan(cfg) : null
+    );
+
+    let execResults = await chrome.scripting.executeScript({
       target: { tabId },
-      func: (cfg) => (typeof window.__mediaHarvestScan === 'function' ? window.__mediaHarvestScan(cfg) : null),
+      func: runScan,
       args: [scanConfig]
     });
+
+    if (!execResults || !execResults[0] || !execResults[0].result) {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['src/content/dom_scanner.js']
+      });
+      execResults = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: runScan,
+        args: [scanConfig]
+      });
+    }
 
     if (execResults && execResults[0] && execResults[0].result) {
       domResult = execResults[0].result;
@@ -386,6 +501,9 @@ async function fetchPlaylistText(url) {
  * @returns {Promise<object>}
  */
 async function inspectHlsStream(url) {
+  if (!isHttpUrl(url)) {
+    throw new Error('INVALID_URL');
+  }
   const text = await fetchPlaylistText(url);
   const parsed = parseHlsPlaylist(text, url);
 
@@ -459,43 +577,76 @@ async function handleTweetVideoDownload(tabId, payload) {
 
 /**
  * Starts a download either directly or via HLS offscreen assembly.
- * @param {{ url: string, playlistUrl?: string, isStream?: boolean, filename: string, saveAs?: boolean }} payload
+ * @param {{ url: string, playlistUrl?: string, isStream?: boolean, filename?: string, saveAs?: boolean }} payload
  * @returns {Promise<{ downloadId: number }>}
  */
 async function handleDownloadMedia(payload) {
+  if (!payload || typeof payload !== 'object' || !isHttpUrl(payload.url)) {
+    throw new Error('INVALID_URL');
+  }
+
+  const rawStem = typeof payload.filename === 'string' && payload.filename
+    ? payload.filename.replace(/\.[^.]+$/, '')
+    : deriveFilenameStem(payload.url, '');
+
   if (!payload.isStream) {
+    const classified = classifyMedia(payload.url);
+    const fallbackExt = classified ? classified.ext : DEFAULT_FILENAMES.FALLBACK_EXT;
+    const rawName = typeof payload.filename === 'string' ? payload.filename : '';
+    const dotIdx = rawName.lastIndexOf('.');
+    const providedExt = dotIdx > 0 && dotIdx < rawName.length - 1 ? rawName.slice(dotIdx + 1) : '';
+    const directFilename = sanitizeFilename(rawStem, providedExt || fallbackExt);
     const downloadId = await chrome.downloads.download({
       url: payload.url,
-      filename: payload.filename,
+      filename: directFilename,
       saveAs: Boolean(payload.saveAs)
     });
     return { downloadId };
   }
 
-  await ensureOffscreenDocument();
   const targetPlaylist = payload.playlistUrl || payload.url;
-  const result = await chrome.runtime.sendMessage({
-    target: 'offscreen',
-    type: MESSAGE_TYPES.OFFSCREEN_BUILD_HLS_BLOB,
-    playlistUrl: targetPlaylist,
-    originalUrl: payload.url
-  });
-
-  if (!result || !result.ok) {
-    throw new Error((result && result.error) || 'HLS_ERROR');
+  if (!isHttpUrl(targetPlaylist)) {
+    throw new Error('INVALID_URL');
   }
 
-  const finalFilename = sanitizeFilename(
-    payload.filename.replace(/\.[^.]+$/, ''),
-    result.outputExtension
-  );
-  const downloadId = await chrome.downloads.download({
-    url: result.blobUrl,
-    filename: finalFilename,
-    saveAs: Boolean(payload.saveAs)
-  });
-  downloadBlobMap.set(downloadId, result.blobUrl);
-  return { downloadId };
+  activeOffscreenBuilds += 1;
+  let blobUrl = '';
+  try {
+    await enqueueOffscreenOp(() => ensureOffscreenDocument());
+    const result = await chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_BUILD_HLS_BLOB,
+      playlistUrl: targetPlaylist,
+      originalUrl: payload.url
+    });
+
+    if (!result || !result.ok || !result.blobUrl) {
+      throw new Error((result && result.error) || 'HLS_ERROR');
+    }
+
+    blobUrl = result.blobUrl;
+    const finalFilename = sanitizeFilename(rawStem, result.outputExtension);
+    const downloadId = await chrome.downloads.download({
+      url: blobUrl,
+      filename: finalFilename,
+      saveAs: Boolean(payload.saveAs)
+    });
+
+    await chrome.storage.session.set({ [downloadBlobKey(downloadId)]: blobUrl });
+    const [dlItem] = await chrome.downloads.search({ id: downloadId });
+    if (dlItem && dlItem.state !== 'in_progress') {
+      await cleanupDownloadBlob(downloadId, blobUrl);
+    }
+    return { downloadId };
+  } catch (err) {
+    if (blobUrl) {
+      await revokeOffscreenBlob(blobUrl);
+    }
+    throw err;
+  } finally {
+    activeOffscreenBuilds -= 1;
+    enqueueOffscreenOp(() => maybeCloseOffscreenDocument()).catch(() => {});
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -511,6 +662,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === MESSAGE_TYPES.CLEAR_MEDIA_FOR_TAB) {
+    if (typeof message.tabId !== 'number' || message.tabId < 0) {
+      sendResponse({ ok: false, error: 'NO_ACTIVE_TAB' });
+      return false;
+    }
     clearTabMedia(message.tabId)
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));

@@ -19,9 +19,11 @@ import {
   DEFAULT_FILENAMES,
   IMAGE_EXTENSIONS,
   LIMITS,
+  MEDIA_SOURCES,
   MEDIA_TYPES,
   MIME_EXTENSION_MAP,
   MIME_PREFIX_MAP,
+  NON_MEDIA_MIME_TYPES,
   SEGMENT_EXTENSIONS,
   STREAM_EXTENSIONS,
   STREAM_MIME_TYPES,
@@ -44,6 +46,8 @@ const EXTENSION_LOOKUP = new Map(
 
 const SEGMENT_SET = new Set(SEGMENT_EXTENSIONS);
 const STREAM_MIME_SET = new Set(STREAM_MIME_TYPES);
+const NON_MEDIA_MIME_SET = new Set(NON_MEDIA_MIME_TYPES);
+const STREAM_EXT_SET = new Set(STREAM_EXTENSIONS);
 
 /**
  * Extracts a lowercase file extension from a URL pathname, ignoring query params.
@@ -110,6 +114,14 @@ export function classifyMedia(rawUrl, mimeHeader = '') {
   }
 
   const mime = normalizeMimeType(mimeHeader);
+  if (mime) {
+    if (NON_MEDIA_MIME_SET.has(mime)) {
+      return null;
+    }
+    if (mime === 'text/plain' && !STREAM_EXT_SET.has(ext)) {
+      return null;
+    }
+  }
   if (mime && STREAM_MIME_SET.has(mime)) {
     return {
       type: MEDIA_TYPES.STREAM,
@@ -215,9 +227,18 @@ export function deduplicateMedia(items) {
       byUrl.set(item.url, { ...item });
       continue;
     }
+    const keepNetworkStream = existing.source === MEDIA_SOURCES.NETWORK
+      && existing.isStream
+      && item.source === MEDIA_SOURCES.DOM
+      && !item.isStream;
     byUrl.set(item.url, {
       ...existing,
       ...item,
+      type: keepNetworkStream ? existing.type : (item.type || existing.type),
+      ext: keepNetworkStream ? existing.ext : (item.ext || existing.ext),
+      isStream: keepNetworkStream ? existing.isStream : Boolean(item.isStream || existing.isStream),
+      source: existing.source === MEDIA_SOURCES.NETWORK ? MEDIA_SOURCES.NETWORK : item.source,
+      mimeType: item.mimeType || existing.mimeType || '',
       width: item.width || existing.width || 0,
       height: item.height || existing.height || 0,
       sizeBytes: item.sizeBytes || existing.sizeBytes || 0,
