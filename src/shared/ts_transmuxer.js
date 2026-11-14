@@ -1,0 +1,62 @@
+/*
+ * Copyright 2026 Julien Bombled
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * Transmuxes MPEG-TS segments into a single fragmented MP4 byte buffer.
+ * Accepts an optional Transmuxer constructor for testability; defaults to global muxjs.
+ * @param {Array<ArrayBuffer | Uint8Array>} tsSegments
+ * @param {new (opts?: object) => object} [TransmuxerCtor]
+ * @returns {Uint8Array}
+ */
+export function transmuxTsSegmentsToMp4(tsSegments, TransmuxerCtor) {
+  const Ctor = TransmuxerCtor || (globalThis.muxjs && globalThis.muxjs.Transmuxer);
+  if (typeof Ctor !== 'function') {
+    throw new Error('TRANSMUXER_UNAVAILABLE');
+  }
+
+  const transmuxer = new Ctor({ keepOriginalTimestamps: false });
+  const parts = [];
+  let wroteInitSegment = false;
+
+  transmuxer.on('data', (segment) => {
+    if (!wroteInitSegment && segment.initSegment && segment.initSegment.byteLength > 0) {
+      parts.push(new Uint8Array(segment.initSegment));
+      wroteInitSegment = true;
+    }
+    if (segment.data && segment.data.byteLength > 0) {
+      parts.push(new Uint8Array(segment.data));
+    }
+  });
+
+  for (const chunk of tsSegments) {
+    const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+    transmuxer.push(bytes);
+  }
+  transmuxer.flush();
+
+  if (parts.length === 0) {
+    throw new Error('TRANSMUX_EMPTY');
+  }
+
+  const totalBytes = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const out = new Uint8Array(totalBytes);
+  let cursor = 0;
+  for (const part of parts) {
+    out.set(part, cursor);
+    cursor += part.byteLength;
+  }
+  return out;
+}

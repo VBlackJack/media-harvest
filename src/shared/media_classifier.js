@@ -25,7 +25,8 @@ import {
   SEGMENT_EXTENSIONS,
   STREAM_EXTENSIONS,
   STREAM_MIME_TYPES,
-  VIDEO_EXTENSIONS
+  VIDEO_EXTENSIONS,
+  X_INTEGRATION
 } from '../config/constants.js';
 
 const EXTENSION_TYPE_TABLE = [
@@ -161,12 +162,27 @@ export function sanitizeFilename(rawName, fallbackExt = DEFAULT_FILENAMES.FALLBA
 }
 
 /**
- * Derives a readable filename stem from a URL or page title.
+ * Derives a readable filename stem from a URL, page context (e.g. X status), or page title.
  * @param {string} rawUrl
  * @param {string} [pageTitle='']
+ * @param {string} [pageUrl='']
  * @returns {string}
  */
-export function deriveFilenameStem(rawUrl, pageTitle = '') {
+export function deriveFilenameStem(rawUrl, pageTitle = '', pageUrl = '') {
+  if (pageUrl) {
+    try {
+      const parsedPage = new URL(pageUrl);
+      if (X_INTEGRATION.HOSTNAMES.includes(parsedPage.hostname.toLowerCase())) {
+        const tweetMatch = parsedPage.pathname.match(X_INTEGRATION.TWEET_PATH_PATTERN);
+        if (tweetMatch) {
+          return `${tweetMatch[1]}_${tweetMatch[2]}`;
+        }
+      }
+    } catch {
+      // Ignore malformed pageUrl
+    }
+  }
+
   try {
     const parsed = new URL(rawUrl);
     const segments = parsed.pathname.split('/').filter(Boolean);

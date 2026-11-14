@@ -134,11 +134,24 @@ export const MESSAGE_TYPES = Object.freeze({
   CLEAR_MEDIA_FOR_TAB: 'CLEAR_MEDIA_FOR_TAB',
   DOWNLOAD_MEDIA: 'DOWNLOAD_MEDIA',
   DOWNLOAD_BATCH: 'DOWNLOAD_BATCH',
+  DOWNLOAD_TWEET_VIDEO: 'DOWNLOAD_TWEET_VIDEO',
   INSPECT_HLS: 'INSPECT_HLS',
   OFFSCREEN_BUILD_HLS_BLOB: 'OFFSCREEN_BUILD_HLS_BLOB',
   OFFSCREEN_REVOKE_BLOB: 'OFFSCREEN_REVOKE_BLOB',
   DOWNLOAD_PROGRESS: 'DOWNLOAD_PROGRESS',
   MEDIA_UPDATED: 'MEDIA_UPDATED'
+});
+
+export const BADGE_CONFIG = Object.freeze({
+  BACKGROUND_COLOR: '#0284c7'
+});
+
+export const X_INTEGRATION = Object.freeze({
+  HOSTNAMES: ['x.com', 'twitter.com', 'www.x.com', 'www.twitter.com'],
+  TWEET_PATH_PATTERN: /^\/([A-Za-z0-9_]+)\/status\/(\d+)/,
+  DEBOUNCE_MS: 300,
+  BUTTON_ATTR: 'data-media-harvest-attached',
+  STATUS_RESET_MS: 3000
 });
 
 export const DEFAULT_FILENAMES = Object.freeze({

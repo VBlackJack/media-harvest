@@ -15,7 +15,9 @@
  */
 
 import { DEFAULT_FILENAMES, LIMITS, MESSAGE_TYPES } from '../config/constants.js';
+import { mergeFmp4VideoAndAudio } from '../shared/fmp4_muxer.js';
 import { parseHlsPlaylist, selectBestVariant } from '../shared/hls_parser.js';
+import { transmuxTsSegmentsToMp4 } from '../shared/ts_transmuxer.js';
 
 const activeBlobUrls = new Set();
 
@@ -82,67 +84,126 @@ function notifyProgress(itemUrl, done, total) {
 }
 
 /**
- * Fetches an HLS playlist (resolving master playlists if needed) and assembles a Blob URL.
+ * Resolves a media playlist URL (if master) and optional matching audio track URL.
+ * @param {string} masterOrMediaUrl
+ * @param {string} preferredVariantUrl
+ * @returns {Promise<{ mediaPlaylist: object, audioPlaylist: object | null }>}
+ */
+async function resolvePlaylists(masterOrMediaUrl, preferredVariantUrl) {
+  const rootText = await fetchWithTimeout(masterOrMediaUrl, 'text');
+  const rootParsed = parseHlsPlaylist(rootText, masterOrMediaUrl);
+  if (rootParsed.encrypted) {
+    throw new Error('ENCRYPTED_STREAM');
+  }
+
+  if (!rootParsed.isMaster) {
+    return { mediaPlaylist: rootParsed, audioPlaylist: null };
+  }
+
+  const chosenVariant = rootParsed.variants.find((v) => v.url === preferredVariantUrl)
+    || selectBestVariant(rootParsed.variants);
+  if (!chosenVariant) {
+    throw new Error('EMPTY_PLAYLIST');
+  }
+
+  const videoText = await fetchWithTimeout(chosenVariant.url, 'text');
+  const videoParsed = parseHlsPlaylist(videoText, chosenVariant.url);
+  if (videoParsed.encrypted) {
+    throw new Error('ENCRYPTED_STREAM');
+  }
+
+  let audioParsed = null;
+  const matchingAudio = rootParsed.audioTracks.find((a) => a.groupId === chosenVariant.audioGroup)
+    || rootParsed.audioTracks[0];
+
+  if (matchingAudio && matchingAudio.url && matchingAudio.url !== chosenVariant.url) {
+    const audioText = await fetchWithTimeout(matchingAudio.url, 'text');
+    const candidate = parseHlsPlaylist(audioText, matchingAudio.url);
+    if (!candidate.encrypted && candidate.segments.length > 0) {
+      audioParsed = candidate;
+    }
+  }
+
+  return { mediaPlaylist: videoParsed, audioPlaylist: audioParsed };
+}
+
+/**
+ * Fetches an HLS playlist (resolving master + separate audio if present) and builds a Blob URL.
  * Refuses encrypted/DRM-protected streams explicitly.
  * @param {string} playlistUrl
  * @param {string} originalUrl
  * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number }>}
  */
 async function buildHlsBlob(playlistUrl, originalUrl) {
-  let targetUrl = playlistUrl;
-  let playlistText = await fetchWithTimeout(targetUrl, 'text');
-  let parsed = parseHlsPlaylist(playlistText, targetUrl);
-
-  if (parsed.encrypted) {
-    throw new Error('ENCRYPTED_STREAM');
-  }
-
-  if (parsed.isMaster) {
-    const best = selectBestVariant(parsed.variants);
-    if (!best) {
-      throw new Error('EMPTY_PLAYLIST');
-    }
-    targetUrl = best.url;
-    playlistText = await fetchWithTimeout(targetUrl, 'text');
-    parsed = parseHlsPlaylist(playlistText, targetUrl);
-    if (parsed.encrypted) {
-      throw new Error('ENCRYPTED_STREAM');
-    }
-  }
-
-  if (parsed.segments.length === 0) {
+  const { mediaPlaylist, audioPlaylist } = await resolvePlaylists(originalUrl, playlistUrl);
+  if (mediaPlaylist.segments.length === 0) {
     throw new Error('EMPTY_PLAYLIST');
   }
 
-  const urlsToFetch = parsed.initSegmentUrl
-    ? [parsed.initSegmentUrl, ...parsed.segments.map((s) => s.url)]
-    : parsed.segments.map((s) => s.url);
+  const videoUrls = mediaPlaylist.initSegmentUrl
+    ? [mediaPlaylist.initSegmentUrl, ...mediaPlaylist.segments.map((s) => s.url)]
+    : mediaPlaylist.segments.map((s) => s.url);
+
+  const audioUrls = audioPlaylist
+    ? (audioPlaylist.initSegmentUrl
+      ? [audioPlaylist.initSegmentUrl, ...audioPlaylist.segments.map((s) => s.url)]
+      : audioPlaylist.segments.map((s) => s.url))
+    : [];
 
   let completed = 0;
-  const total = urlsToFetch.length;
+  const total = videoUrls.length + audioUrls.length;
   notifyProgress(originalUrl, completed, total);
 
-  const buffers = await mapWithConcurrency(
-    urlsToFetch,
-    LIMITS.HLS_FETCH_CONCURRENCY,
-    async (segUrl) => {
-      const buf = await fetchWithTimeout(segUrl, 'arrayBuffer');
-      completed += 1;
-      notifyProgress(originalUrl, completed, total);
-      return buf;
-    }
-  );
+  const fetchTracked = async (url) => {
+    const buf = await fetchWithTimeout(url, 'arrayBuffer');
+    completed += 1;
+    notifyProgress(originalUrl, completed, total);
+    return buf;
+  };
 
-  const mimeType = parsed.outputExtension === DEFAULT_FILENAMES.HLS_FMP4_EXT
-    ? 'video/mp4'
-    : 'video/mp2t';
-  const blob = new Blob(buffers, { type: mimeType });
+  const videoBuffers = await mapWithConcurrency(videoUrls, LIMITS.HLS_FETCH_CONCURRENCY, fetchTracked);
+  const audioBuffers = audioUrls.length > 0
+    ? await mapWithConcurrency(audioUrls, LIMITS.HLS_FETCH_CONCURRENCY, fetchTracked)
+    : [];
+
+  let outputParts = videoBuffers;
+  let outputExtension = mediaPlaylist.outputExtension;
+  let mimeType = outputExtension === DEFAULT_FILENAMES.HLS_FMP4_EXT ? 'video/mp4' : 'video/mp2t';
+
+  if (
+    audioPlaylist &&
+    mediaPlaylist.initSegmentUrl &&
+    audioPlaylist.initSegmentUrl &&
+    videoBuffers.length > 1 &&
+    audioBuffers.length > 1
+  ) {
+    const mergedMp4 = mergeFmp4VideoAndAudio(
+      videoBuffers[0],
+      videoBuffers.slice(1),
+      audioBuffers[0],
+      audioBuffers.slice(1)
+    );
+    outputParts = [mergedMp4];
+    outputExtension = DEFAULT_FILENAMES.HLS_FMP4_EXT;
+    mimeType = 'video/mp4';
+  } else if (!mediaPlaylist.initSegmentUrl) {
+    try {
+      const mp4Buffer = transmuxTsSegmentsToMp4(videoBuffers);
+      outputParts = [mp4Buffer];
+      outputExtension = DEFAULT_FILENAMES.HLS_FMP4_EXT;
+      mimeType = 'video/mp4';
+    } catch {
+      // Fall back to raw .ts segments if codec is unsupported by mux.js
+    }
+  }
+
+  const blob = new Blob(outputParts, { type: mimeType });
   const blobUrl = URL.createObjectURL(blob);
   activeBlobUrls.add(blobUrl);
 
   return {
     blobUrl,
-    outputExtension: parsed.outputExtension,
+    outputExtension,
     byteLength: blob.size
   };
 }

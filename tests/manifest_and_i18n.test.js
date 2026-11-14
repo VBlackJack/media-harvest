@@ -26,6 +26,13 @@ test('manifest.json references existing files and valid MV3 structure', () => {
   assert.equal(manifest.manifest_version, 3);
   assert.ok(fs.existsSync(path.join(ROOT, manifest.background.service_worker)));
   assert.ok(fs.existsSync(path.join(ROOT, manifest.action.default_popup)));
+  assert.ok(fs.existsSync(path.join(ROOT, 'src/vendor/mux-mp4.min.js')));
+
+  for (const cs of manifest.content_scripts || []) {
+    for (const file of [...(cs.js || []), ...(cs.css || [])]) {
+      assert.ok(fs.existsSync(path.join(ROOT, file)), `Missing content script file: ${file}`);
+    }
+  }
 
   for (const iconPath of Object.values(manifest.icons)) {
     const absIcon = path.join(ROOT, iconPath);

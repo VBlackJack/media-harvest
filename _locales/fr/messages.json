@@ -168,5 +168,29 @@
   "popup_status_reloading_tab": {
     "message": "Rechargement de la page pour capter les flux...",
     "description": "Message pendant le rechargement de l'onglet."
+  },
+  "popup_status_hls_muxing": {
+    "message": "Fusion de la video et de l'audio...",
+    "description": "Progression pendant le muxage MP4."
+  },
+  "x_btn_download": {
+    "message": "Telecharger la video",
+    "description": "Bouton de telechargement integre aux posts X."
+  },
+  "x_btn_downloading": {
+    "message": "Telechargement...",
+    "description": "Bouton integre pendant le telechargement."
+  },
+  "x_btn_done": {
+    "message": "Telecharge",
+    "description": "Confirmation sur le bouton integre."
+  },
+  "x_btn_play_first": {
+    "message": "Lancer la lecture d'abord",
+    "description": "Indication si le flux video X n'a pas encore ete charge."
+  },
+  "x_btn_error": {
+    "message": "Erreur",
+    "description": "Libelle d'erreur sur le bouton integre."
   }
 }

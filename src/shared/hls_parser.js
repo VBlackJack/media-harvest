@@ -160,6 +160,9 @@ export function parseHlsPlaylist(text, baseUrl) {
   variants.sort((a, b) => (b.width * b.height - a.width * a.height) || (b.bandwidth - a.bandwidth));
 
   const isMaster = variants.length > 0;
+  const totalDurationSec = Math.round(
+    segments.reduce((acc, seg) => acc + (seg.duration || 0), 0)
+  );
   const outputExtension = initSegmentUrl
     ? DEFAULT_FILENAMES.HLS_FMP4_EXT
     : DEFAULT_FILENAMES.HLS_TS_EXT;
@@ -172,8 +175,22 @@ export function parseHlsPlaylist(text, baseUrl) {
     audioTracks,
     initSegmentUrl,
     segments,
+    totalDurationSec,
     outputExtension
   };
+}
+
+/**
+ * Estimates stream byte size from declared variant bandwidth (bits/s) and duration.
+ * @param {number} bandwidthBps
+ * @param {number} durationSec
+ * @returns {number}
+ */
+export function estimateHlsBytes(bandwidthBps, durationSec) {
+  if (!bandwidthBps || bandwidthBps <= 0 || !durationSec || durationSec <= 0) {
+    return 0;
+  }
+  return Math.round((bandwidthBps / 8) * durationSec);
 }
 
 /**

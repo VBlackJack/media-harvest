@@ -17,6 +17,7 @@
 import { LIMITS, MEDIA_SOURCES, MEDIA_TYPES, MESSAGE_TYPES } from '../config/constants.js';
 import { parseHlsPlaylist, selectBestVariant } from '../shared/hls_parser.js';
 import { applyTranslations, t } from '../shared/i18n.js';
+import { transmuxTsSegmentsToMp4 } from '../shared/ts_transmuxer.js';
 
 const BYTES_PER_KB = 1024;
 const BYTES_PER_MB = 1024 * 1024;
@@ -258,14 +259,15 @@ async function buildHlsPreviewUrl(playlistUrl) {
     }
   }
 
-  if (!parsed.initSegmentUrl || parsed.segments.length === 0) {
+  if (parsed.segments.length === 0) {
     throw new Error('PREVIEW_UNAVAILABLE');
   }
 
-  const clipUrls = [
-    parsed.initSegmentUrl,
-    ...parsed.segments.slice(0, LIMITS.PREVIEW_HLS_SEGMENTS).map((s) => s.url)
-  ];
+  const leadingSegments = parsed.segments.slice(0, LIMITS.PREVIEW_HLS_SEGMENTS).map((s) => s.url);
+  const clipUrls = parsed.initSegmentUrl
+    ? [parsed.initSegmentUrl, ...leadingSegments]
+    : leadingSegments;
+
   const buffers = await Promise.all(
     clipUrls.map(async (u) => {
       const segResp = await fetch(u);
@@ -276,7 +278,11 @@ async function buildHlsPreviewUrl(playlistUrl) {
     })
   );
 
-  const blob = new Blob(buffers, { type: 'video/mp4' });
+  const outputBuffers = parsed.initSegmentUrl
+    ? buffers
+    : [transmuxTsSegmentsToMp4(buffers)];
+
+  const blob = new Blob(outputBuffers, { type: 'video/mp4' });
   const blobUrl = URL.createObjectURL(blob);
   state.previewBlobUrls.add(blobUrl);
   return blobUrl;
@@ -429,33 +435,22 @@ async function hydrateHlsVariants(item, selectEl, downloadBtn, noticeEl) {
       const option = document.createElement('option');
       option.value = variant.url;
       const bitrateKbps = variant.bandwidth ? `${Math.round(variant.bandwidth / BITS_PER_KBPS)} kbps` : '';
-      option.textContent = [variant.resolution, bitrateKbps].filter(Boolean).join(' - ') || t('popup_quality_best');
+      const estSize = variant.estimatedBytes ? `(~${formatBytes(variant.estimatedBytes)})` : '';
+      option.textContent = [variant.resolution, bitrateKbps, estSize].filter(Boolean).join(' ')
+        || t('popup_quality_best');
       selectEl.appendChild(option);
     }
     selectEl.classList.remove('hidden');
   }
 
+  if (meta.totalDurationSec && !item.duration) {
+    item.duration = meta.totalDurationSec;
+  }
+
   if (Array.isArray(meta.audioTracks) && meta.audioTracks.length > 0) {
     noticeEl.className = 'progress-line';
-    noticeEl.textContent = t('popup_status_hls_separate_audio');
-    noticeEl.classList.remove('hidden');
-
-    const firstAudio = meta.audioTracks[0];
-    if (firstAudio && !state.items.some((existing) => existing.url === firstAudio.url)) {
-      state.items.push({
-        url: firstAudio.url,
-        type: MEDIA_TYPES.AUDIO,
-        ext: 'm3u8',
-        isStream: true,
-        source: MEDIA_SOURCES.NETWORK,
-        width: 0,
-        height: 0,
-        sizeBytes: 0,
-        suggestedFilename: `${item.suggestedFilename.replace(/\.[^.]+$/, '')}_audio.ts`
-      });
-      updateCounts();
-      renderList();
-    }
+    noticeEl.textContent = t('popup_status_hls_muxing');
+    noticeEl.classList.add('hidden');
   }
 }
 

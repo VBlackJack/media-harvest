@@ -16,6 +16,8 @@
 
 import {
   AUDIO_EXTENSIONS,
+  BADGE_CONFIG,
+  DEFAULT_FILENAMES,
   IMAGE_EXTENSIONS,
   LIMITS,
   MEDIA_SOURCES,
@@ -25,7 +27,7 @@ import {
   STORAGE_KEYS,
   VIDEO_EXTENSIONS
 } from '../config/constants.js';
-import { parseHlsPlaylist } from '../shared/hls_parser.js';
+import { estimateHlsBytes, parseHlsPlaylist } from '../shared/hls_parser.js';
 import {
   classifyMedia,
   deduplicateMedia,
@@ -33,9 +35,10 @@ import {
   isHttpUrl,
   sanitizeFilename
 } from '../shared/media_classifier.js';
-import { attachVideoPreviews } from '../shared/preview_matcher.js';
+import { attachVideoPreviews, extractMediaId } from '../shared/preview_matcher.js';
 
 const tabWriteQueues = new Map();
+const tabRouteKeys = new Map();
 const downloadBlobMap = new Map();
 let offscreenSetupPromise = null;
 
@@ -92,6 +95,55 @@ function getHeader(headers, headerName) {
 }
 
 /**
+ * Updates the toolbar badge with the number of detected video/stream items for a tab.
+ * @param {number} tabId
+ * @param {Array<object>} items
+ */
+async function updateTabBadge(tabId, items) {
+  const videoCount = items.filter(
+    (item) => item.type === MEDIA_TYPES.VIDEO || item.type === MEDIA_TYPES.STREAM
+  ).length;
+  try {
+    await chrome.action.setBadgeBackgroundColor({
+      color: BADGE_CONFIG.BACKGROUND_COLOR,
+      tabId
+    });
+    await chrome.action.setBadgeText({
+      text: videoCount > 0 ? String(videoCount) : '',
+      tabId
+    });
+  } catch {
+    // Tab may have been closed before badge update completed
+  }
+}
+
+/**
+ * Clears all captured network media and resets the badge for a tab.
+ * @param {number} tabId
+ * @returns {Promise<void>}
+ */
+function clearTabMedia(tabId) {
+  return enqueueTabWrite(tabId, async () => {
+    await chrome.storage.session.remove(tabStorageKey(tabId));
+    await updateTabBadge(tabId, []);
+  });
+}
+
+/**
+ * Extracts origin + pathname so query/hash changes do not purge active captures.
+ * @param {string} rawUrl
+ * @returns {string}
+ */
+function toRouteKey(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return rawUrl || '';
+  }
+}
+
+/**
  * Records a captured network media item into session storage for its tab.
  * @param {number} tabId
  * @param {object} entry
@@ -103,6 +155,7 @@ function recordNetworkMedia(tabId, entry) {
     filtered.unshift(entry);
     const capped = filtered.slice(0, LIMITS.MAX_CAPTURED_PER_TAB);
     await chrome.storage.session.set({ [tabStorageKey(tabId)]: capped });
+    await updateTabBadge(tabId, capped);
     chrome.runtime.sendMessage({
       type: MESSAGE_TYPES.MEDIA_UPDATED,
       tabId
@@ -151,7 +204,30 @@ chrome.webRequest.onHeadersReceived.addListener(
   ['responseHeaders']
 );
 
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    if (details.tabId >= 0 && details.type === 'main_frame') {
+      tabRouteKeys.set(details.tabId, toRouteKey(details.url));
+      clearTabMedia(details.tabId);
+    }
+  },
+  { urls: ['<all_urls>'], types: ['main_frame'] }
+);
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!changeInfo.url) {
+    return;
+  }
+  const nextRoute = toRouteKey(changeInfo.url);
+  const prevRoute = tabRouteKeys.get(tabId);
+  tabRouteKeys.set(tabId, nextRoute);
+  if (prevRoute && prevRoute !== nextRoute) {
+    clearTabMedia(tabId);
+  }
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
+  tabRouteKeys.delete(tabId);
   enqueueTabWrite(tabId, async () => {
     await chrome.storage.session.remove(tabStorageKey(tabId));
   });
@@ -271,10 +347,12 @@ async function collectMediaForTab(tabId, tabUrl) {
   ).map((item) => ({
     ...item,
     suggestedFilename: sanitizeFilename(
-      deriveFilenameStem(item.url, item.title || domResult.pageTitle),
+      deriveFilenameStem(item.url, item.title || domResult.pageTitle, tabUrl),
       item.ext
     )
   }));
+
+  await updateTabBadge(tabId, merged);
 
   return {
     pageTitle: domResult.pageTitle,
@@ -284,11 +362,11 @@ async function collectMediaForTab(tabId, tabUrl) {
 }
 
 /**
- * Fetches and parses an HLS playlist so the UI can list variants and audio tracks.
+ * Fetches an HLS playlist text with an explicit timeout.
  * @param {string} url
- * @returns {Promise<object>}
+ * @returns {Promise<string>}
  */
-async function inspectHlsStream(url) {
+async function fetchPlaylistText(url) {
   const controller = new AbortController();
   const timerId = setTimeout(() => controller.abort(), LIMITS.FETCH_TIMEOUT_MS);
   try {
@@ -296,11 +374,87 @@ async function inspectHlsStream(url) {
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
-    const text = await response.text();
-    return parseHlsPlaylist(text, url);
+    return await response.text();
   } finally {
     clearTimeout(timerId);
   }
+}
+
+/**
+ * Fetches and parses an HLS playlist so the UI can list variants, duration, and estimated size.
+ * @param {string} url
+ * @returns {Promise<object>}
+ */
+async function inspectHlsStream(url) {
+  const text = await fetchPlaylistText(url);
+  const parsed = parseHlsPlaylist(text, url);
+
+  let durationSec = parsed.totalDurationSec;
+  if (parsed.isMaster && parsed.variants.length > 0 && !parsed.encrypted) {
+    try {
+      const sampleText = await fetchPlaylistText(parsed.variants[0].url);
+      const sampleParsed = parseHlsPlaylist(sampleText, parsed.variants[0].url);
+      durationSec = sampleParsed.totalDurationSec;
+    } catch {
+      // Duration estimation is best-effort
+    }
+  }
+
+  const variantsWithEstimate = parsed.variants.map((variant) => ({
+    ...variant,
+    durationSec,
+    estimatedBytes: estimateHlsBytes(variant.bandwidth, durationSec)
+  }));
+
+  return {
+    ...parsed,
+    totalDurationSec: durationSec,
+    variants: variantsWithEstimate
+  };
+}
+
+/**
+ * Resolves and downloads the video matching an inline X post click.
+ * @param {number} tabId
+ * @param {{ mediaId?: string, directSrc?: string, authorHandle?: string, tweetId?: string }} payload
+ * @returns {Promise<{ downloadId: number }>}
+ */
+async function handleTweetVideoDownload(tabId, payload) {
+  const networkItems = await getTabNetworkMedia(tabId);
+  const videoCandidates = networkItems.filter(
+    (item) => item.type === MEDIA_TYPES.STREAM || item.type === MEDIA_TYPES.VIDEO
+  );
+
+  let chosen = null;
+  if (payload.mediaId) {
+    chosen = videoCandidates.find((item) => extractMediaId(item.url) === payload.mediaId) || null;
+  }
+  if (!chosen && payload.directSrc && isHttpUrl(payload.directSrc)) {
+    chosen = {
+      url: payload.directSrc,
+      isStream: false,
+      ext: DEFAULT_FILENAMES.HLS_FMP4_EXT
+    };
+  }
+  if (!chosen && videoCandidates.length === 1) {
+    chosen = videoCandidates[0];
+  }
+  if (!chosen) {
+    throw new Error('PLAY_FIRST');
+  }
+
+  const stem = payload.authorHandle && payload.tweetId
+    ? `${payload.authorHandle}_${payload.tweetId}`
+    : deriveFilenameStem(chosen.url, '');
+  const filename = sanitizeFilename(stem, chosen.ext || DEFAULT_FILENAMES.HLS_FMP4_EXT);
+
+  return handleDownloadMedia({
+    url: chosen.url,
+    playlistUrl: chosen.url,
+    isStream: Boolean(chosen.isStream),
+    filename,
+    saveAs: false
+  });
 }
 
 /**
@@ -344,7 +498,7 @@ async function handleDownloadMedia(payload) {
   return { downloadId };
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.target === 'offscreen') {
     return false;
   }
@@ -357,9 +511,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === MESSAGE_TYPES.CLEAR_MEDIA_FOR_TAB) {
-    enqueueTabWrite(message.tabId, async () => {
-      await chrome.storage.session.remove(tabStorageKey(message.tabId));
-    })
+    clearTabMedia(message.tabId)
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
@@ -374,6 +526,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === MESSAGE_TYPES.DOWNLOAD_MEDIA) {
     handleDownloadMedia(message.payload)
+      .then((res) => sendResponse({ ok: true, ...res }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.DOWNLOAD_TWEET_VIDEO) {
+    const tabId = sender && sender.tab ? sender.tab.id : -1;
+    if (tabId < 0) {
+      sendResponse({ ok: false, error: 'NO_ACTIVE_TAB' });
+      return false;
+    }
+    handleTweetVideoDownload(tabId, message.payload || {})
       .then((res) => sendResponse({ ok: true, ...res }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;

@@ -168,5 +168,29 @@
   "popup_status_reloading_tab": {
     "message": "Reloading page to capture streams...",
     "description": "Status shown while active tab is reloading."
+  },
+  "popup_status_hls_muxing": {
+    "message": "Merging video and audio tracks...",
+    "description": "Progress text while muxing video and audio into MP4."
+  },
+  "x_btn_download": {
+    "message": "Download video",
+    "description": "Inline download button label on X posts."
+  },
+  "x_btn_downloading": {
+    "message": "Downloading...",
+    "description": "Inline button label while download is in progress."
+  },
+  "x_btn_done": {
+    "message": "Downloaded",
+    "description": "Inline button label after download starts."
+  },
+  "x_btn_play_first": {
+    "message": "Play video first",
+    "description": "Inline button hint when X has not loaded the stream yet."
+  },
+  "x_btn_error": {
+    "message": "Error",
+    "description": "Inline button error label."
   }
 }

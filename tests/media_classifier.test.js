@@ -56,7 +56,15 @@ test('sanitizeFilename strips invalid Windows characters and appends extension o
   assert.equal(sanitizeFilename('   ', 'jpg'), 'media.jpg');
 });
 
-test('deriveFilenameStem uses URL stem when meaningful and falls back to page title', () => {
+test('deriveFilenameStem uses X status handle/id, URL stem, or page title fallback', () => {
+  assert.equal(
+    deriveFilenameStem(
+      'https://video.twimg.com/ext_tw_video/2121651904099078267/pu/pl/cat.m3u8',
+      'PunchingCat on X',
+      'https://x.com/PunchingCat/status/2121651904099078267'
+    ),
+    'PunchingCat_2121651904099078267'
+  );
   assert.equal(deriveFilenameStem('https://example.com/videos/funny_cat.mp4', 'X Post'), 'funny_cat');
   assert.equal(deriveFilenameStem('https://example.com/0123456789abcdef0123456789abcdef.mp4', 'Cat Post'), 'Cat Post');
 });

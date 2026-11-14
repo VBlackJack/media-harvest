@@ -16,7 +16,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseHlsPlaylist, selectBestVariant } from '../src/shared/hls_parser.js';
+import { estimateHlsBytes, parseHlsPlaylist, selectBestVariant } from '../src/shared/hls_parser.js';
 
 test('parseHlsPlaylist parses master playlist variants sorted by resolution and bandwidth', () => {
   const master = [
@@ -54,6 +54,8 @@ test('parseHlsPlaylist detects fMP4 init segment and outputs mp4 extension', () 
   assert.equal(parsed.isMaster, false);
   assert.equal(parsed.initSegmentUrl, 'https://cdn.example.com/hls/720p/init.mp4');
   assert.equal(parsed.segments.length, 2);
+  assert.equal(parsed.totalDurationSec, 6);
+  assert.equal(estimateHlsBytes(2000000, parsed.totalDurationSec), 1500000);
   assert.equal(parsed.outputExtension, 'mp4');
 });
 
