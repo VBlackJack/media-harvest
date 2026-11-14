@@ -28,14 +28,22 @@
       <h1 data-i18n="popup_header_title"></h1>
     </div>
     <div class="topbar-actions">
-      <button id="refreshBtn" class="icon-btn" type="button" data-i18n-title="popup_header_refresh_title">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+      <button id="refreshBtn" class="action-chip" type="button" data-i18n-title="popup_header_refresh_title">
+        <svg class="spin-target" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
           <polyline points="21 3 21 9 15 9"/>
         </svg>
+        <span data-i18n="popup_action_refresh"></span>
+      </button>
+      <button id="reloadTabBtn" class="action-chip" type="button" data-i18n-title="popup_action_reload_tab_title">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="1 4 1 10 7 10"/>
+          <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+        </svg>
+        <span data-i18n="popup_action_reload_tab"></span>
       </button>
       <button id="clearBtn" class="icon-btn" type="button" data-i18n-title="popup_header_clear_title">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="3 6 5 6 21 6"/>
           <path d="M19 6l-1 14H6L5 6"/>
           <path d="M10 11v6"/>

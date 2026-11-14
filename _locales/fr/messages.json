@@ -136,5 +136,37 @@
   "popup_quality_best": {
     "message": "Meilleure disponible",
     "description": "Option de qualite par defaut."
+  },
+  "popup_action_refresh": {
+    "message": "Actualiser",
+    "description": "Bouton pour reanalyser la page active."
+  },
+  "popup_action_reload_tab": {
+    "message": "Recharger",
+    "description": "Bouton pour vider les captures et recharger l'onglet."
+  },
+  "popup_action_reload_tab_title": {
+    "message": "Vider les captures et recharger la page pour capter les flux",
+    "description": "Infobulle du bouton recharger l'onglet."
+  },
+  "popup_action_preview": {
+    "message": "Apercu",
+    "description": "Bouton pour previsualiser une video."
+  },
+  "popup_action_hide_preview": {
+    "message": "Masquer",
+    "description": "Bouton pour masquer l'apercu video."
+  },
+  "popup_preview_loading": {
+    "message": "Chargement de l'apercu video...",
+    "description": "Message pendant le chargement de l'extrait HLS."
+  },
+  "popup_preview_unavailable": {
+    "message": "Apercu video direct indisponible pour ce format ; fiez-vous a la vignette ou telechargez.",
+    "description": "Message si le navigateur ne peut pas lire l'apercu nativement."
+  },
+  "popup_status_reloading_tab": {
+    "message": "Rechargement de la page pour capter les flux...",
+    "description": "Message pendant le rechargement de l'onglet."
   }
 }

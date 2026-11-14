@@ -27,11 +27,40 @@
    * @returns {{ pageTitle: string, pageUrl: string, hasBlobVideo: boolean, items: Array<object> }}
    */
   window.__mediaHarvestScan = function scanPageMedia(config) {
-    const { minImageDimensionPx, mediaTypes, sourceTag, directExtensions } = config;
+    const {
+      minImageDimensionPx,
+      previewMaxWidthPx,
+      previewFrameQuality,
+      mediaTypes,
+      sourceTag,
+      directExtensions
+    } = config;
     const extSet = new Set(directExtensions);
     const seen = new Set();
     const items = [];
+    const videoElements = [];
     let hasBlobVideo = false;
+
+    const captureVideoFrame = (video) => {
+      if (!video.videoWidth || !video.videoHeight || video.readyState < 2) {
+        return '';
+      }
+      try {
+        const targetWidth = Math.min(previewMaxWidthPx, video.videoWidth);
+        const targetHeight = Math.max(1, Math.round((video.videoHeight / video.videoWidth) * targetWidth));
+        const canvas = document.createElement('canvas');
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          return '';
+        }
+        ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+        return canvas.toDataURL('image/jpeg', previewFrameQuality);
+      } catch {
+        return '';
+      }
+    };
 
     const toAbsoluteUrl = (raw) => {
       if (!raw || typeof raw !== 'string') {
@@ -67,6 +96,7 @@
         source: sourceTag,
         width: meta.width || 0,
         height: meta.height || 0,
+        duration: meta.duration || 0,
         title: meta.title || document.title || '',
         poster: meta.poster || ''
       });
@@ -74,6 +104,19 @@
 
     for (const video of document.querySelectorAll('video')) {
       const posterUrl = toAbsoluteUrl(video.getAttribute('poster'));
+      const frameDataUrl = posterUrl ? '' : captureVideoFrame(video);
+      const duration = Number.isFinite(video.duration) ? Math.round(video.duration) : 0;
+      const directSrc = toAbsoluteUrl(video.currentSrc || video.getAttribute('src'));
+
+      videoElements.push({
+        src: directSrc,
+        poster: posterUrl,
+        frameDataUrl,
+        width: video.videoWidth || 0,
+        height: video.videoHeight || 0,
+        duration
+      });
+
       if (posterUrl) {
         addItem(posterUrl, mediaTypes.IMAGE, {
           width: video.videoWidth || 0,
@@ -81,18 +124,19 @@
         });
       }
 
-      const directSrc = toAbsoluteUrl(video.currentSrc || video.getAttribute('src'));
       addItem(directSrc, mediaTypes.VIDEO, {
         width: video.videoWidth || 0,
         height: video.videoHeight || 0,
-        poster: posterUrl
+        poster: posterUrl || frameDataUrl,
+        duration
       });
 
       for (const sourceEl of video.querySelectorAll('source')) {
         addItem(toAbsoluteUrl(sourceEl.getAttribute('src')), mediaTypes.VIDEO, {
           width: video.videoWidth || 0,
           height: video.videoHeight || 0,
-          poster: posterUrl
+          poster: posterUrl || frameDataUrl,
+          duration
         });
       }
     }
@@ -140,6 +184,7 @@
       pageTitle: document.title || '',
       pageUrl: window.location.href,
       hasBlobVideo,
+      videoElements,
       items
     };
   };

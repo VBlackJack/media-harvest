@@ -136,5 +136,37 @@
   "popup_quality_best": {
     "message": "Best available",
     "description": "Default quality option."
+  },
+  "popup_action_refresh": {
+    "message": "Refresh",
+    "description": "Button label to rescan the active page."
+  },
+  "popup_action_reload_tab": {
+    "message": "Reload tab",
+    "description": "Button label to clear captures and reload the active tab."
+  },
+  "popup_action_reload_tab_title": {
+    "message": "Clear captures and reload page to capture streams",
+    "description": "Tooltip for reload tab button."
+  },
+  "popup_action_preview": {
+    "message": "Preview",
+    "description": "Button label to preview a video."
+  },
+  "popup_action_hide_preview": {
+    "message": "Hide",
+    "description": "Button label to hide video preview."
+  },
+  "popup_preview_loading": {
+    "message": "Loading video preview...",
+    "description": "Status shown while loading HLS preview clip."
+  },
+  "popup_preview_unavailable": {
+    "message": "Live video preview unavailable for this format; use thumbnail or download directly.",
+    "description": "Fallback message when browser cannot play preview stream natively."
+  },
+  "popup_status_reloading_tab": {
+    "message": "Reloading page to capture streams...",
+    "description": "Status shown while active tab is reloading."
   }
 }

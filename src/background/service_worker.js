@@ -33,6 +33,7 @@ import {
   isHttpUrl,
   sanitizeFilename
 } from '../shared/media_classifier.js';
+import { attachVideoPreviews } from '../shared/preview_matcher.js';
 
 const tabWriteQueues = new Map();
 const downloadBlobMap = new Map();
@@ -102,6 +103,12 @@ function recordNetworkMedia(tabId, entry) {
     filtered.unshift(entry);
     const capped = filtered.slice(0, LIMITS.MAX_CAPTURED_PER_TAB);
     await chrome.storage.session.set({ [tabStorageKey(tabId)]: capped });
+    chrome.runtime.sendMessage({
+      type: MESSAGE_TYPES.MEDIA_UPDATED,
+      tabId
+    }).catch(() => {
+      // Popup is not open
+    });
   });
 }
 
@@ -207,7 +214,13 @@ async function collectMediaForTab(tabId, tabUrl) {
   }
 
   const networkItems = await getTabNetworkMedia(tabId);
-  let domResult = { pageTitle: '', pageUrl: tabUrl, hasBlobVideo: false, items: [] };
+  let domResult = {
+    pageTitle: '',
+    pageUrl: tabUrl,
+    hasBlobVideo: false,
+    videoElements: [],
+    items: []
+  };
 
   try {
     await chrome.scripting.executeScript({
@@ -217,6 +230,8 @@ async function collectMediaForTab(tabId, tabUrl) {
 
     const scanConfig = {
       minImageDimensionPx: LIMITS.MIN_IMAGE_DIMENSION_PX,
+      previewMaxWidthPx: LIMITS.PREVIEW_MAX_WIDTH_PX,
+      previewFrameQuality: LIMITS.PREVIEW_FRAME_QUALITY,
       mediaTypes: {
         VIDEO: MEDIA_TYPES.VIDEO,
         IMAGE: MEDIA_TYPES.IMAGE,
@@ -250,7 +265,10 @@ async function collectMediaForTab(tabId, tabUrl) {
       };
     });
 
-  const merged = deduplicateMedia([...networkItems, ...normalizedDomItems]).map((item) => ({
+  const merged = attachVideoPreviews(
+    deduplicateMedia([...networkItems, ...normalizedDomItems]),
+    domResult.videoElements || []
+  ).map((item) => ({
     ...item,
     suggestedFilename: sanitizeFilename(
       deriveFilenameStem(item.url, item.title || domResult.pageTitle),
