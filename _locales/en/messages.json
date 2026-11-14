@@ -99,13 +99,13 @@
       }
     }
   },
-  "popup_status_hls_separate_audio": {
-    "message": "Note: this stream uses separate audio and video tracks. Downloading video track; audio track is also listed.",
-    "description": "Notice when an HLS master playlist separates audio from video."
-  },
   "popup_status_download_started": {
     "message": "Download started.",
     "description": "Confirmation toast when download starts."
+  },
+  "popup_error_unknown": {
+    "message": "Unknown error",
+    "description": "Fallback reason when an error has no message."
   },
   "popup_error_encrypted_stream": {
     "message": "Cannot download: this stream is encrypted or DRM-protected.",

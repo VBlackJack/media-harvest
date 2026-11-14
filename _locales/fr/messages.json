@@ -4,28 +4,28 @@
     "description": "Nom de l'extension dans Chrome."
   },
   "ext_manifest_description": {
-    "message": "Detecte et telecharge les videos, flux, images et audios de la page active.",
+    "message": "Détecte et télécharge les vidéos, flux, images et audios de la page active.",
     "description": "Description de l'extension dans Chrome."
   },
   "popup_header_title": {
     "message": "Media Harvest",
-    "description": "Titre de l'en-tete."
+    "description": "Titre de l'en-tête."
   },
   "popup_header_clear_title": {
-    "message": "Effacer les captures reseau de cet onglet",
+    "message": "Effacer les captures réseau de cet onglet",
     "description": "Infobulle du bouton effacer."
   },
   "popup_header_refresh_title": {
-    "message": "Reanalyser la page active",
+    "message": "Réanalyser la page active",
     "description": "Infobulle du bouton actualiser."
   },
   "popup_filter_all": {
     "message": "Tout",
-    "description": "Filtre pour tous les medias."
+    "description": "Filtre pour tous les médias."
   },
   "popup_filter_videos": {
-    "message": "Videos",
-    "description": "Filtre pour les videos et flux."
+    "message": "Vidéos",
+    "description": "Filtre pour les vidéos et flux."
   },
   "popup_filter_images": {
     "message": "Images",
@@ -36,12 +36,12 @@
     "description": "Filtre pour les audios."
   },
   "popup_action_download": {
-    "message": "Telecharger",
-    "description": "Bouton de telechargement unitaire."
+    "message": "Télécharger",
+    "description": "Bouton de téléchargement unitaire."
   },
   "popup_action_download_all": {
-    "message": "Tout telecharger ($COUNT$)",
-    "description": "Bouton pour telecharger tous les elements directs visibles.",
+    "message": "Tout télécharger ($COUNT$)",
+    "description": "Bouton pour télécharger tous les éléments directs visibles.",
     "placeholders": {
       "count": {
         "content": "$1",
@@ -54,8 +54,8 @@
     "description": "Infobulle pour copier l'URL."
   },
   "popup_action_copied": {
-    "message": "Copie",
-    "description": "Confirmation apres copie de l'URL."
+    "message": "Copié",
+    "description": "Confirmation après copie de l'URL."
   },
   "popup_badge_stream": {
     "message": "HLS",
@@ -63,31 +63,31 @@
   },
   "popup_badge_dom": {
     "message": "Page",
-    "description": "Badge indiquant un media trouve dans la page."
+    "description": "Badge indiquant un média trouvé dans la page."
   },
   "popup_badge_network": {
-    "message": "Reseau",
-    "description": "Badge indiquant un media capture sur le reseau."
+    "message": "Réseau",
+    "description": "Badge indiquant un média capturé sur le réseau."
   },
   "popup_status_loading": {
-    "message": "Analyse des medias de la page...",
+    "message": "Analyse des médias de la page...",
     "description": "Message de chargement."
   },
   "popup_status_empty": {
-    "message": "Aucun media telechargeable detecte sur cette page pour le moment.",
-    "description": "Message quand aucun media n'est trouve."
+    "message": "Aucun média téléchargeable détecté sur cette page pour le moment.",
+    "description": "Message quand aucun média n'est trouvé."
   },
   "popup_hint_blob_detected": {
-    "message": "Video en streaming (blob:) detectee. Lancez la lecture ou rechargez le post pour capturer le flux (.m3u8 / .mp4).",
-    "description": "Conseil affiche quand une balise video blob est detectee sans flux capture."
+    "message": "Vidéo en streaming (blob:) détectée. Lancez la lecture ou rechargez le post pour capturer le flux (.m3u8 / .mp4).",
+    "description": "Conseil affiché quand une balise vidéo blob est détectée sans flux capturé."
   },
   "popup_status_hls_preparing": {
-    "message": "Recuperation de la playlist HLS...",
+    "message": "Récupération de la playlist HLS...",
     "description": "Progression lors de la lecture de la playlist HLS."
   },
   "popup_status_hls_segments": {
-    "message": "Telechargement des segments ($DONE$/$TOTAL$)...",
-    "description": "Progression lors du telechargement des segments HLS.",
+    "message": "Téléchargement des segments ($DONE$/$TOTAL$)...",
+    "description": "Progression lors du téléchargement des segments HLS.",
     "placeholders": {
       "done": {
         "content": "$1",
@@ -99,20 +99,20 @@
       }
     }
   },
-  "popup_status_hls_separate_audio": {
-    "message": "Note : ce flux separe les pistes video et audio. Telechargement de la piste video ; l'audio est aussi propose separement.",
-    "description": "Avertissement si la playlist HLS separe l'audio de la video."
-  },
   "popup_status_download_started": {
-    "message": "Telechargement lance.",
-    "description": "Message quand le telechargement demarre."
+    "message": "Téléchargement lancé.",
+    "description": "Message quand le téléchargement démarre."
+  },
+  "popup_error_unknown": {
+    "message": "Erreur inconnue",
+    "description": "Raison par défaut quand une erreur n'a pas de message."
   },
   "popup_error_encrypted_stream": {
-    "message": "Telechargement impossible : ce flux est chiffre ou protege par DRM.",
+    "message": "Téléchargement impossible : ce flux est chiffré ou protégé par DRM.",
     "description": "Erreur si la playlist HLS contient EXT-X-KEY."
   },
   "popup_error_no_active_tab": {
-    "message": "Aucun onglet web actif a analyser.",
+    "message": "Aucun onglet web actif à analyser.",
     "description": "Erreur si aucun onglet actif n'est disponible."
   },
   "popup_error_restricted_page": {
@@ -120,26 +120,26 @@
     "description": "Erreur sur les pages chrome:// ou chrome-extension://."
   },
   "popup_error_download_failed": {
-    "message": "Echec du telechargement : $REASON$",
-    "description": "Message d'erreur de telechargement.",
+    "message": "Échec du téléchargement : $REASON$",
+    "description": "Message d'erreur de téléchargement.",
     "placeholders": {
       "reason": {
         "content": "$1",
-        "example": "Erreur reseau"
+        "example": "Erreur réseau"
       }
     }
   },
   "popup_quality_select_label": {
-    "message": "Qualite",
-    "description": "Libelle du selecteur de qualite HLS."
+    "message": "Qualité",
+    "description": "Libellé du sélecteur de qualité HLS."
   },
   "popup_quality_best": {
     "message": "Meilleure disponible",
-    "description": "Option de qualite par defaut."
+    "description": "Option de qualité par défaut."
   },
   "popup_action_refresh": {
     "message": "Actualiser",
-    "description": "Bouton pour reanalyser la page active."
+    "description": "Bouton pour réanalyser la page active."
   },
   "popup_action_reload_tab": {
     "message": "Recharger",
@@ -150,47 +150,47 @@
     "description": "Infobulle du bouton recharger l'onglet."
   },
   "popup_action_preview": {
-    "message": "Apercu",
-    "description": "Bouton pour previsualiser une video."
+    "message": "Aperçu",
+    "description": "Bouton pour prévisualiser une vidéo."
   },
   "popup_action_hide_preview": {
     "message": "Masquer",
-    "description": "Bouton pour masquer l'apercu video."
+    "description": "Bouton pour masquer l'aperçu vidéo."
   },
   "popup_preview_loading": {
-    "message": "Chargement de l'apercu video...",
+    "message": "Chargement de l'aperçu vidéo...",
     "description": "Message pendant le chargement de l'extrait HLS."
   },
   "popup_preview_unavailable": {
-    "message": "Apercu video direct indisponible pour ce format ; fiez-vous a la vignette ou telechargez.",
-    "description": "Message si le navigateur ne peut pas lire l'apercu nativement."
+    "message": "Aperçu vidéo direct indisponible pour ce format ; fiez-vous à la vignette ou téléchargez.",
+    "description": "Message si le navigateur ne peut pas lire l'aperçu nativement."
   },
   "popup_status_reloading_tab": {
     "message": "Rechargement de la page pour capter les flux...",
     "description": "Message pendant le rechargement de l'onglet."
   },
   "popup_status_hls_muxing": {
-    "message": "Fusion de la video et de l'audio...",
+    "message": "Fusion de la vidéo et de l'audio...",
     "description": "Progression pendant le muxage MP4."
   },
   "x_btn_download": {
-    "message": "Telecharger la video",
-    "description": "Bouton de telechargement integre aux posts X."
+    "message": "Télécharger la vidéo",
+    "description": "Bouton de téléchargement intégré aux posts X."
   },
   "x_btn_downloading": {
-    "message": "Telechargement...",
-    "description": "Bouton integre pendant le telechargement."
+    "message": "Téléchargement...",
+    "description": "Bouton intégré pendant le téléchargement."
   },
   "x_btn_done": {
-    "message": "Telecharge",
-    "description": "Confirmation sur le bouton integre."
+    "message": "Téléchargé",
+    "description": "Confirmation sur le bouton intégré."
   },
   "x_btn_play_first": {
     "message": "Lancer la lecture d'abord",
-    "description": "Indication si le flux video X n'a pas encore ete charge."
+    "description": "Indication si le flux vidéo X n'a pas encore été chargé."
   },
   "x_btn_error": {
     "message": "Erreur",
-    "description": "Libelle d'erreur sur le bouton integre."
+    "description": "Libellé d'erreur sur le bouton intégré."
   }
 }
