@@ -1,0 +1,140 @@
+{
+  "ext_manifest_name": {
+    "message": "Media Harvest",
+    "description": "Extension name shown in Chrome toolbar and extensions page."
+  },
+  "ext_manifest_description": {
+    "message": "Detect and download videos, streams, images, and audio from the current page.",
+    "description": "Extension description shown in Chrome extensions page."
+  },
+  "popup_header_title": {
+    "message": "Media Harvest",
+    "description": "Popup header title."
+  },
+  "popup_header_clear_title": {
+    "message": "Clear captured network items for this tab",
+    "description": "Tooltip for clear button."
+  },
+  "popup_header_refresh_title": {
+    "message": "Rescan current page",
+    "description": "Tooltip for refresh button."
+  },
+  "popup_filter_all": {
+    "message": "All",
+    "description": "Filter tab for all media types."
+  },
+  "popup_filter_videos": {
+    "message": "Videos",
+    "description": "Filter tab for videos and streams."
+  },
+  "popup_filter_images": {
+    "message": "Images",
+    "description": "Filter tab for images."
+  },
+  "popup_filter_audio": {
+    "message": "Audio",
+    "description": "Filter tab for audio."
+  },
+  "popup_action_download": {
+    "message": "Download",
+    "description": "Button label to download a single media item."
+  },
+  "popup_action_download_all": {
+    "message": "Download visible ($COUNT$)",
+    "description": "Button label to batch download visible direct media items.",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "5"
+      }
+    }
+  },
+  "popup_action_copy_url": {
+    "message": "Copy URL",
+    "description": "Tooltip for copy URL button."
+  },
+  "popup_action_copied": {
+    "message": "Copied",
+    "description": "Confirmation text after copying a URL."
+  },
+  "popup_badge_stream": {
+    "message": "HLS",
+    "description": "Badge shown on HLS stream items."
+  },
+  "popup_badge_dom": {
+    "message": "Page",
+    "description": "Badge indicating item was found in DOM."
+  },
+  "popup_badge_network": {
+    "message": "Network",
+    "description": "Badge indicating item was captured from network."
+  },
+  "popup_status_loading": {
+    "message": "Scanning page media...",
+    "description": "Loading state message."
+  },
+  "popup_status_empty": {
+    "message": "No downloadable media detected on this page yet.",
+    "description": "Empty state message."
+  },
+  "popup_hint_blob_detected": {
+    "message": "Streamed video (blob:) detected. Play or reload the post so the network stream (.m3u8 / .mp4) is captured.",
+    "description": "Hint shown when a blob video element is found without a captured stream yet."
+  },
+  "popup_status_hls_preparing": {
+    "message": "Fetching HLS playlist...",
+    "description": "Progress text when fetching HLS playlist."
+  },
+  "popup_status_hls_segments": {
+    "message": "Downloading segments ($DONE$/$TOTAL$)...",
+    "description": "Progress text while downloading HLS segments.",
+    "placeholders": {
+      "done": {
+        "content": "$1",
+        "example": "3"
+      },
+      "total": {
+        "content": "$2",
+        "example": "12"
+      }
+    }
+  },
+  "popup_status_hls_separate_audio": {
+    "message": "Note: this stream uses separate audio and video tracks. Downloading video track; audio track is also listed.",
+    "description": "Notice when an HLS master playlist separates audio from video."
+  },
+  "popup_status_download_started": {
+    "message": "Download started.",
+    "description": "Confirmation toast when download starts."
+  },
+  "popup_error_encrypted_stream": {
+    "message": "Cannot download: this stream is encrypted or DRM-protected.",
+    "description": "Error when HLS playlist contains EXT-X-KEY encryption."
+  },
+  "popup_error_no_active_tab": {
+    "message": "No active web tab available to scan.",
+    "description": "Error when active tab is missing or restricted."
+  },
+  "popup_error_restricted_page": {
+    "message": "Chrome restricts extensions on internal browser pages.",
+    "description": "Error when scanning chrome:// or extension pages."
+  },
+  "popup_error_download_failed": {
+    "message": "Download failed: $REASON$",
+    "description": "Generic download error message.",
+    "placeholders": {
+      "reason": {
+        "content": "$1",
+        "example": "Network error"
+      }
+    }
+  },
+  "popup_quality_select_label": {
+    "message": "Quality",
+    "description": "Label for HLS variant selector."
+  },
+  "popup_quality_best": {
+    "message": "Best available",
+    "description": "Default quality option."
+  }
+}

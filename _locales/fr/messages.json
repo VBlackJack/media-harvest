@@ -1,0 +1,140 @@
+{
+  "ext_manifest_name": {
+    "message": "Media Harvest",
+    "description": "Nom de l'extension dans Chrome."
+  },
+  "ext_manifest_description": {
+    "message": "Detecte et telecharge les videos, flux, images et audios de la page active.",
+    "description": "Description de l'extension dans Chrome."
+  },
+  "popup_header_title": {
+    "message": "Media Harvest",
+    "description": "Titre de l'en-tete."
+  },
+  "popup_header_clear_title": {
+    "message": "Effacer les captures reseau de cet onglet",
+    "description": "Infobulle du bouton effacer."
+  },
+  "popup_header_refresh_title": {
+    "message": "Reanalyser la page active",
+    "description": "Infobulle du bouton actualiser."
+  },
+  "popup_filter_all": {
+    "message": "Tout",
+    "description": "Filtre pour tous les medias."
+  },
+  "popup_filter_videos": {
+    "message": "Videos",
+    "description": "Filtre pour les videos et flux."
+  },
+  "popup_filter_images": {
+    "message": "Images",
+    "description": "Filtre pour les images."
+  },
+  "popup_filter_audio": {
+    "message": "Audio",
+    "description": "Filtre pour les audios."
+  },
+  "popup_action_download": {
+    "message": "Telecharger",
+    "description": "Bouton de telechargement unitaire."
+  },
+  "popup_action_download_all": {
+    "message": "Tout telecharger ($COUNT$)",
+    "description": "Bouton pour telecharger tous les elements directs visibles.",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "5"
+      }
+    }
+  },
+  "popup_action_copy_url": {
+    "message": "Copier l'URL",
+    "description": "Infobulle pour copier l'URL."
+  },
+  "popup_action_copied": {
+    "message": "Copie",
+    "description": "Confirmation apres copie de l'URL."
+  },
+  "popup_badge_stream": {
+    "message": "HLS",
+    "description": "Badge pour les flux HLS."
+  },
+  "popup_badge_dom": {
+    "message": "Page",
+    "description": "Badge indiquant un media trouve dans la page."
+  },
+  "popup_badge_network": {
+    "message": "Reseau",
+    "description": "Badge indiquant un media capture sur le reseau."
+  },
+  "popup_status_loading": {
+    "message": "Analyse des medias de la page...",
+    "description": "Message de chargement."
+  },
+  "popup_status_empty": {
+    "message": "Aucun media telechargeable detecte sur cette page pour le moment.",
+    "description": "Message quand aucun media n'est trouve."
+  },
+  "popup_hint_blob_detected": {
+    "message": "Video en streaming (blob:) detectee. Lancez la lecture ou rechargez le post pour capturer le flux (.m3u8 / .mp4).",
+    "description": "Conseil affiche quand une balise video blob est detectee sans flux capture."
+  },
+  "popup_status_hls_preparing": {
+    "message": "Recuperation de la playlist HLS...",
+    "description": "Progression lors de la lecture de la playlist HLS."
+  },
+  "popup_status_hls_segments": {
+    "message": "Telechargement des segments ($DONE$/$TOTAL$)...",
+    "description": "Progression lors du telechargement des segments HLS.",
+    "placeholders": {
+      "done": {
+        "content": "$1",
+        "example": "3"
+      },
+      "total": {
+        "content": "$2",
+        "example": "12"
+      }
+    }
+  },
+  "popup_status_hls_separate_audio": {
+    "message": "Note : ce flux separe les pistes video et audio. Telechargement de la piste video ; l'audio est aussi propose separement.",
+    "description": "Avertissement si la playlist HLS separe l'audio de la video."
+  },
+  "popup_status_download_started": {
+    "message": "Telechargement lance.",
+    "description": "Message quand le telechargement demarre."
+  },
+  "popup_error_encrypted_stream": {
+    "message": "Telechargement impossible : ce flux est chiffre ou protege par DRM.",
+    "description": "Erreur si la playlist HLS contient EXT-X-KEY."
+  },
+  "popup_error_no_active_tab": {
+    "message": "Aucun onglet web actif a analyser.",
+    "description": "Erreur si aucun onglet actif n'est disponible."
+  },
+  "popup_error_restricted_page": {
+    "message": "Chrome bloque les extensions sur les pages internes du navigateur.",
+    "description": "Erreur sur les pages chrome:// ou chrome-extension://."
+  },
+  "popup_error_download_failed": {
+    "message": "Echec du telechargement : $REASON$",
+    "description": "Message d'erreur de telechargement.",
+    "placeholders": {
+      "reason": {
+        "content": "$1",
+        "example": "Erreur reseau"
+      }
+    }
+  },
+  "popup_quality_select_label": {
+    "message": "Qualite",
+    "description": "Libelle du selecteur de qualite HLS."
+  },
+  "popup_quality_best": {
+    "message": "Meilleure disponible",
+    "description": "Option de qualite par defaut."
+  }
+}

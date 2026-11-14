@@ -1,0 +1,12 @@
+local/
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
+CLAUDE.md
+.claude/
+AGENTS.md
+GEMINI.md
+.codex/
+.gemini/
+.agent/

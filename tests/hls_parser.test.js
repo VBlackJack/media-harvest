@@ -1,0 +1,71 @@
+/*
+ * Copyright 2026 Julien Bombled
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { parseHlsPlaylist, selectBestVariant } from '../src/shared/hls_parser.js';
+
+test('parseHlsPlaylist parses master playlist variants sorted by resolution and bandwidth', () => {
+  const master = [
+    '#EXTM3U',
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Main",LANGUAGE="en",URI="/audio/main.m3u8"',
+    '#EXT-X-STREAM-INF:BANDWIDTH=832000,RESOLUTION=640x360,AUDIO="audio"',
+    '/360p/index.m3u8',
+    '#EXT-X-STREAM-INF:BANDWIDTH=2176000,RESOLUTION=1280x720,AUDIO="audio"',
+    '/720p/index.m3u8'
+  ].join('\n');
+
+  const parsed = parseHlsPlaylist(master, 'https://video.twimg.com/ext_tw_video/1/pl/master.m3u8');
+  assert.equal(parsed.isMaster, true);
+  assert.equal(parsed.encrypted, false);
+  assert.equal(parsed.variants.length, 2);
+  assert.equal(parsed.variants[0].resolution, '1280x720');
+  assert.equal(parsed.variants[0].url, 'https://video.twimg.com/720p/index.m3u8');
+  assert.equal(parsed.audioTracks.length, 1);
+  assert.equal(parsed.audioTracks[0].url, 'https://video.twimg.com/audio/main.m3u8');
+  assert.equal(selectBestVariant(parsed.variants).resolution, '1280x720');
+});
+
+test('parseHlsPlaylist detects fMP4 init segment and outputs mp4 extension', () => {
+  const media = [
+    '#EXTM3U',
+    '#EXT-X-MAP:URI="init.mp4"',
+    '#EXTINF:3.0,',
+    'seg1.m4s',
+    '#EXTINF:2.5,',
+    'seg2.m4s',
+    '#EXT-X-ENDLIST'
+  ].join('\n');
+
+  const parsed = parseHlsPlaylist(media, 'https://cdn.example.com/hls/720p/index.m3u8');
+  assert.equal(parsed.isMaster, false);
+  assert.equal(parsed.initSegmentUrl, 'https://cdn.example.com/hls/720p/init.mp4');
+  assert.equal(parsed.segments.length, 2);
+  assert.equal(parsed.outputExtension, 'mp4');
+});
+
+test('parseHlsPlaylist flags encrypted streams explicitly', () => {
+  const encrypted = [
+    '#EXTM3U',
+    '#EXT-X-KEY:METHOD=AES-128,URI="https://example.com/key"',
+    '#EXTINF:4.0,',
+    'seg1.ts'
+  ].join('\n');
+
+  const parsed = parseHlsPlaylist(encrypted, 'https://example.com/stream.m3u8');
+  assert.equal(parsed.encrypted, true);
+  assert.equal(parsed.encryptionMethod, 'AES-128');
+});

@@ -1,0 +1,78 @@
+<!--
+  Copyright 2026 Julien Bombled
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="popup_header_title"></title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img class="brand-icon" src="../../assets/icons/icon48.png" alt="">
+      <h1 data-i18n="popup_header_title"></h1>
+    </div>
+    <div class="topbar-actions">
+      <button id="refreshBtn" class="icon-btn" type="button" data-i18n-title="popup_header_refresh_title">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+          <polyline points="21 3 21 9 15 9"/>
+        </svg>
+      </button>
+      <button id="clearBtn" class="icon-btn" type="button" data-i18n-title="popup_header_clear_title">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="3 6 5 6 21 6"/>
+          <path d="M19 6l-1 14H6L5 6"/>
+          <path d="M10 11v6"/>
+          <path d="M14 11v6"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <nav class="filters" role="tablist">
+    <button class="filter-btn active" data-filter="all" type="button">
+      <span data-i18n="popup_filter_all"></span>
+      <span class="count" id="countAll">0</span>
+    </button>
+    <button class="filter-btn" data-filter="videos" type="button">
+      <span data-i18n="popup_filter_videos"></span>
+      <span class="count" id="countVideos">0</span>
+    </button>
+    <button class="filter-btn" data-filter="images" type="button">
+      <span data-i18n="popup_filter_images"></span>
+      <span class="count" id="countImages">0</span>
+    </button>
+    <button class="filter-btn" data-filter="audio" type="button">
+      <span data-i18n="popup_filter_audio"></span>
+      <span class="count" id="countAudio">0</span>
+    </button>
+  </nav>
+
+  <div id="hintBanner" class="banner banner-info hidden"></div>
+  <div id="statusBanner" class="banner banner-status hidden"></div>
+
+  <div class="toolbar">
+    <button id="downloadAllBtn" class="btn btn-secondary hidden" type="button"></button>
+  </div>
+
+  <main id="mediaList" class="media-list"></main>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
