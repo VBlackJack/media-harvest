@@ -36,6 +36,7 @@
    */
   function createDownloadIcon() {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('aria-hidden', 'true');
     svg.setAttribute('viewBox', '0 0 24 24');
     svg.setAttribute('width', '13');
     svg.setAttribute('height', '13');
@@ -58,20 +59,39 @@
   }
 
   /**
+   * Finds the first element matching selector whose nearest tweet article is the given article,
+   * avoiding elements nested inside quoted tweets.
+   * @param {Element} article
+   * @param {string} selector
+   * @returns {Element | null}
+   */
+  function findDirectTweetElement(article, selector) {
+    for (const candidate of article.querySelectorAll(selector)) {
+      if (candidate.closest(OVERLAY_CONFIG.TWEET_SELECTOR) === article) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Extracts tweet author, status ID, and video media ID from a tweet article element.
    * @param {Element} article
-   * @param {HTMLVideoElement} video
+   * @param {HTMLVideoElement | null} video
    * @returns {{ mediaId: string, posterUrl: string, directSrc: string, authorHandle: string, tweetId: string }}
    */
   function extractTweetMetadata(article, video) {
-    const posterUrl = video.getAttribute('poster') || '';
-    const directSrc = video.currentSrc || video.getAttribute('src') || '';
+    const posterUrl = video ? (video.getAttribute('poster') || '') : '';
+    const directSrc = video ? (video.currentSrc || video.getAttribute('src') || '') : '';
     const mediaMatch = posterUrl.match(OVERLAY_CONFIG.MEDIA_ID_PATTERN)
       || directSrc.match(OVERLAY_CONFIG.MEDIA_ID_PATTERN);
 
     let authorHandle = '';
     let tweetId = '';
     for (const anchor of article.querySelectorAll(OVERLAY_CONFIG.STATUS_LINK_SELECTOR)) {
+      if (anchor.closest(OVERLAY_CONFIG.TWEET_SELECTOR) !== article) {
+        continue;
+      }
       const href = anchor.getAttribute('href') || '';
       const match = href.match(OVERLAY_CONFIG.STATUS_PATH_PATTERN);
       if (match) {
@@ -107,15 +127,15 @@
   }
 
   /**
-   * Injects a download pill button into any tweet article containing a video.
+   * Injects a download pill button into any tweet article containing a direct video.
    */
   function attachButtons() {
     for (const article of document.querySelectorAll(OVERLAY_CONFIG.TWEET_SELECTOR)) {
-      const video = article.querySelector(OVERLAY_CONFIG.VIDEO_SELECTOR);
+      const video = findDirectTweetElement(article, OVERLAY_CONFIG.VIDEO_SELECTOR);
       if (!video) {
         continue;
       }
-      const actionBar = article.querySelector(OVERLAY_CONFIG.ACTION_GROUP_SELECTOR);
+      const actionBar = findDirectTweetElement(article, OVERLAY_CONFIG.ACTION_GROUP_SELECTOR);
       if (!actionBar || actionBar.hasAttribute(OVERLAY_CONFIG.BUTTON_ATTR)) {
         continue;
       }
@@ -137,7 +157,8 @@
         labelEl.textContent = msg('x_btn_downloading');
 
         try {
-          const payload = extractTweetMetadata(article, video);
+          const currentVideo = findDirectTweetElement(article, OVERLAY_CONFIG.VIDEO_SELECTOR);
+          const payload = extractTweetMetadata(article, currentVideo);
           const response = await chrome.runtime.sendMessage({
             type: OVERLAY_CONFIG.MESSAGE_TYPE,
             payload
@@ -168,6 +189,8 @@
     debounceTimer = setTimeout(attachButtons, OVERLAY_CONFIG.DEBOUNCE_MS);
   });
 
-  observer.observe(document.body, { childList: true, subtree: true });
-  attachButtons();
+  if (document.body) {
+    observer.observe(document.body, { childList: true, subtree: true });
+    attachButtons();
+  }
 })();

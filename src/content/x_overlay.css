@@ -33,8 +33,13 @@
 }
 
 .mh-x-download-btn:hover:not(:disabled) {
-  background: #0284c7;
+  background: #0369a1;
   color: #ffffff;
+}
+
+.mh-x-download-btn:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
 }
 
 .mh-x-download-btn:disabled {

@@ -31,7 +31,18 @@ export function t(key, substitutions) {
 }
 
 /**
- * Hydrates all DOM nodes marked with data-i18n, data-i18n-title, or data-i18n-aria.
+ * Returns the active browser UI language code (e.g. 'fr' or 'en').
+ * @returns {string}
+ */
+export function getUiLanguage() {
+  if (typeof chrome !== 'undefined' && chrome.i18n && typeof chrome.i18n.getUILanguage === 'function') {
+    return chrome.i18n.getUILanguage() || 'en';
+  }
+  return 'en';
+}
+
+/**
+ * Hydrates all DOM nodes marked with data-i18n or data-i18n-title.
  * @param {ParentNode} root
  */
 export function applyTranslations(root = document) {
