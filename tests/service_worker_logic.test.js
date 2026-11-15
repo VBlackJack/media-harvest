@@ -24,9 +24,11 @@ const prevFetch = globalThis.fetch;
 const sessionStore = new Map();
 const syncStore = new Map();
 const messageHandlers = [];
+const downloadChangedHandlers = [];
 const downloads = [];
 const cancelledDownloads = [];
 const offscreenMessages = [];
+let downloadSearchState = 'complete';
 let badgeText = '';
 let offscreenExists = false;
 let offscreenResponder = async () => ({
@@ -34,6 +36,18 @@ let offscreenResponder = async () => ({
   blobUrl: 'blob:chrome-extension://id/1',
   outputExtension: 'mp4'
 });
+
+const dnrUpdates = [];
+const tabMessages = [];
+const nativeMessages = [];
+const runtimeBroadcasts = [];
+const nativePorts = [];
+let nativeResponder = async (msg) => {
+  if (msg && msg.action === 'ping') {
+    return { ok: true, ytDlpVersion: '2026.01.01', ffmpegAvailable: true };
+  }
+  return { ok: true, outputDir: 'C:\\Users\\Test\\Downloads\\MediaHarvest' };
+};
 
 globalThis.chrome = {
   action: {
@@ -78,7 +92,16 @@ globalThis.chrome = {
   },
   tabs: {
     onUpdated: { addListener: () => {} },
-    onRemoved: { addListener: () => {} }
+    onRemoved: { addListener: () => {} },
+    sendMessage: async (tabId, msg, opts) => {
+      tabMessages.push({ tabId, msg, opts });
+      return { ok: true, blobUrl: 'blob:chrome-extension://id/mse1', outputExtension: 'mp4' };
+    }
+  },
+  declarativeNetRequest: {
+    updateSessionRules: async (update) => {
+      dnrUpdates.push(update);
+    }
   },
   scripting: {
     executeScript: async () => [{
@@ -108,10 +131,13 @@ globalThis.chrome = {
     cancel: async (id) => {
       cancelledDownloads.push(id);
     },
-    search: async ({ id }) => [{ id, state: 'complete' }],
-    onChanged: { addListener: () => {} }
+    search: async ({ id }) => [{ id, state: downloadSearchState }],
+    onChanged: {
+      addListener: (fn) => downloadChangedHandlers.push(fn)
+    }
   },
   runtime: {
+    id: 'test-ext-id',
     getURL: (rel) => `chrome-extension://test-id/${rel}`,
     getContexts: async () => (offscreenExists ? [{ contextType: 'OFFSCREEN_DOCUMENT' }] : []),
     sendMessage: async (msg) => {
@@ -119,7 +145,12 @@ globalThis.chrome = {
         offscreenMessages.push(msg);
         return offscreenResponder(msg);
       }
+      runtimeBroadcasts.push(msg);
       return { ok: true };
+    },
+    sendNativeMessage: async (hostName, msg) => {
+      nativeMessages.push({ hostName, msg });
+      return nativeResponder(msg);
     },
     onMessage: {
       addListener: (fn) => messageHandlers.push(fn)
@@ -162,7 +193,11 @@ beforeEach(() => {
   downloads.length = 0;
   cancelledDownloads.length = 0;
   offscreenMessages.length = 0;
+  runtimeBroadcasts.length = 0;
+  nativePorts.length = 0;
+  delete globalThis.chrome.runtime.connectNative;
   badgeText = '';
+  downloadSearchState = 'complete';
   offscreenExists = false;
   offscreenResponder = async () => ({
     ok: true,
@@ -249,6 +284,12 @@ test('service_worker INSPECT_HLS parses DASH .mpd manifests and CANCEL_DOWNLOAD 
   });
 
   await new Promise((resolve) => setTimeout(resolve, 15));
+  const activeResp = await dispatchRuntimeMessage({ type: MESSAGE_TYPES.GET_ACTIVE_BUILDS });
+  assert.equal(activeResp.ok, true);
+  assert.equal(activeResp.builds.length, 1);
+  assert.equal(activeResp.builds[0].requestId, 'req-cancel-test');
+  assert.equal(activeResp.builds[0].url, 'https://cdn.example.com/vod/manifest.mpd');
+
   const cancelResp = await dispatchRuntimeMessage({
     type: MESSAGE_TYPES.CANCEL_DOWNLOAD,
     requestId: 'req-cancel-test'
@@ -263,4 +304,317 @@ test('service_worker INSPECT_HLS parses DASH .mpd manifests and CANCEL_DOWNLOAD 
       (m) => m.type === MESSAGE_TYPES.OFFSCREEN_CANCEL_BUILD && m.requestId === 'req-cancel-test'
     )
   );
+});
+
+test('service_worker handles DOWNLOAD_TWEET_VIDEO, CLEAR_MEDIA_FOR_TAB, and downloads.onChanged blob cleanup', async () => {
+  syncStore.set(STORAGE_KEYS.USER_SETTINGS, { promptSaveAs: true });
+  sessionStore.set(`${STORAGE_KEYS.TAB_MEDIA_PREFIX}77`, [
+    {
+      url: 'https://video.twimg.com/ext_tw_video/987654321/pu/vid/720x1280/clip.mp4',
+      type: 'video',
+      ext: 'mp4',
+      isStream: false
+    }
+  ]);
+
+  const tweetResp = await dispatchRuntimeMessage(
+    {
+      type: MESSAGE_TYPES.DOWNLOAD_TWEET_VIDEO,
+      payload: {
+        mediaId: '987654321',
+        authorHandle: 'creator',
+        tweetId: '555666'
+      }
+    },
+    { tab: { id: 77, url: 'https://x.com/creator/status/555666' } }
+  );
+  assert.equal(tweetResp.ok, true);
+  assert.equal(downloads.length, 1);
+  assert.equal(downloads[0].filename, 'creator_555666.mp4');
+  assert.equal(downloads[0].saveAs, true);
+
+  const clearResp = await dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.CLEAR_MEDIA_FOR_TAB,
+    tabId: 77
+  });
+  assert.equal(clearResp.ok, true);
+  assert.equal(sessionStore.has(`${STORAGE_KEYS.TAB_MEDIA_PREFIX}77`), false);
+
+  downloadSearchState = 'in_progress';
+  const streamResp = await dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.DOWNLOAD_MEDIA,
+    payload: {
+      url: 'https://cdn.example.com/hls/master.m3u8',
+      playlistUrl: 'https://cdn.example.com/hls/master.m3u8',
+      isStream: true,
+      filename: 'stream.mp4'
+    }
+  });
+  assert.equal(streamResp.ok, true);
+  const blobKey = `${STORAGE_KEYS.DOWNLOAD_BLOB_PREFIX}${streamResp.downloadId}`;
+  assert.equal(sessionStore.get(blobKey), 'blob:chrome-extension://id/1');
+
+  assert.equal(downloadChangedHandlers.length > 0, true);
+  for (const listener of downloadChangedHandlers) {
+    listener({ id: streamResp.downloadId, state: { current: 'complete' } });
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(sessionStore.has(blobKey), false);
+  assert.ok(
+    offscreenMessages.some(
+      (m) => m.type === MESSAGE_TYPES.OFFSCREEN_REVOKE_BLOB && m.blobUrl === 'blob:chrome-extension://id/1'
+    )
+  );
+});
+
+test('service_worker propagates HLS subtitles and live flag, downloads HLS subtitles, and preserves folder templates', async () => {
+  globalThis.fetch = async (url) => {
+    const key = String(url);
+    if (key.endsWith('master_live.m3u8')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: async () => [
+          '#EXTM3U',
+          '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="fr",NAME="French",DEFAULT=YES,URI="subs/fr.m3u8"',
+          '#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720,SUBTITLES="subs"',
+          'live_variant.m3u8'
+        ].join('\n')
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      text: async () => ['#EXTM3U', '#EXTINF:2.0,', 'seg1.ts'].join('\n')
+    };
+  };
+
+  const inspectResp = await dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.INSPECT_HLS,
+    url: 'https://cdn.example.com/hls/master_live.m3u8'
+  });
+  assert.equal(inspectResp.ok, true);
+  assert.equal(inspectResp.isDynamic, true);
+  assert.equal(inspectResp.subtitles.length, 1);
+  assert.equal(inspectResp.subtitles[0].url, 'https://cdn.example.com/hls/subs/fr.m3u8');
+
+  syncStore.set(STORAGE_KEYS.USER_SETTINGS, { filenameTemplate: FILENAME_TEMPLATES.HOST_FOLDER });
+  offscreenResponder = async () => ({
+    ok: true,
+    blobUrl: 'blob:chrome-extension://id/sub1',
+    outputExtension: 'vtt'
+  });
+
+  const subDlResp = await dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.DOWNLOAD_HLS_SUBTITLE,
+    payload: {
+      subtitleUrl: 'https://cdn.example.com/hls/subs/fr.m3u8',
+      filename: 'example.com/clip_subtitles',
+      allowFolders: true
+    }
+  });
+  assert.equal(subDlResp.ok, true);
+  assert.equal(downloads[0].filename, 'example.com/clip_subtitles.vtt');
+  assert.ok(
+    offscreenMessages.some(
+      (m) => m.type === MESSAGE_TYPES.OFFSCREEN_BUILD_SUBTITLE_BLOB && m.subtitleUrl === 'https://cdn.example.com/hls/subs/fr.m3u8'
+    )
+  );
+});
+
+test('service_worker handles MSE capture/export, DOWNLOAD_SITE_VIDEO, DNR Referer rules, and Native Companion', async () => {
+  dnrUpdates.length = 0;
+  tabMessages.length = 0;
+  nativeMessages.length = 0;
+
+  for (const handler of messageHandlers) {
+    handler(
+      {
+        type: MESSAGE_TYPES.MSE_STREAM_UPDATED,
+        stream: {
+          mseId: 'mse_55',
+          url: 'mse://mse_55',
+          mimeType: 'video/mp4',
+          videoMime: 'video/mp4',
+          audioMime: 'audio/mp4',
+          totalBytes: 120000,
+          duration: 15,
+          title: 'Social Clip',
+          pageUrl: 'https://www.instagram.com/reel/abc'
+        }
+      },
+      { tab: { id: 88 }, frameId: 2 },
+      () => {}
+    );
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const tabMediaResp = await dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.GET_MEDIA_FOR_TAB,
+    tabId: 88,
+    tabUrl: 'https://www.instagram.com/reel/abc'
+  });
+  assert.equal(tabMediaResp.ok, true);
+  assert.ok(tabMediaResp.items.some((item) => item.isMse && item.mseId === 'mse_55'));
+
+  const siteResp = await dispatchRuntimeMessage(
+    {
+      type: MESSAGE_TYPES.DOWNLOAD_SITE_VIDEO,
+      payload: {
+        requestId: 'site_req_1',
+        siteId: 'instagram',
+        title: 'Instagram Reel Title',
+        pageUrl: 'https://www.instagram.com/reel/abc'
+      }
+    },
+    { tab: { id: 88, url: 'https://www.instagram.com/reel/abc' } }
+  );
+  assert.equal(siteResp.ok, true);
+  assert.equal(tabMessages.length, 1);
+  assert.equal(tabMessages[0].tabId, 88);
+  assert.equal(tabMessages[0].msg.type, MESSAGE_TYPES.EXPORT_MSE_STREAM);
+  assert.equal(tabMessages[0].msg.mseId, 'mse_55');
+  assert.equal(tabMessages[0].opts.frameId, 2);
+
+  await dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.INSPECT_HLS,
+    url: 'https://cdn-protected.example.org/hls/master.m3u8',
+    referer: 'https://player.example.com/watch/123'
+  }).catch(() => {});
+  assert.ok(dnrUpdates.some((u) => Array.isArray(u.addRules) && u.addRules[0].action.requestHeaders[0].value === 'https://player.example.com/watch/123'));
+  assert.ok(dnrUpdates.some((u) => Array.isArray(u.removeRuleIds) && u.removeRuleIds.length === 1 && !u.addRules));
+
+  const pingResp = await dispatchRuntimeMessage({ type: MESSAGE_TYPES.CHECK_COMPANION });
+  assert.equal(pingResp.ok, true);
+  assert.equal(pingResp.available, true);
+  assert.equal(pingResp.ytDlpVersion, '2026.01.01');
+
+  const dlCompanionResp = await dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.DOWNLOAD_WITH_COMPANION,
+    payload: {
+      url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      referer: 'https://www.youtube.com/'
+    }
+  });
+  assert.equal(dlCompanionResp.ok, true);
+  assert.equal(nativeMessages[1].msg.action, 'download');
+});
+
+test('service_worker applies same-origin/CDN DNR rules, correlates multi-video blobUrl, and streams connectNative progress', async () => {
+  dnrUpdates.length = 0;
+  tabMessages.length = 0;
+  runtimeBroadcasts.length = 0;
+
+  // Same-origin HLS request must still install an initiator-scoped *://*/* DNR rule
+  await dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.INSPECT_HLS,
+    url: 'https://player.example.com/cdn/master.m3u8',
+    referer: 'https://player.example.com/watch/1'
+  }).catch(() => {});
+
+  const addEntry = dnrUpdates.find((u) => Array.isArray(u.addRules));
+  assert.ok(addEntry);
+  assert.equal(addEntry.addRules[0].condition.urlFilter, '*://*/*');
+  assert.deepEqual(addEntry.addRules[0].condition.initiatorDomains, ['test-ext-id']);
+
+  // Multi-video feed correlation via blobUrl must pick matching MSE item over unrelated network MP4 or larger MSE item
+  sessionStore.set(`${STORAGE_KEYS.TAB_MEDIA_PREFIX}91`, [
+    {
+      url: 'https://cdn.instagram.com/unrelated_large.mp4',
+      type: 'video',
+      ext: 'mp4',
+      sizeBytes: 900000
+    }
+  ]);
+  for (const handler of messageHandlers) {
+    handler(
+      {
+        type: MESSAGE_TYPES.MSE_STREAM_UPDATED,
+        stream: {
+          mseId: 'mse_first',
+          url: 'mse://mse_first',
+          blobUrl: 'blob:https://www.instagram.com/vid-1',
+          mimeType: 'video/mp4',
+          totalBytes: 500000,
+          pageUrl: 'https://www.instagram.com/'
+        }
+      },
+      { tab: { id: 91 }, frameId: 0 },
+      () => {}
+    );
+    handler(
+      {
+        type: MESSAGE_TYPES.MSE_STREAM_UPDATED,
+        stream: {
+          mseId: 'mse_second',
+          url: 'mse://mse_second',
+          blobUrl: 'blob:https://www.instagram.com/vid-2',
+          mimeType: 'video/mp4',
+          totalBytes: 120000,
+          pageUrl: 'https://www.instagram.com/'
+        }
+      },
+      { tab: { id: 91 }, frameId: 3 },
+      () => {}
+    );
+  }
+  await new Promise((resolve) => setTimeout(resolve, 25));
+
+  const siteResp = await dispatchRuntimeMessage(
+    {
+      type: MESSAGE_TYPES.DOWNLOAD_SITE_VIDEO,
+      payload: {
+        requestId: 'site_req_blob',
+        siteId: 'instagram',
+        pageUrl: 'https://www.instagram.com/',
+        blobUrl: 'blob:https://www.instagram.com/vid-2'
+      }
+    },
+    { tab: { id: 91, url: 'https://www.instagram.com/' } }
+  );
+  assert.equal(siteResp.ok, true);
+  assert.equal(tabMessages.length, 1);
+  assert.equal(tabMessages[0].msg.mseId, 'mse_second');
+  assert.equal(tabMessages[0].opts.frameId, 3);
+
+  // connectNative streaming progress + enableCompanionCookies flag
+  syncStore.set(STORAGE_KEYS.USER_SETTINGS, { enableCompanionCookies: true });
+  globalThis.chrome.runtime.connectNative = (hostName) => {
+    const messageListeners = [];
+    const disconnectListeners = [];
+    const posted = [];
+    const port = {
+      hostName,
+      posted,
+      onMessage: { addListener: (fn) => messageListeners.push(fn) },
+      onDisconnect: { addListener: (fn) => disconnectListeners.push(fn) },
+      disconnect: () => {},
+      postMessage: (msg) => {
+        posted.push(msg);
+        queueMicrotask(() => {
+          for (const fn of messageListeners) {
+            fn({ event: 'progress', percent: 45 });
+            fn({ event: 'done', ok: true, outputDir: 'C:\\Downloads\\MediaHarvest' });
+          }
+        });
+      }
+    };
+    nativePorts.push(port);
+    return port;
+  };
+
+  const dlStreamResp = await dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.DOWNLOAD_WITH_COMPANION,
+    payload: {
+      url: 'https://vimeo.com/123456',
+      referer: 'https://vimeo.com/'
+    }
+  });
+  assert.equal(dlStreamResp.ok, true);
+  assert.equal(nativePorts.length, 1);
+  assert.equal(nativePorts[0].posted[0].cookiesBrowser, 'chrome');
+  assert.equal(nativePorts[0].posted[0].streamProgress, true);
+  assert.ok(runtimeBroadcasts.some((m) => m.type === MESSAGE_TYPES.COMPANION_PROGRESS && m.percent === 45));
 });

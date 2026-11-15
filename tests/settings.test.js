@@ -17,7 +17,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_SETTINGS, FILENAME_TEMPLATES, QUALITY_PREFERENCES, STORAGE_KEYS } from '../src/config/constants.js';
-import { applyFilenameTemplate, loadSettings, normalizeSettings, saveSettings } from '../src/shared/settings.js';
+import {
+  applyFilenameTemplate,
+  isFolderFilenameTemplate,
+  loadSettings,
+  normalizeSettings,
+  saveSettings
+} from '../src/shared/settings.js';
 
 test('normalizeSettings validates enums and clamps numeric thresholds safely', () => {
   assert.deepEqual(normalizeSettings(null), DEFAULT_SETTINGS);
@@ -35,7 +41,7 @@ test('normalizeSettings validates enums and clamps numeric thresholds safely', (
   assert.equal(normalized.filenameTemplate, FILENAME_TEMPLATES.HOST_STEM);
   assert.equal(normalized.minImageDimensionPx, 0);
   assert.equal(normalized.hlsFetchConcurrency, 8);
-  assert.equal(normalized.largeStreamWarningMb, 2048);
+  assert.equal(normalized.largeStreamWarningMb, 512);
   assert.equal(normalized.enableXOverlay, false);
 });
 
@@ -53,6 +59,17 @@ test('applyFilenameTemplate formats default, host_stem, and date_stem consistent
     applyFilenameTemplate(FILENAME_TEMPLATES.DATE_STEM, { stem: 'clip', pageUrl: 'https://x.com/user/status/1', now }),
     '2026-11-14_clip'
   );
+  assert.equal(
+    applyFilenameTemplate(FILENAME_TEMPLATES.HOST_FOLDER, { stem: 'clip', pageUrl: 'https://www.x.com/user/status/1', now }),
+    'x.com/clip'
+  );
+  assert.equal(
+    applyFilenameTemplate(FILENAME_TEMPLATES.DATE_FOLDER, { stem: 'clip', pageUrl: 'https://x.com/user/status/1', now }),
+    '2026-11-14/clip'
+  );
+  assert.equal(isFolderFilenameTemplate(FILENAME_TEMPLATES.HOST_FOLDER), true);
+  assert.equal(isFolderFilenameTemplate(FILENAME_TEMPLATES.DATE_FOLDER), true);
+  assert.equal(isFolderFilenameTemplate(FILENAME_TEMPLATES.HOST_STEM), false);
 });
 
 test('loadSettings and saveSettings interact cleanly with chrome.storage.sync', async () => {
@@ -82,9 +99,17 @@ test('loadSettings and saveSettings interact cleanly with chrome.storage.sync', 
       minImageDimensionPx: 120,
       hlsFetchConcurrency: 2,
       largeStreamWarningMb: 100,
-      enableXOverlay: false
+      enableXOverlay: false,
+      enableSocialOverlay: false,
+      enableGenericVideoOverlay: false,
+      enableMseCapture: false,
+      enableCompanionCookies: true
     });
     assert.equal(saved.defaultQuality, QUALITY_PREFERENCES.LOWEST);
+    assert.equal(saved.enableSocialOverlay, false);
+    assert.equal(saved.enableGenericVideoOverlay, false);
+    assert.equal(saved.enableMseCapture, false);
+    assert.equal(saved.enableCompanionCookies, true);
     assert.equal(syncStore[STORAGE_KEYS.USER_SETTINGS].hlsFetchConcurrency, 2);
 
     const reloaded = await loadSettings();

@@ -172,8 +172,13 @@ function createDomHarness({ initialEnableXOverlay = true } = {}) {
   body.appendChild(article);
 
   const storageListeners = [];
+  const runtimeMessageListeners = [];
   const sentMessages = [];
   const observerState = { observeCalls: 0, disconnectCalls: 0 };
+  let sendMessageResponder = async (msg) => {
+    sentMessages.push(msg);
+    return { ok: true, downloadId: 1 };
+  };
 
   class FakeMutationObserver {
     observe() {
@@ -196,13 +201,13 @@ function createDomHarness({ initialEnableXOverlay = true } = {}) {
     clearTimeout,
     chrome: {
       i18n: {
-        getMessage: (key) => key
+        getMessage: (key, subs) => (Array.isArray(subs) && subs.length ? `${key}:${subs.join(',')}` : key)
       },
       runtime: {
-        sendMessage: async (msg) => {
-          sentMessages.push(msg);
-          return { ok: true, downloadId: 1 };
-        }
+        onMessage: {
+          addListener: (fn) => runtimeMessageListeners.push(fn)
+        },
+        sendMessage: async (msg) => sendMessageResponder(msg)
       },
       storage: {
         sync: {
@@ -218,7 +223,17 @@ function createDomHarness({ initialEnableXOverlay = true } = {}) {
   };
 
   vm.runInNewContext(OVERLAY_CODE, context);
-  return { body, actionBar, sentMessages, storageListeners, observerState };
+  return {
+    body,
+    actionBar,
+    sentMessages,
+    storageListeners,
+    runtimeMessageListeners,
+    observerState,
+    setResponder: (fn) => {
+      sendMessageResponder = fn;
+    }
+  };
 }
 
 test('x_overlay attaches inline button on tweet video and toggles live via storage.onChanged', async () => {
@@ -258,4 +273,45 @@ test('x_overlay stays inactive when enableXOverlay is false on initialization', 
 
   assert.equal(harness.body.querySelectorAll('.mh-x-download-btn').length, 0);
   assert.equal(harness.observerState.observeCalls, 0);
+});
+
+test('x_overlay displays specific error labels and supports stream progress cancellation', async () => {
+  const harness = createDomHarness({ initialEnableXOverlay: true });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const btn = harness.body.querySelectorAll('.mh-x-download-btn')[0];
+  harness.setResponder(async () => ({ ok: false, error: 'ENCRYPTED_STREAM' }));
+  await btn.trigger('click');
+  assert.equal(btn.children[1].textContent, 'x_btn_encrypted');
+  assert.equal(btn.classList.contains('mh-is-error'), true);
+
+  let finishDownload;
+  let capturedReqId = '';
+  harness.setResponder((msg) => {
+    harness.sentMessages.push(msg);
+    if (msg.type === 'DOWNLOAD_TWEET_VIDEO') {
+      capturedReqId = msg.payload.requestId;
+      return new Promise((resolve) => {
+        finishDownload = resolve;
+      });
+    }
+    if (msg.type === 'CANCEL_DOWNLOAD') {
+      finishDownload({ ok: false, error: 'DOWNLOAD_CANCELLED' });
+    }
+    return Promise.resolve({ ok: true });
+  });
+
+  const pendingClick = btn.trigger('click');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  for (const listener of harness.runtimeMessageListeners) {
+    listener({ type: 'DOWNLOAD_PROGRESS', requestId: capturedReqId, done: 3, total: 10 });
+  }
+  assert.equal(btn.children[1].textContent, 'x_btn_progress:3,10');
+  assert.equal(btn.disabled, false);
+
+  await btn.trigger('click');
+  await pendingClick;
+  assert.ok(harness.sentMessages.some((m) => m.type === 'CANCEL_DOWNLOAD' && m.requestId === capturedReqId));
+  assert.equal(btn.children[1].textContent, 'x_btn_cancelled');
+  assert.equal(btn.classList.contains('mh-is-error'), false);
 });

@@ -18,10 +18,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   classifyMedia,
+  classifyMseMime,
   deduplicateMedia,
   deriveFilenameStem,
   extractUrlExtension,
   isHttpUrl,
+  isMseUrl,
   normalizeMimeType,
   sanitizeFilename
 } from '../src/shared/media_classifier.js';
@@ -155,4 +157,74 @@ test('classifyMedia recognizes DASH .mpd streams with XML and dash+xml MIME type
     { type: MEDIA_TYPES.STREAM, ext: 'mpd', isStream: true }
   );
   assert.equal(classifyMedia('https://cdn.example.com/feed.rss', 'application/xml'), null);
+});
+
+test('classifyMedia recognizes subtitles and sanitizeFilename supports optional safe folders', () => {
+  assert.deepEqual(
+    classifyMedia('https://cdn.example.com/subs/en.vtt', 'text/vtt; charset=utf-8'),
+    { type: MEDIA_TYPES.SUBTITLE, ext: 'vtt', isStream: false }
+  );
+  assert.deepEqual(
+    classifyMedia('https://cdn.example.com/subs/fr.srt', 'text/plain'),
+    { type: MEDIA_TYPES.SUBTITLE, ext: 'srt', isStream: false }
+  );
+  assert.deepEqual(
+    classifyMedia('https://cdn.example.com/track', 'application/x-subrip'),
+    { type: MEDIA_TYPES.SUBTITLE, ext: 'srt', isStream: false }
+  );
+
+  assert.equal(
+    sanitizeFilename('example.com/Video Clip', 'mp4', { allowFolders: true }),
+    'example.com/Video_Clip.mp4'
+  );
+  assert.equal(
+    sanitizeFilename('../../secret/clip', 'mp4', { allowFolders: true }),
+    'secret/clip.mp4'
+  );
+  assert.equal(
+    sanitizeFilename('example.com/Video Clip', 'mp4', { allowFolders: false }),
+    'example.com_Video_Clip.mp4'
+  );
+});
+
+test('isMseUrl, classifyMseMime, and deduplicateMedia preserve MSE and referer metadata', () => {
+  assert.equal(isMseUrl('mse://mse_123'), true);
+  assert.equal(isMseUrl('https://cdn.example.com/v.mp4'), false);
+  assert.deepEqual(classifyMseMime('video/webm; codecs="vp9"'), {
+    type: MEDIA_TYPES.VIDEO,
+    ext: 'webm',
+    isStream: false,
+    isMse: true
+  });
+  assert.deepEqual(classifyMseMime('audio/mp4; codecs="mp4a.40.2"'), {
+    type: MEDIA_TYPES.AUDIO,
+    ext: 'm4a',
+    isStream: false,
+    isMse: true
+  });
+  assert.equal(deriveFilenameStem('mse://mse_123', 'Concert Clip', 'https://example.com/watch'), 'Concert Clip');
+
+  const merged = deduplicateMedia([
+    {
+      url: 'https://cdn.example.com/clip.mp4',
+      type: MEDIA_TYPES.VIDEO,
+      ext: 'mp4',
+      isStream: false,
+      source: MEDIA_SOURCES.DOM,
+      referer: 'https://example.com/embed'
+    },
+    {
+      url: 'https://cdn.example.com/clip.mp4',
+      type: MEDIA_TYPES.VIDEO,
+      ext: 'mp4',
+      isStream: false,
+      source: MEDIA_SOURCES.NETWORK,
+      isMse: true,
+      mseId: 'mse_9'
+    }
+  ]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].referer, 'https://example.com/embed');
+  assert.equal(merged[0].isMse, true);
+  assert.equal(merged[0].mseId, 'mse_9');
 });

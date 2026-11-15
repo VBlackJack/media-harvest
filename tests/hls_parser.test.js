@@ -126,3 +126,45 @@ test('parseHlsPlaylist parses EXT-X-BYTERANGE and EXT-X-MAP BYTERANGE per target
   assert.deepEqual(parsed.segments[2].byteRange, { offset: 200, length: 500 });
   assert.deepEqual(parsed.segments[3].byteRange, { offset: 3000, length: 600 });
 });
+
+test('parseHlsPlaylist parses SUBTITLES tracks and detects live/event playlists accurately', () => {
+  const masterWithSubs = [
+    '#EXTM3U',
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="English",LANGUAGE="en",URI="aud_en.m3u8"',
+    '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="French",LANGUAGE="fr",DEFAULT=YES,URI="subs/fr.m3u8"',
+    '#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",LANGUAGE="en",URI="subs/en.m3u8"',
+    '#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=1280x720,AUDIO="aud",SUBTITLES="subs"',
+    '720p.m3u8'
+  ].join('\n');
+
+  const parsedMaster = parseHlsPlaylist(masterWithSubs, 'https://cdn.example.com/hls/master.m3u8');
+  assert.equal(parsedMaster.isDynamic, false);
+  assert.equal(parsedMaster.subtitles.length, 2);
+  assert.deepEqual(parsedMaster.subtitles[0], {
+    groupId: 'subs',
+    name: 'French',
+    language: 'fr',
+    url: 'https://cdn.example.com/hls/subs/fr.m3u8',
+    isDefault: true
+  });
+  assert.equal(parsedMaster.subtitles[1].url, 'https://cdn.example.com/hls/subs/en.m3u8');
+  assert.equal(parsedMaster.subtitles[1].isDefault, false);
+
+  const eventLive = parseHlsPlaylist(
+    '#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXTINF:4.0,\nseg1.ts',
+    'https://cdn.example.com/hls/event.m3u8'
+  );
+  assert.equal(eventLive.isDynamic, true);
+
+  const slidingWindowLive = parseHlsPlaylist(
+    '#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:100\n#EXTINF:4.0,\nseg100.ts',
+    'https://cdn.example.com/hls/live.m3u8'
+  );
+  assert.equal(slidingWindowLive.isDynamic, true);
+
+  const vodEnded = parseHlsPlaylist(
+    '#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:4.0,\nseg1.ts',
+    'https://cdn.example.com/hls/vod.m3u8'
+  );
+  assert.equal(vodEnded.isDynamic, false);
+});

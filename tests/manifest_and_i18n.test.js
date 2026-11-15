@@ -62,13 +62,46 @@ test('en and fr locale files have matching valid Chrome i18n keys used by popup.
   const htmlPaths = ['src/popup/popup.html', 'src/options/options.html'];
   for (const relHtml of htmlPaths) {
     const html = fs.readFileSync(path.join(ROOT, relHtml), 'utf8');
-    const htmlKeys = [...html.matchAll(/data-i18n(?:-title)?="([^"]+)"/g)].map((m) => m[1]);
+    const htmlKeys = [...html.matchAll(/data-i18n(?:-title|-aria|-placeholder)?="([^"]+)"/g)].map((m) => m[1]);
     assert.ok(htmlKeys.length > 0, `No i18n keys found in ${relHtml}`);
     for (const key of htmlKeys) {
       assert.ok(Object.hasOwn(en, key), `Missing i18n key in en (${relHtml}): ${key}`);
       assert.ok(Object.hasOwn(fr, key), `Missing i18n key in fr (${relHtml}): ${key}`);
     }
   }
+
+  const popupHtml = fs.readFileSync(path.join(ROOT, 'src/popup/popup.html'), 'utf8');
+  assert.equal(popupHtml.includes('aria-selected'), false);
+  assert.equal(popupHtml.includes('role="tab"'), false);
+  assert.ok(popupHtml.includes('aria-pressed="true"'));
+
+  const scanJsFiles = (dir) => {
+    const out = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== 'vendor') {
+          out.push(...scanJsFiles(full));
+        }
+      } else if (entry.isFile() && entry.name.endsWith('.js')) {
+        out.push(full);
+      }
+    }
+    return out;
+  };
+
+  const jsKeysChecked = [];
+  for (const jsFile of scanJsFiles(path.join(ROOT, 'src'))) {
+    const code = fs.readFileSync(jsFile, 'utf8');
+    const rel = path.relative(ROOT, jsFile).replace(/\\/g, '/');
+    for (const match of code.matchAll(/\b(?:t|msg|translateFn|translate)\(\s*'([a-zA-Z0-9_]+)'/g)) {
+      const key = match[1];
+      jsKeysChecked.push(key);
+      assert.ok(Object.hasOwn(en, key), `Missing JS i18n key in en (${rel}): ${key}`);
+      assert.ok(Object.hasOwn(fr, key), `Missing JS i18n key in fr (${rel}): ${key}`);
+    }
+  }
+  assert.ok(jsKeysChecked.length > 15, 'Expected JS i18n key validation to scan t()/msg() calls');
 });
 
 test('no forbidden typographic characters exist in tracked text files (recursively)', () => {
@@ -83,7 +116,7 @@ test('no forbidden typographic characters exist in tracked text files (recursive
         }
         continue;
       }
-      if (/\.(js|json|html|css|md|yml|yaml)$/i.test(entry.name)) {
+      if (/\.(js|mjs|json|html|css|md|yml|yaml|py|ps1|sh)$/i.test(entry.name)) {
         const full = path.join(dir, entry.name);
         const rel = path.relative(ROOT, full).replace(/\\/g, '/');
         scannedFiles.push(rel);
@@ -106,5 +139,17 @@ test('no forbidden typographic characters exist in tracked text files (recursive
   assert.ok(
     scannedFiles.includes('_locales/fr/messages.json'),
     'Recursive typography guard must traverse _locales/fr/'
+  );
+  assert.ok(
+    scannedFiles.includes('companion/media_harvest_host.py'),
+    'Recursive typography guard must traverse companion Python script'
+  );
+  assert.ok(
+    scannedFiles.includes('companion/install_companion.ps1'),
+    'Recursive typography guard must traverse companion PowerShell installer'
+  );
+  assert.ok(
+    scannedFiles.includes('companion/install_companion.sh'),
+    'Recursive typography guard must traverse companion Shell installer'
   );
 });

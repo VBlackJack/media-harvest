@@ -81,3 +81,36 @@ test('attachVideoPreviews falls back to single video frame when stream ID differ
   assert.equal(enriched[0].poster, 'data:image/jpeg;base64,AAAA');
   assert.equal(enriched[0].duration, 30);
 });
+
+test('attachVideoPreviews pairs MSE items with matching blobUrl video frames and dimensions', () => {
+  const items = [
+    { url: 'mse://mse_1', blobUrl: 'blob:https://site.test/vid-1', isMse: true, type: MEDIA_TYPES.VIDEO },
+    { url: 'mse://mse_2', blobUrl: 'blob:https://site.test/vid-2', isMse: true, type: MEDIA_TYPES.VIDEO }
+  ];
+  const videoElements = [
+    {
+      src: 'blob:https://site.test/vid-2',
+      poster: '',
+      frameDataUrl: 'data:image/jpeg;base64,VID2',
+      width: 1080,
+      height: 1920,
+      duration: 22
+    },
+    {
+      src: 'blob:https://site.test/vid-1',
+      poster: '',
+      frameDataUrl: 'data:image/jpeg;base64,VID1',
+      width: 1280,
+      height: 720,
+      duration: 11
+    }
+  ];
+
+  const enriched = attachVideoPreviews(items, videoElements);
+  assert.equal(enriched[0].poster, 'data:image/jpeg;base64,VID1');
+  assert.equal(enriched[0].width, 1280);
+  assert.equal(enriched[0].duration, 11);
+  assert.equal(enriched[1].poster, 'data:image/jpeg;base64,VID2');
+  assert.equal(enriched[1].width, 1080);
+  assert.equal(enriched[1].duration, 22);
+});
