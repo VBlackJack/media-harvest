@@ -2,6 +2,27 @@
 
 All notable engineering changes to Media Harvest are documented in this file.
 
+## [1.1.0] - 2026-11-15
+
+### Added
+- Native Messaging companion host (`companion/media_harvest_host.py`) wrapping yt-dlp and ffmpeg with Windows (`install_companion.ps1`), Linux, and macOS (`install_companion.sh`) installers.
+- MediaSource (MSE) capture in MAIN world with ISOLATED world bridge (`src/content/mse_hook.js`, `src/content/mse_bridge.js`) and offscreen chunked assembly.
+- Universal and modular social site overlay adapters (`src/content/site_overlay.js`, `src/content/site_overlay.css`) for YouTube, Instagram, TikTok, Reddit, Bluesky, Facebook, Vimeo, Dailymotion, Twitch, and LinkedIn.
+- Keyboard shortcut `Alt+Shift+M` (`Option+Shift+M` on macOS) to toggle the extension popup directly.
+- Standalone zero-dependency ZIP packager script (`scripts/package_extension.mjs`) generating release archives with SHA-256 digests via `npm run package`.
+- Modular popup subcomponents (`src/popup/media_card.js`, `src/popup/preview_player.js`, `src/popup/batch_runner.js`, `src/popup/popup_helpers.js`) and declarativeNetRequest manager (`src/background/dnr_manager.js`).
+- Subtitle extraction, WebVTT track merging, and dedicated category filter.
+- Comprehensive automated test suite expanded to 94 tests across 24 test suites with 87% coverage.
+
+### Fixed
+- Enforced strict 512 MB buffer cap with early Content-Length reservation and streaming chunk checks in offscreen fetch pools.
+- Resolved memory-cap race and prevented unbounded buffering on missing Content-Length.
+- Re-attached active stream builds and cancellation controls when reopening popup or browser side panel.
+- Replaced unconfirmed bulk download with in-DOM confirmation at 10+ items and live batch progress reporting.
+- Improved WCAG AA contrast ratio on danger/cancel buttons and hydration retry handling.
+- Differentiated empty page state from active search/filter empty state with one-click filter reset.
+- Extended recursive typography guard to cover Python, PowerShell, and Shell companion scripts.
+
 ## [1.0.0] - 2026-11-14
 
 ### Added

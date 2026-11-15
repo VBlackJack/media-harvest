@@ -10,22 +10,24 @@ Media Harvest is a Manifest V3 Chrome extension built with pure browser ES modul
 
 | Component | Entry point | Responsibility |
 |---|---|---|
-| Service Worker | `src/background/service_worker.js` | `webRequest` capture, tab route reset, session state, toolbar badge, offscreen lifecycle, download and cancel orchestration |
-| Offscreen Document | `src/offscreen/offscreen.js` | Stream manifest resolution, byte-range / parallel segment fetch, 512 MB cap enforcement, fMP4 muxing, TS/ADTS transmuxing, Blob URL lifecycle |
-| Popup UI | `src/popup/popup.html`, `src/popup/popup.js` | Reconciled media card list, category filters, quality selector, inline video previews, download/cancel controls, large-stream badges |
-| Options Page | `src/options/options.html`, `src/options/options.js` | Synced user settings editor (`chrome.storage.sync`) with validation and defaults reset |
-| Content Scripts | `src/content/dom_scanner.js`, `src/content/x_overlay.js` | On-demand DOM scan (`<video>`, `<audio>`, `<img>`, media links) and live-toggleable X/Twitter post button |
+| Service Worker | `src/background/service_worker.js`, `src/background/dnr_manager.js` | `webRequest` capture, tab route reset, temporary `declarativeNetRequest` `Referer`/`Origin` rules, MSE stream tracking, `nativeMessaging` companion bridge, session state, toolbar badge, offscreen lifecycle, download and cancel orchestration |
+| Offscreen Document | `src/offscreen/offscreen.js` | Stream manifest resolution, live HLS/DASH rejection, byte-range / parallel segment fetch, WebVTT subtitle merging, chunked MSE fMP4/WebM muxing (`OFFSCREEN_BUILD_MSE_BLOB`), 512 MB cap enforcement, fMP4 muxing, TS/ADTS transmuxing, Blob URL lifecycle |
+| Popup / Side Panel UI | `src/popup/popup.html`, `src/popup/popup.js`, `src/popup/media_card.js`, `src/popup/preview_player.js`, `src/popup/batch_runner.js`, `src/popup/popup_helpers.js` | Reconciled media card list, Chrome Side Panel detach, category filters (including subtitles), persisted filter/sort state, search/sort controls, bounded manifest inspection queue with retry, quality/audio/subtitle selectors, MSE badges, companion `yt-dlp` delegation buttons, inline video/audio previews with quality switch reload, multi-select batch download/cancel controls, >512 MB cap warnings |
+| Options Page | `src/options/options.html`, `src/options/options.js` | Synced user settings editor (`chrome.storage.sync`) with validation, social/MSE toggles, Save As toggle, folder filename templates, companion status check, and defaults reset |
+| Content Scripts | `src/content/dom_scanner.js`, `src/content/x_overlay.js`, `src/content/site_overlay.js`, `src/content/mse_hook.js`, `src/content/mse_bridge.js` | Multi-frame DOM scan (Shadow DOM, meta tags, JSON-LD, CSS backgrounds, `srcset`/`<picture>`, `<track>`), X/Twitter overlay, modular social platform overlay adapters, MAIN-world `MediaSource` hook + ISOLATED-world chunk bridge |
+| Local Companion (Optional) | `companion/media_harvest_host.py`, `companion/install_companion.ps1`, `companion/install_companion.sh` | Windows, Linux, and macOS Chrome Native Messaging host wrapping `yt-dlp` and `ffmpeg` cleanly with length-prefixed JSON stdio framing and `shell=False` execution |
 
 ## Shared Modules (`src/shared/`)
 
 - `media_classifier.js` - URL/MIME classification, safe HTTP(S) check, filename sanitization, X status stem extraction, deduplication.
+- `fetch_utils.js` - Shared managed timeout, cancellation signal, streaming/Content-Length byte-cap reservation, and DASH descriptor/XML helpers (`fetchWithManagedTimeout`, `isDashDescriptor`, `looksLikeDashXml`).
 - `hls_parser.js` - Master/media `#EXTM3U` parser, resolution/bandwidth variant sorting, `#EXT-X-KEY` / `#EXT-X-SESSION-KEY` DRM detection, `#EXT-X-MAP` and `#EXT-X-BYTERANGE` per-URL offset tracking.
 - `dash_parser.js` - Pure-JS XML parser for static non-DRM DASH `.mpd` manifests (`BaseURL`, `SegmentTemplate` with `SegmentTimeline` or `duration`, `SegmentList`, progressive fallback, `ContentProtection` DRM detection).
 - `fmp4_muxer.js` - ISO BMFF box parser and part-based video/audio init+fragment muxer (`mergeFmp4VideoAndAudioParts`, `splitFmp4InitAndFragments`, `countTracksInInit`).
 - `ts_transmuxer.js` - Adapter around `muxjs.Transmuxer` producing zero-copy `Uint8Array` parts (`transmuxTsSegmentsToMp4Parts`) for MPEG-TS and ADTS streams.
 - `preview_matcher.js` - Matches X/Twitter stream IDs (`ext_tw_video`, `amplify_video`, `tweet_video`) against captured `<video>` poster frames.
-- `settings.js` - Bounds-checked normalizer (`normalizeSettings`), filename template expansion (`default`, `host_stem`, `date_stem`), and `chrome.storage.sync` persistence.
-- `i18n.js` - Chrome i18n helper with key fallback and DOM translation walker (`data-i18n`, `data-i18n-title`).
+- `settings.js` - Bounds-checked normalizer (`normalizeSettings`, `clampInteger`), filename template expansion (`default`, `host_stem`, `date_stem`), and `chrome.storage.sync` persistence.
+- `i18n.js` - Chrome i18n helper with key fallback and DOM translation walker (`data-i18n`, `data-i18n-title`, `data-i18n-aria`, `data-i18n-placeholder`).
 
 ## Storage & Concurrency Model
 
@@ -44,10 +46,11 @@ Media Harvest is a Manifest V3 Chrome extension built with pure browser ES modul
 
 All message type constants are defined in `src/config/constants.js` (`MESSAGE_TYPES`):
 
-- Popup -> Service Worker: `GET_MEDIA_FOR_TAB`, `CLEAR_MEDIA_FOR_TAB`, `INSPECT_HLS`, `DOWNLOAD_MEDIA`, `CANCEL_DOWNLOAD`.
-- Content Script -> Service Worker: `DOWNLOAD_TWEET_VIDEO`.
-- Service Worker -> Offscreen (`target: 'offscreen'`): `OFFSCREEN_BUILD_HLS_BLOB`, `OFFSCREEN_CANCEL_BUILD`, `OFFSCREEN_REVOKE_BLOB`.
-- Offscreen / Service Worker -> Popup: `DOWNLOAD_PROGRESS` (matched by `requestId`), `MEDIA_UPDATED` (debounced per tab).
+- Popup -> Service Worker: `GET_MEDIA_FOR_TAB`, `CLEAR_MEDIA_FOR_TAB`, `INSPECT_HLS`, `DOWNLOAD_MEDIA`, `DOWNLOAD_HLS_SUBTITLE`, `CANCEL_DOWNLOAD`, `GET_ACTIVE_BUILDS`, `CHECK_COMPANION`, `DOWNLOAD_WITH_COMPANION`.
+- Content Script -> Service Worker: `DOWNLOAD_TWEET_VIDEO`, `DOWNLOAD_SITE_VIDEO`, `MSE_STREAM_UPDATED`, `CANCEL_DOWNLOAD`.
+- Service Worker <-> Content Bridge: `EXPORT_MSE_STREAM` (tab frame export trigger).
+- Service Worker / Content Bridge -> Offscreen (`target: 'offscreen'`): `OFFSCREEN_BUILD_HLS_BLOB`, `OFFSCREEN_BUILD_SUBTITLE_BLOB`, `OFFSCREEN_BUILD_MSE_BLOB`, `OFFSCREEN_CANCEL_BUILD`, `OFFSCREEN_REVOKE_BLOB`.
+- Offscreen / Service Worker -> Popup / Content Script: `DOWNLOAD_PROGRESS` (matched by `requestId` or URL), `DOWNLOAD_FINISHED`, `MEDIA_UPDATED` (debounced per tab).
 
 ## Stream Assembly & Safety Limits
 

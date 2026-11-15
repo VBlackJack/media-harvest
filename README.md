@@ -2,14 +2,16 @@
 
 # Media Harvest
 
-Chrome Manifest V3 extension (`v1.0.0`) to detect, preview, and download videos, non-DRM HLS (`.m3u8`) and DASH (`.mpd`) streams, images, and audio from the active tab.
+Chrome Manifest V3 extension (`v1.0.0`) to detect, preview, and download videos, non-DRM HLS (`.m3u8`) and DASH (`.mpd`) streams, subtitles, images, and audio from the active tab, in popup or Chrome Side Panel mode.
 
 ## Features
 
-- Scans page DOM (`<video>`, `<audio>`, `<img>`, direct media links) on popup open, including live video frame previews.
-- Captures network media responses (`.mp4`, `.webm`, `.m3u8`, `.mpd`, audio, images) per tab via `chrome.webRequest` with toolbar video badge counts and automatic tab-route clearing.
-- Resolves non-DRM HLS master/media playlists (including `#EXT-X-BYTERANGE`) and static non-DRM DASH `.mpd` manifests, estimates variant sizes with configurable large-stream warnings, supports mid-flight cancellation, and assembles segments in an offscreen document within a `512` MB memory cap (zero-copy `Uint8Array` parts for dual-track fMP4 muxing and MPEG-TS/ADTS to MP4 transmuxing via vendored `mux-mp4.min.js`).
-- Injects an inline download button directly on X/Twitter video posts (`x.com` / `twitter.com`), with a live enable/disable toggle in Settings.
+- Scans page DOM (`<video>`, `<audio>`, `<img>`, `<track>`, direct media links, open Shadow DOM roots, OpenGraph/Twitter meta tags, JSON-LD `VideoObject`/`AudioObject`/`ImageObject`, and visible CSS `background-image` URLs) across all frames (`allFrames: true`), including live video frame previews and inline `<audio>` playback.
+- Captures network media responses (`.mp4`, `.webm`, `.m3u8`, `.mpd`, `.vtt`, `.srt`, `.ttml`, `.ass`, audio, images) per tab via `chrome.webRequest`, propagates `Referer`/`Origin` via temporary `declarativeNetRequest` session rules on restricted CDNs, and provides a universal MSE (`MediaSource`) fallback buffer capture up to `150` MB (`enableMseCapture`).
+- Resolves non-DRM VOD HLS master/media playlists (including `#EXT-X-BYTERANGE` and `#EXT-X-MEDIA:TYPE=SUBTITLES`) and static non-DRM DASH `.mpd` manifests, blocks live HLS/DASH streams cleanly, estimates variant sizes with configurable large-stream warnings, supports mid-flight cancellation, and assembles segments in an offscreen document within a `512` MB memory cap (zero-copy `Uint8Array` parts for dual-track fMP4 muxing and MPEG-TS/ADTS to MP4 transmuxing via vendored `mux-mp4.min.js`).
+- Supports per-card multi-select for mixed direct + stream batch downloads, persistent category filters and sort order, and a Chrome Side Panel view.
+- Injects inline download buttons directly on X/Twitter (`x.com` / `twitter.com`), modular social video players (`youtube.com`, `instagram.com`, `tiktok.com`, `reddit.com`, `facebook.com`, `bsky.app`, `vimeo.com`, `dailymotion.com`, `twitch.tv`, `linkedin.com`), and generic HTML5 `<video>` players across the web (`enableGenericVideoOverlay`), each toggleable live in Settings.
+- Includes an optional Windows Native Messaging companion (`companion/` delegating to local `yt-dlp` and `ffmpeg`) with live percentage progress and optional browser cookie passthrough (`enableCompanionCookies`) for heavy (`>512` MB) or authenticated streams.
 - Includes an Options page (`chrome.storage.sync`) plus English and French localization (`_locales/en`, `_locales/fr`).
 
 ## Settings (`src/options/`)
@@ -19,11 +21,36 @@ Open Settings from the gear button in the popup or via Chrome's Extension Detail
 | Setting | Default | Bounds / Values | Description |
 |---|---|---|---|
 | Default stream quality | `best` | `best`, `lowest` | Preferred variant selected when inspecting HLS/DASH streams |
-| Filename template | `default` | `default`, `host_stem`, `date_stem` | Naming format (`{name}.{ext}`, `{host}_{name}.{ext}`, `{YYYY-MM-DD}_{name}.{ext}`) |
+| Filename template | `default` | `default`, `host_stem`, `date_stem`, `host_folder`, `date_folder` | Naming format (`{name}.{ext}`, `{host}_{name}.{ext}`, `{YYYY-MM-DD}_{name}.{ext}`, `{host}/{name}.{ext}`, `{YYYY-MM-DD}/{name}.{ext}`) |
 | Minimum image size | `64` px | `0` - `2000` px | Ignores smaller DOM images and tracking pixels |
 | Parallel segment downloads | `4` | `1` - `8` | Bounded concurrency pool in `offscreen.js` |
-| Large stream warning | `250` MB | `0` - `2048` MB | Shows a warning badge above threshold (`0` disables) |
+| Large stream warning | `250` MB | `0` - `512` MB | Shows a warning badge above threshold (`0` disables) |
 | X / Twitter post button | Enabled | `true` / `false` | Live-toggles the inline download button on `x.com` / `twitter.com` |
+| Social sites video button | Enabled | `true` / `false` | Live-toggles floating video buttons on Instagram, TikTok, Reddit, YouTube, Facebook, Bluesky, Vimeo, Dailymotion, Twitch, and LinkedIn |
+| Other websites video button | Enabled | `true` / `false` | Live-toggles floating download buttons on any generic HTML5 `<video>` (`>= 220x140` px) outside social platforms |
+| MSE buffer capture | Enabled | `true` / `false` | Captures non-DRM `MediaSource` buffers as an offscreen MP4/WebM fallback (`150` MB cap) |
+| Companion Chrome cookies | Disabled | `true` / `false` | Passes `--cookies-from-browser chrome` to the local `yt-dlp` companion for logged-in sessions |
+| Save As prompt | Disabled | `true` / `false` | Prompts where to save individual downloads |
+
+## Optional Local Companion (`companion/`)
+
+For streams exceeding browser memory limits (`512` MB) or complex platform formats, install the optional Chrome Native Messaging host wrapping `yt-dlp` and `ffmpeg` (requires Python 3 and `yt-dlp` on PATH):
+
+- **Windows (PowerShell):**
+  ```powershell
+  .\companion\install_companion.ps1 -ExtensionId <YOUR_EXTENSION_ID>
+  ```
+- **Linux / macOS (Bash):**
+  ```bash
+  ./companion/install_companion.sh <YOUR_EXTENSION_ID>
+  ```
+
+Use **Check status** in Extension Options to verify the connection. Downloads triggered via the companion save into `Downloads\MediaHarvest`.
+
+## Shortcuts & Controls
+
+- `Alt+Shift+M` (or `Option+Shift+M` on macOS): opens the extension popup instantly from anywhere in Chrome.
+- Chrome Side Panel button (topbar): detaches the media list into Chrome's persistent sidebar.
 
 ## Limitations & Safety Boundaries
 
@@ -36,8 +63,11 @@ Open Settings from the gear button in the popup or via Chrome's Extension Detail
 - `downloads` - Triggers and tracks file downloads (`chrome.downloads.download` / `.cancel` / `.onChanged`).
 - `webRequest` + `<all_urls>` - Observes media response headers (`Content-Type`, `Content-Length`) and main-frame navigations per tab.
 - `activeTab` + `scripting` - Scans DOM media on demand when the popup opens.
-- `storage` - Stores transient per-tab state in `chrome.storage.session` and user preferences in `chrome.storage.sync`.
+- `storage` - Stores transient per-tab state in `chrome.storage.session`, filter/sort view state in `chrome.storage.local`, and user preferences in `chrome.storage.sync`.
 - `offscreen` - Runs segment fetching and MP4 muxing in an isolated MV3 offscreen document with Blob URL lifecycle management.
+- `sidePanel` - Allows detaching the capture list into Chrome's persistent Side Panel alongside the active page.
+- `declarativeNetRequest` - Applies temporary session `Referer` / `Origin` headers when downloading or inspecting Referer-protected CDN media.
+- `nativeMessaging` - Communicates with the optional local `com.mediaharvest.companion` (`yt-dlp` + `ffmpeg`) host when installed.
 
 ## Architecture & Docs
 
@@ -45,11 +75,11 @@ Open Settings from the gear button in the popup or via Chrome's Extension Detail
 - Change history: [CHANGELOG.md](CHANGELOG.md)
 - Directory overview:
   - `src/config/constants.js` - Media tables, limits, storage keys, settings defaults, and message types.
-  - `src/shared/` - Pure ES modules (`media_classifier.js`, `hls_parser.js`, `dash_parser.js`, `fmp4_muxer.js`, `ts_transmuxer.js`, `preview_matcher.js`, `settings.js`, `i18n.js`).
-  - `src/background/service_worker.js` - Network capture, session state, badge updates, offscreen lifecycle, cancellation, and downloads.
+  - `src/shared/` - Pure ES modules (`media_classifier.js`, `fetch_utils.js`, `hls_parser.js`, `dash_parser.js`, `fmp4_muxer.js`, `ts_transmuxer.js`, `preview_matcher.js`, `settings.js`, `i18n.js`).
+  - `src/background/` - Network capture, session state, badge updates, temporary DNR rules (`dnr_manager.js`), offscreen lifecycle, cancellation, and downloads.
   - `src/offscreen/` - Offscreen document assembling HLS and DASH segments into downloadable Blob URLs.
-  - `src/content/` - On-demand DOM media scanner and X/Twitter inline post overlay.
-  - `src/popup/` - Extension popup UI with live preview, quality selection, cancellation, and progress reporting.
+  - `src/content/` - On-demand DOM media scanner (`srcset` and `<picture>` support) and X/Twitter inline post overlay.
+  - `src/popup/` - Modular extension popup UI (`popup.js`, `media_card.js`, `preview_player.js`, `batch_runner.js`, `popup_helpers.js`) with live preview, search/sort controls, bounded inspection queue with retry, quality and audio track selection, over-cap warnings, batch confirmation, cancellation, and progress reporting.
   - `src/options/` - Synced extension settings page (`options.html`, `options.css`, `options.js`).
 
 ## Installation in Chrome
@@ -59,10 +89,13 @@ Open Settings from the gear button in the popup or via Chrome's Extension Detail
 3. Click **Load unpacked** and select this folder.
 4. Open a page or post (for example on X), play or reload the video, then click the Media Harvest icon or inline post button.
 
-## Tests & CI
+## Tests, CI & Distribution
 
-Zero external runtime or dev npm packages are required; tests use Node.js built-in `node:test` and `node:assert/strict` (`45` tests across `12` test files in `tests/`, also executed in CI on Node 22 via `.github/workflows/ci.yml`):
+Zero external runtime or dev npm packages are required; syntax checking, packaging, and tests use Node.js built-in `node --check`, `node:test`, and `node:assert/strict` (`94` tests in `tests/`, also executed in CI on Node 22 via `.github/workflows/ci.yml`):
 
 ```powershell
+npm run check
 npm test
+npm run test:coverage
+npm run package
 ```
