@@ -658,4 +658,76 @@ test('createMediaCard supports HLS subtitles, live stream blocking, audio previe
   await imgCard.thumbEl.dispatchEvent({ type: 'click' });
   assert.equal(lightboxCalls.length, 1);
   assert.equal(lightboxCalls[0].item.url, 'https://cdn.example.com/photo.jpg');
+
+  // Autonomous .m4a extraction is enabled for muxed non-DRM MP4 streams & MP4 MSE cards without companion
+  const muxedAudioCalls = [];
+  const muxedStreamCard = createMediaCard(
+    {
+      url: 'https://cdn.example.com/muxed/master.m3u8',
+      type: 'stream',
+      ext: 'm3u8',
+      isStream: true,
+      source: 'network',
+      suggestedFilename: 'muxed.mp4'
+    },
+    {
+      documentRef: doc,
+      translateFn: (k) => k,
+      hlsMetaByUrl: metaMap,
+      getSettings: () => DEFAULT_SETTINGS,
+      isCompanionAvailable: () => false,
+      onExtractAudio: (_entry, chosenUrl, chosenAudioUrl, useCompanion) => {
+        muxedAudioCalls.push({ chosenUrl, chosenAudioUrl, useCompanion });
+      }
+    }
+  );
+  assert.equal(muxedStreamCard.audioExtractBtn.classList.contains('hidden'), true);
+  const muxedMeta = {
+    encrypted: false,
+    isDynamic: false,
+    variants: [{ url: 'https://cdn.example.com/muxed/720.m3u8', resolution: '1280x720', bandwidth: 1200000 }],
+    audioTracks: []
+  };
+  metaMap.set(muxedStreamCard.item.url, muxedMeta);
+  applyStreamMetadata(muxedStreamCard, muxedMeta, {
+    documentRef: doc,
+    translateFn: (k) => k,
+    hlsMetaByUrl: metaMap,
+    getSettings: () => DEFAULT_SETTINGS,
+    isCompanionAvailable: () => false
+  });
+  assert.equal(muxedStreamCard.audioExtractBtn.classList.contains('hidden'), false);
+  await muxedStreamCard.audioExtractBtn.dispatchEvent({ type: 'click' });
+  assert.deepEqual(muxedAudioCalls, [
+    { chosenUrl: 'https://cdn.example.com/muxed/720.m3u8', chosenAudioUrl: '', useCompanion: false }
+  ]);
+
+  const mseAudioCalls = [];
+  const mseMp4Card = createMediaCard(
+    {
+      url: 'mse://mse_7',
+      type: 'video',
+      ext: 'mp4',
+      isStream: false,
+      isMse: true,
+      mseId: 'mse_7',
+      source: 'mse',
+      suggestedFilename: 'capture.mp4'
+    },
+    {
+      documentRef: doc,
+      translateFn: (k) => k,
+      hlsMetaByUrl: metaMap,
+      getSettings: () => DEFAULT_SETTINGS,
+      isCompanionAvailable: () => false,
+      onExtractAudio: (_entry, chosenUrl, chosenAudioUrl, useCompanion) => {
+        mseAudioCalls.push({ chosenUrl, chosenAudioUrl, useCompanion });
+      }
+    }
+  );
+  assert.ok(mseMp4Card.audioExtractBtn);
+  assert.equal(mseMp4Card.audioExtractBtn.classList.contains('hidden'), false);
+  await mseMp4Card.audioExtractBtn.dispatchEvent({ type: 'click' });
+  assert.equal(mseAudioCalls.length, 1);
+  assert.equal(mseAudioCalls[0].useCompanion, false);
 });

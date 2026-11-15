@@ -341,6 +341,190 @@ export function mergeFmp4VideoAndAudioParts(
   return outputParts;
 }
 
+const HDLR_HANDLER_OFFSET = 16;
+const TRUN_DATA_OFFSET_FLAG = 0x000001;
+const TRUN_DATA_OFFSET_POS = 16;
+
+/**
+ * Reads the 4-character media handler type (e.g. 'soun', 'vide') from a trak box.
+ * @param {Uint8Array} trakBytes
+ * @returns {string}
+ */
+export function readHandlerTypeFromTrak(trakBytes) {
+  const trakChildren = parseIsoBoxes(trakBytes, BOX_HEADER_SIZE);
+  const mdia = trakChildren.find((box) => box.type === 'mdia');
+  if (!mdia) {
+    return '';
+  }
+  const mdiaChildren = parseIsoBoxes(trakBytes, mdia.start + BOX_HEADER_SIZE, mdia.end);
+  const hdlr = mdiaChildren.find((box) => box.type === 'hdlr');
+  if (!hdlr || HDLR_HANDLER_OFFSET + 4 > hdlr.data.byteLength) {
+    return '';
+  }
+  return readBoxType(hdlr.data, HDLR_HANDLER_OFFSET);
+}
+
+/**
+ * Adjusts signed trun data_offset fields inside a cloned traf box by deltaBytes.
+ * @param {Uint8Array} trafBytes
+ * @param {number} deltaBytes
+ * @returns {Uint8Array}
+ */
+function shiftTrafTrunDataOffsets(trafBytes, deltaBytes) {
+  if (!deltaBytes) {
+    return trafBytes;
+  }
+  const cloned = new Uint8Array(trafBytes);
+  const children = parseIsoBoxes(cloned, BOX_HEADER_SIZE);
+  for (const child of children) {
+    if (child.type !== 'trun' || child.data.byteLength < TRUN_DATA_OFFSET_POS + 4) {
+      continue;
+    }
+    const flags = (child.data[9] << 16) | (child.data[10] << 8) | child.data[11];
+    if ((flags & TRUN_DATA_OFFSET_FLAG) === 0) {
+      continue;
+    }
+    const view = new DataView(cloned.buffer, cloned.byteOffset + child.start, child.data.byteLength);
+    const currentOffset = view.getInt32(TRUN_DATA_OFFSET_POS, false);
+    view.setInt32(TRUN_DATA_OFFSET_POS, currentOffset + deltaBytes, false);
+  }
+  return cloned;
+}
+
+/**
+ * Reads track_ID from the first tfhd box inside a traf box.
+ * @param {Uint8Array} trafBytes
+ * @returns {number}
+ */
+function readTrackIdFromTraf(trafBytes) {
+  const children = parseIsoBoxes(trafBytes, BOX_HEADER_SIZE);
+  const tfhd = children.find((box) => box.type === 'tfhd');
+  if (!tfhd || TFHD_TRACK_ID_OFFSET + 4 > tfhd.data.byteLength) {
+    return 0;
+  }
+  const view = new DataView(tfhd.data.buffer, tfhd.data.byteOffset, tfhd.data.byteLength);
+  return view.getUint32(TFHD_TRACK_ID_OFFSET, false);
+}
+
+/**
+ * Extracts only the audio ('soun') track from a single or multi-track fMP4 init + fragment list.
+ * @param {ArrayBuffer | Uint8Array} initInput
+ * @param {Array<ArrayBuffer | Uint8Array>} [fragmentInputs=[]]
+ * @returns {Array<Uint8Array>}
+ */
+export function extractAudioOnlyFromFmp4Parts(initInput, fragmentInputs = []) {
+  const initBytes = toUint8(initInput);
+  const topBoxes = parseIsoBoxes(initBytes);
+  const ftypBox = topBoxes.find((b) => b.type === 'ftyp');
+  const moovBox = topBoxes.find((b) => b.type === 'moov');
+  if (!moovBox) {
+    throw new Error('INVALID_FMP4_INIT');
+  }
+
+  const moovChildren = parseIsoBoxes(initBytes, moovBox.start + BOX_HEADER_SIZE, moovBox.end);
+  const allTraks = moovChildren.filter((b) => b.type === 'trak');
+  const audioTraks = allTraks.filter((b) => readHandlerTypeFromTrak(b.data) === 'soun');
+  if (audioTraks.length === 0) {
+    throw new Error('NO_AUDIO_TRACK');
+  }
+
+  const audioTrackIds = new Set(audioTraks.map((b) => readTrackIdFromTrak(b.data)).filter((id) => id > 0));
+  const rawFragments = fragmentInputs.map((part) => toUint8(part)).filter((part) => part.byteLength > 0);
+  if (audioTraks.length === allTraks.length) {
+    return [initBytes, ...rawFragments];
+  }
+
+  const rebuiltMoovChildren = [];
+  for (const child of moovChildren) {
+    if (child.type === 'trak') {
+      if (readHandlerTypeFromTrak(child.data) === 'soun') {
+        rebuiltMoovChildren.push(child.data);
+      }
+    } else if (child.type === 'mvex') {
+      const mvexChildren = parseIsoBoxes(initBytes, child.start + BOX_HEADER_SIZE, child.end);
+      const keptMvex = mvexChildren
+        .filter((mc) => {
+          if (mc.type !== 'trex' || TREX_TRACK_ID_OFFSET + 4 > mc.data.byteLength) {
+            return true;
+          }
+          const trackId = new DataView(mc.data.buffer, mc.data.byteOffset, mc.data.byteLength)
+            .getUint32(TREX_TRACK_ID_OFFSET, false);
+          return audioTrackIds.has(trackId);
+        })
+        .map((mc) => mc.data);
+      if (keptMvex.length > 0) {
+        rebuiltMoovChildren.push(buildIsoBox('mvex', keptMvex));
+      }
+    } else {
+      rebuiltMoovChildren.push(child.data);
+    }
+  }
+
+  const outputParts = [];
+  if (ftypBox) {
+    outputParts.push(ftypBox.data);
+  }
+  outputParts.push(buildIsoBox('moov', rebuiltMoovChildren));
+
+  for (const frag of rawFragments) {
+    const fragTopBoxes = parseIsoBoxes(frag);
+    let idx = 0;
+    while (idx < fragTopBoxes.length) {
+      const box = fragTopBoxes[idx];
+      if (box.type !== 'moof') {
+        if (box.type !== 'mdat') {
+          outputParts.push(box.data);
+        }
+        idx += 1;
+        continue;
+      }
+
+      const nextBox = idx + 1 < fragTopBoxes.length && fragTopBoxes[idx + 1].type === 'mdat'
+        ? fragTopBoxes[idx + 1]
+        : null;
+      const moofChildren = parseIsoBoxes(frag, box.start + BOX_HEADER_SIZE, box.end);
+      const trafBoxes = moofChildren.filter((c) => c.type === 'traf');
+      const audioTrafBoxes = trafBoxes.filter((t) => audioTrackIds.has(readTrackIdFromTraf(t.data)));
+
+      if (audioTrafBoxes.length === 0) {
+        idx += nextBox ? 2 : 1;
+        continue;
+      }
+
+      if (audioTrafBoxes.length === trafBoxes.length) {
+        outputParts.push(box.data);
+        if (nextBox) {
+          outputParts.push(nextBox.data);
+        }
+        idx += nextBox ? 2 : 1;
+        continue;
+      }
+
+      const prebuiltChildren = [];
+      for (const mc of moofChildren) {
+        if (mc.type !== 'traf' || audioTrackIds.has(readTrackIdFromTraf(mc.data))) {
+          prebuiltChildren.push(mc.data);
+        }
+      }
+      const newMoofSize = BOX_HEADER_SIZE + prebuiltChildren.reduce((sum, c) => sum + c.byteLength, 0);
+      const offsetDelta = box.data.byteLength - newMoofSize;
+      const adjustedChildren = prebuiltChildren.map((childData) => {
+        if (readBoxType(childData, 4) === 'traf') {
+          return shiftTrafTrunDataOffsets(childData, offsetDelta);
+        }
+        return childData;
+      });
+      outputParts.push(buildIsoBox('moof', adjustedChildren));
+      if (nextBox) {
+        outputParts.push(nextBox.data);
+      }
+      idx += nextBox ? 2 : 1;
+    }
+  }
+
+  return outputParts;
+}
+
 /**
  * Merges separate fMP4 video and audio init/media chunks into a single valid dual-track MP4 buffer.
  * @param {ArrayBuffer | Uint8Array} videoInitInput

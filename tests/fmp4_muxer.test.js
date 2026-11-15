@@ -19,9 +19,11 @@ import assert from 'node:assert/strict';
 import {
   buildIsoBox,
   countTracksInInit,
+  extractAudioOnlyFromFmp4Parts,
   mergeFmp4VideoAndAudio,
   mergeFmp4VideoAndAudioParts,
   parseIsoBoxes,
+  readHandlerTypeFromTrak,
   readTrackIdFromTrak,
   splitFmp4InitAndFragments
 } from '../src/shared/fmp4_muxer.js';
@@ -169,4 +171,68 @@ test('countTracksInInit, splitFmp4InitAndFragments, and mergeFmp4VideoAndAudioPa
   const split = splitFmp4InitAndFragments(combined);
   assert.equal(countTracksInInit(split.initSegment), 2);
   assert.equal(split.fragments.length, 3);
+});
+
+function makeTypedTrak(trackId, handlerType) {
+  const tkhdPayload = makeFullBoxPayload(0, 80);
+  new DataView(tkhdPayload.buffer).setUint32(12, trackId, false);
+  const tkhd = buildIsoBox('tkhd', [tkhdPayload]);
+
+  const hdlrPayload = makeFullBoxPayload(0, 20);
+  for (let i = 0; i < 4; i += 1) {
+    hdlrPayload[8 + i] = handlerType.charCodeAt(i);
+  }
+  const hdlr = buildIsoBox('hdlr', [hdlrPayload]);
+  const mdia = buildIsoBox('mdia', [hdlr]);
+  return buildIsoBox('trak', [tkhd, mdia]);
+}
+
+function makeTypedInit(tracks) {
+  const ftyp = buildIsoBox('ftyp', [new Uint8Array([0x69, 0x73, 0x6f, 0x6d])]);
+  const traks = tracks.map((t) => makeTypedTrak(t.trackId, t.handlerType));
+  const trexs = tracks.map((t) => makeTrex(t.trackId));
+  const maxId = tracks.reduce((acc, t) => Math.max(acc, t.trackId), 1);
+  const moov = buildIsoBox('moov', [
+    makeMvhd(maxId + 1),
+    ...traks,
+    buildIsoBox('mvex', trexs)
+  ]);
+  const out = new Uint8Array(ftyp.byteLength + moov.byteLength);
+  out.set(ftyp, 0);
+  out.set(moov, ftyp.byteLength);
+  return out;
+}
+
+test('extractAudioOnlyFromFmp4Parts isolates soun track from muxed fMP4 and rejects video-only streams', () => {
+  const muxedInit = makeTypedInit([
+    { trackId: 1, handlerType: 'vide' },
+    { trackId: 2, handlerType: 'soun' }
+  ]);
+  const videoFrag = makeMediaChunk(1, 0x11);
+  const audioFragA = makeMediaChunk(2, 0x22);
+  const audioFragB = makeMediaChunk(2, 0x33);
+
+  const audioParts = extractAudioOnlyFromFmp4Parts(muxedInit, [videoFrag, audioFragA, audioFragB]);
+  const totalLen = audioParts.reduce((sum, p) => sum + p.byteLength, 0);
+  const combinedAudio = new Uint8Array(totalLen);
+  let pos = 0;
+  for (const part of audioParts) {
+    combinedAudio.set(part, pos);
+    pos += part.byteLength;
+  }
+
+  const split = splitFmp4InitAndFragments(combinedAudio);
+  assert.equal(countTracksInInit(split.initSegment), 1);
+  assert.equal(split.fragments.length, 2);
+  const topBoxes = parseIsoBoxes(split.initSegment);
+  const moov = topBoxes.find((b) => b.type === 'moov');
+  const traks = parseIsoBoxes(split.initSegment, moov.start + 8, moov.end).filter((b) => b.type === 'trak');
+  assert.equal(readHandlerTypeFromTrak(traks[0].data), 'soun');
+  assert.equal(readTrackIdFromTrak(traks[0].data), 2);
+
+  const videoOnlyInit = makeTypedInit([{ trackId: 1, handlerType: 'vide' }]);
+  assert.throws(
+    () => extractAudioOnlyFromFmp4Parts(videoOnlyInit, [videoFrag]),
+    /NO_AUDIO_TRACK/
+  );
 });

@@ -157,6 +157,7 @@
             type: BRIDGE_CONFIG.RUNTIME_MESSAGES.OFFSCREEN_BUILD_MSE_BLOB,
             action: 'finalize',
             requestId: payload.requestId,
+            audioOnly: Boolean(pending.audioOnly),
             videoMime: payload.videoMime || '',
             audioMime: payload.audioMime || ''
           });
@@ -188,6 +189,7 @@
         pendingExports.set(requestId, {
           resolve,
           timer,
+          audioOnly: Boolean(message.audioOnly),
           queue: Promise.resolve()
         });
         postToHook(BRIDGE_CONFIG.EVENTS.EXPORT_REQUEST, {

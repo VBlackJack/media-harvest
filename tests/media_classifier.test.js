@@ -21,10 +21,12 @@ import {
   classifyMseMime,
   deduplicateMedia,
   deriveFilenameStem,
+  extractRasterDataUrlExtension,
   extractUrlExtension,
   isDownloadableMediaUrl,
   isHttpUrl,
   isMseUrl,
+  isRasterImageDataUrl,
   isSvgDataUrl,
   normalizeMimeType,
   sanitizeFilename
@@ -264,4 +266,27 @@ test('isSvgDataUrl, isDownloadableMediaUrl, and deduplicateMedia handle SVG data
   ]);
   assert.equal(mergedSvg.length, 1);
   assert.ok(mergedSvg[0].svgMarkup.includes('<svg'));
+});
+
+test('isRasterImageDataUrl, extractRasterDataUrlExtension, and classifyMedia handle canvas/raster data URIs', () => {
+  const pngUri = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk';
+  const webpUri = 'data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvAAAAAAfQ';
+  const jpegUri = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/';
+
+  assert.equal(isRasterImageDataUrl(pngUri), true);
+  assert.equal(isRasterImageDataUrl('data:image/svg+xml;charset=utf-8,%3Csvg/%3E'), false);
+  assert.equal(isRasterImageDataUrl('data:text/html;base64,PGgxPg=='), false);
+  assert.equal(extractRasterDataUrlExtension(pngUri), 'png');
+  assert.equal(extractRasterDataUrlExtension(webpUri), 'webp');
+  assert.equal(extractRasterDataUrlExtension(jpegUri), 'jpg');
+
+  assert.equal(isDownloadableMediaUrl(pngUri), true);
+  assert.equal(isDownloadableMediaUrl('data:text/plain;base64,SGVsbG8='), false);
+  assert.deepEqual(classifyMedia(pngUri, ''), {
+    type: MEDIA_TYPES.IMAGE,
+    ext: 'png',
+    isStream: false
+  });
+  assert.equal(extractUrlExtension(webpUri), 'webp');
+  assert.equal(deriveFilenameStem(pngUri, 'Snapshot', 'https://example.com/art'), 'Snapshot');
 });

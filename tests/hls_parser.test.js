@@ -167,4 +167,22 @@ test('parseHlsPlaylist parses SUBTITLES tracks and detects live/event playlists 
     'https://cdn.example.com/hls/vod.m3u8'
   );
   assert.equal(vodEnded.isDynamic, false);
+
+  const discontVod = parseHlsPlaylist(
+    [
+      '#EXTM3U',
+      '#EXT-X-PLAYLIST-TYPE:VOD',
+      '#EXTINF:4.0,',
+      'pre.ts',
+      '#EXT-X-DISCONTINUITY',
+      '#EXTINF:6.0,',
+      'ad.ts',
+      '#EXT-X-ENDLIST'
+    ].join('\n'),
+    'https://cdn.example.com/hls/discont.m3u8'
+  );
+  assert.equal(discontVod.segments.length, 2);
+  assert.equal(discontVod.segments[0].discontinuity, false);
+  assert.equal(discontVod.segments[1].discontinuity, true);
+  assert.equal(discontVod.discontinuityCount, 1);
 });

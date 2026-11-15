@@ -364,7 +364,43 @@ function setPreviewDisabled(entry, disabled) {
 }
 
 /**
- * Updates visibility of the audio extraction button based on separated stream audio tracks or companion availability.
+ * Checks whether a stream entry can extract an autonomous M4A track without a companion binary.
+ * @param {object} entry
+ * @param {object | null} meta
+ * @returns {{ hasSeparateAudio: boolean, canBrowserMuxedAudio: boolean, canMseAudio: boolean }}
+ */
+function resolveAudioExtractCapabilities(entry, meta) {
+  const { item } = entry;
+  const hasSeparateAudio = Boolean(meta && Array.isArray(meta.audioTracks) && meta.audioTracks.length > 0);
+  const selectedVariantUrl = entry.qualitySelect && !entry.qualitySelect.classList.contains('hidden')
+    ? entry.qualitySelect.value
+    : '';
+  const selectedVariant = meta && Array.isArray(meta.variants)
+    ? (meta.variants.find((v) => v.url === selectedVariantUrl) || meta.variants[0] || null)
+    : null;
+  const isWebmStream = Boolean(
+    (selectedVariant && typeof selectedVariant.mimeType === 'string' && selectedVariant.mimeType.toLowerCase().includes('webm'))
+    || (item.ext || '').toLowerCase() === DEFAULT_FILENAMES.WEBM_EXT
+  );
+  const canBrowserMuxedAudio = Boolean(
+    item.isStream
+    && meta
+    && !meta.encrypted
+    && !meta.isDynamic
+    && !isWebmStream
+    && Array.isArray(meta.variants)
+    && meta.variants.length > 0
+  );
+  const canMseAudio = Boolean(
+    item.isMse
+    && item.type === MEDIA_TYPES.VIDEO
+    && (item.ext || '').toLowerCase() !== DEFAULT_FILENAMES.WEBM_EXT
+  );
+  return { hasSeparateAudio, canBrowserMuxedAudio, canMseAudio };
+}
+
+/**
+ * Updates visibility of the audio extraction button based on stream/MSE capabilities or companion availability.
  * @param {object} entry
  * @param {object} [context={}]
  */
@@ -374,9 +410,9 @@ export function refreshAudioExtractButton(entry, context = {}) {
   }
   const { item } = entry;
   const meta = context.hlsMetaByUrl ? context.hlsMetaByUrl.get(item.url) : null;
-  const hasSeparateAudio = Boolean(meta && Array.isArray(meta.audioTracks) && meta.audioTracks.length > 0);
-  const companionOk = Boolean(context.isCompanionAvailable && context.isCompanionAvailable());
-  const visible = !item.isMse && !item.isBlocked && (hasSeparateAudio || companionOk);
+  const { hasSeparateAudio, canBrowserMuxedAudio, canMseAudio } = resolveAudioExtractCapabilities(entry, meta);
+  const companionOk = !item.isMse && Boolean(context.isCompanionAvailable && context.isCompanionAvailable());
+  const visible = !item.isBlocked && (hasSeparateAudio || canBrowserMuxedAudio || canMseAudio || companionOk);
   entry.audioExtractBtn.classList.toggle('hidden', !visible);
 }
 
@@ -763,6 +799,7 @@ export function createMediaCard(item, context = {}) {
     }
     renderBadges(entry.badgesEl, entry.item, entry, context);
     updateStreamLimitWarning(entry, context);
+    refreshAudioExtractButton(entry, context);
     refreshPreview(entry);
   });
 
@@ -848,7 +885,10 @@ export function createMediaCard(item, context = {}) {
     item.type === MEDIA_TYPES.STREAM ||
     item.type === MEDIA_TYPES.AUDIO
   );
-  if (!item.isMse && (item.type === MEDIA_TYPES.VIDEO || item.type === MEDIA_TYPES.STREAM)) {
+  const isMseAudioEligible = Boolean(
+    item.isMse && item.type === MEDIA_TYPES.VIDEO && itemExt !== DEFAULT_FILENAMES.WEBM_EXT
+  );
+  if (isMseAudioEligible || (!item.isMse && (item.type === MEDIA_TYPES.VIDEO || item.type === MEDIA_TYPES.STREAM))) {
     const audioExtractBtn = doc.createElement('button');
     audioExtractBtn.type = 'button';
     audioExtractBtn.className = 'action-chip audio-extract-btn hidden';
@@ -856,13 +896,12 @@ export function createMediaCard(item, context = {}) {
     audioExtractBtn.title = translate('popup_action_extract_audio_title');
     audioExtractBtn.addEventListener('click', () => {
       const streamMeta = context.hlsMetaByUrl ? context.hlsMetaByUrl.get(entry.item.url) : null;
-      const hasSeparateAudio = Boolean(
-        streamMeta && Array.isArray(streamMeta.audioTracks) && streamMeta.audioTracks.length > 0
-      );
+      const { hasSeparateAudio, canBrowserMuxedAudio, canMseAudio } = resolveAudioExtractCapabilities(entry, streamMeta);
+      const canBrowserAudio = hasSeparateAudio || canBrowserMuxedAudio || canMseAudio;
       const chosenUrl = !qualitySelect.classList.contains('hidden') ? qualitySelect.value : entry.item.url;
       const chosenAudioUrl = !audioSelect.classList.contains('hidden') ? audioSelect.value : '';
       if (context.onExtractAudio) {
-        context.onExtractAudio(entry, chosenUrl, chosenAudioUrl, !hasSeparateAudio);
+        context.onExtractAudio(entry, chosenUrl, chosenAudioUrl, !canBrowserAudio);
       }
     });
     controls.appendChild(audioExtractBtn);

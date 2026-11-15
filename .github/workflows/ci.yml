@@ -19,3 +19,4 @@ jobs:
           python-version: '3.12'
       - run: npm run check
       - run: npm test
+      - run: npm run test:e2e

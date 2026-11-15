@@ -42,6 +42,12 @@
         </svg>
         <span data-i18n="popup_action_reload_tab"></span>
       </button>
+      <button id="tabCaptureBtn" class="action-chip action-capture" type="button" data-i18n-title="popup_action_capture_tab_title">
+        <svg aria-hidden="true" viewBox="0 0 24 24" width="12" height="12" fill="currentColor">
+          <circle cx="12" cy="12" r="5"/>
+        </svg>
+        <span id="tabCaptureLabel" data-i18n="popup_action_capture_tab"></span>
+      </button>
       <button id="clearBtn" class="icon-btn" type="button" data-i18n-title="popup_header_clear_title">
         <svg aria-hidden="true" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="3 6 5 6 21 6"/>
@@ -159,7 +165,18 @@
         <span id="lightboxMeta" class="badge hidden"></span>
         <button id="lightboxCloseBtn" class="btn btn-secondary btn-compact" type="button" data-i18n="popup_lightbox_close"></button>
       </div>
-      <div class="lightbox-stage">
+      <div id="lightboxToolbar" class="lightbox-toolbar">
+        <div class="lightbox-bg-group" role="group">
+          <button id="lightboxBgCheckerBtn" class="action-chip is-active" type="button" data-i18n="popup_lightbox_bg_checker"></button>
+          <button id="lightboxBgLightBtn" class="action-chip" type="button" data-i18n="popup_lightbox_bg_light"></button>
+          <button id="lightboxBgDarkBtn" class="action-chip" type="button" data-i18n="popup_lightbox_bg_dark"></button>
+        </div>
+        <div class="lightbox-actions-group">
+          <button id="lightboxCopyBtn" class="action-chip" type="button" data-i18n="popup_lightbox_copy_url"></button>
+          <button id="lightboxDownloadBtn" class="btn btn-primary btn-compact" type="button" data-i18n="popup_lightbox_download"></button>
+        </div>
+      </div>
+      <div id="lightboxStage" class="lightbox-stage is-bg-checker">
         <img id="lightboxImg" class="lightbox-img" alt="">
       </div>
     </div>

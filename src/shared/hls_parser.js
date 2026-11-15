@@ -228,6 +228,8 @@ export function parseHlsPlaylist(text, baseUrl) {
   let pendingStreamAttrs = null;
   let pendingSegmentDuration = 0;
   let pendingByteRangeSpec = null;
+  let pendingDiscontinuity = false;
+  let discontinuityCount = 0;
   let currentKey = null;
   let encrypted = false;
   let drmEncrypted = false;
@@ -239,6 +241,12 @@ export function parseHlsPlaylist(text, baseUrl) {
   let targetDurationSec = 0;
 
   for (const line of lines) {
+    if (line === HLS_TAGS.DISCONTINUITY || line.startsWith(`${HLS_TAGS.DISCONTINUITY}:`)) {
+      pendingDiscontinuity = true;
+      discontinuityCount += 1;
+      continue;
+    }
+
     if (line.startsWith(HLS_TAGS.MEDIA_SEQUENCE)) {
       const seqVal = Number.parseInt(line.slice(HLS_TAGS.MEDIA_SEQUENCE.length).trim(), 10);
       if (Number.isFinite(seqVal) && seqVal >= 0) {
@@ -359,9 +367,11 @@ export function parseHlsPlaylist(text, baseUrl) {
       duration: pendingSegmentDuration,
       byteRange,
       sequenceNumber: mediaSequence + segments.length,
+      discontinuity: pendingDiscontinuity,
       key: currentKey ? { ...currentKey } : null
     });
     pendingSegmentDuration = 0;
+    pendingDiscontinuity = false;
   }
 
   variants.sort((a, b) => (b.width * b.height - a.width * a.height) || (b.bandwidth - a.bandwidth));
@@ -380,6 +390,7 @@ export function parseHlsPlaylist(text, baseUrl) {
     playlistType,
     mediaSequence,
     targetDurationSec,
+    discontinuityCount,
     encrypted,
     drmEncrypted,
     decryptableAes128: Boolean(hasAes128 && !drmEncrypted),

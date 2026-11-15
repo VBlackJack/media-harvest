@@ -340,3 +340,67 @@ test('dom_scanner extracts inline <svg> with <use> symbol resolution and CSS svg
     mockElementsBySelector = { img: [], video: [], audio: [], 'a[href]': [] };
   }
 });
+
+test('dom_scanner captures non-tainted canvas, CSS mask-image, and external <use href> SVG sprites', () => {
+  const longPngDataUrl = `data:image/png;base64,${'A'.repeat(220)}`;
+  const validCanvas = withAttrs(
+    { 'aria-label': 'Chart Snapshot' },
+    {
+      width: 320,
+      height: 200,
+      toDataURL: () => longPngDataUrl
+    }
+  );
+  const taintedCanvas = {
+    width: 300,
+    height: 300,
+    toDataURL: () => {
+      throw new Error('SecurityError');
+    }
+  };
+  const maskBtnEl = {
+    getBoundingClientRect: () => ({ width: 128, height: 128 }),
+    __mask: 'url("https://cdn.example.com/icons/mask-logo.svg")'
+  };
+  const externalUseEl = withAttrs({ href: '/sprites/ui.svg#arrow-right' });
+  const spriteSvgAttrs = { viewBox: '0 0 120 120' };
+  const externalUseSvgEl = {
+    getAttribute: (name) => (Object.hasOwn(spriteSvgAttrs, name) ? spriteSvgAttrs[name] : null),
+    setAttribute: (name, val) => { spriteSvgAttrs[name] = String(val); },
+    querySelectorAll: (sel) => {
+      if (sel.includes('path') || sel === 'use') {
+        return [externalUseEl];
+      }
+      return [];
+    },
+    querySelector: () => null,
+    getBoundingClientRect: () => ({ width: 120, height: 120 }),
+    cloneNode: () => ({
+      ...externalUseSvgEl,
+      outerHTML: '<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg"><use href="/sprites/ui.svg#arrow-right"/></svg>'
+    })
+  };
+
+  const prevGetComputedStyle = globalThis.window.getComputedStyle;
+  globalThis.window.getComputedStyle = (el) => ({ backgroundImage: 'none', maskImage: el.__mask || 'none' });
+  mockElementsBySelector.canvas = [validCanvas, taintedCanvas];
+  mockElementsBySelector['button, i'] = [maskBtnEl];
+  mockElementsBySelector.svg = [externalUseSvgEl];
+
+  try {
+    const result = globalThis.window.__mediaHarvestScan({
+      ...DEFAULT_CFG,
+      minRasterDataUriLength: 200
+    });
+    const urls = result.items.map((item) => item.url);
+    assert.ok(urls.includes(longPngDataUrl));
+    assert.ok(urls.includes('https://cdn.example.com/icons/mask-logo.svg'));
+    assert.ok(urls.includes('https://example.com/sprites/ui.svg'));
+    const canvasItem = result.items.find((item) => item.url === longPngDataUrl);
+    assert.equal(canvasItem.ext, 'png');
+    assert.equal(canvasItem.title, 'Chart Snapshot');
+  } finally {
+    globalThis.window.getComputedStyle = prevGetComputedStyle;
+    mockElementsBySelector = { img: [], video: [], audio: [], 'a[href]': [] };
+  }
+});

@@ -16,9 +16,12 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import zlib from 'node:zlib';
 import {
   buildZipBlob,
+  buildZipBlobAsync,
   buildZipUint8Array,
+  buildZipUint8ArrayAsync,
   crc32,
   sanitizeZipEntryName
 } from '../src/shared/zip_builder.js';
@@ -97,4 +100,39 @@ test('buildZipUint8Array and buildZipBlob emit valid parseable ZIP archives with
   const blob = buildZipBlob([{ name: 'a.bin', data: new Uint8Array([1, 2, 3]) }]);
   assert.equal(blob.type, 'application/zip');
   assert.ok(blob.size > 50);
+});
+
+test('buildZipUint8ArrayAsync compresses compressible text/SVG entries with DEFLATE while keeping binaries STORE', async () => {
+  const repeatedSvg = encoder.encode(`<svg xmlns="http://www.w3.org/2000/svg">${'<rect x="0" y="0" width="10" height="10"/>'.repeat(20)}</svg>`);
+  const rawPng = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+
+  const archive = await buildZipUint8ArrayAsync([
+    { name: 'vector.svg', data: repeatedSvg },
+    { name: 'thumb.png', data: rawPng }
+  ]);
+  const view = new DataView(archive.buffer, archive.byteOffset, archive.byteLength);
+
+  // Entry 0: DEFLATE (method 8)
+  assert.equal(view.getUint32(0, true), 0x04034b50);
+  const svgMethod = view.getUint16(8, true);
+  const svgCompSize = view.getUint32(18, true);
+  const svgUncompSize = view.getUint32(22, true);
+  const svgNameLen = view.getUint16(26, true);
+  const svgExtraLen = view.getUint16(28, true);
+  assert.equal(svgMethod, 8);
+  assert.equal(svgUncompSize, repeatedSvg.byteLength);
+  assert.ok(svgCompSize < svgUncompSize);
+
+  const svgDataStart = 30 + svgNameLen + svgExtraLen;
+  const inflated = new Uint8Array(zlib.inflateRawSync(archive.slice(svgDataStart, svgDataStart + svgCompSize)));
+  assert.deepEqual(inflated, repeatedSvg);
+
+  // Entry 1: STORE (method 0)
+  const pngOffset = svgDataStart + svgCompSize;
+  assert.equal(view.getUint32(pngOffset, true), 0x04034b50);
+  assert.equal(view.getUint16(pngOffset + 8, true), 0);
+
+  const asyncBlob = await buildZipBlobAsync([{ name: 'captions.vtt', data: repeatedSvg }]);
+  assert.equal(asyncBlob.type, 'application/zip');
+  assert.ok(asyncBlob.size > 0);
 });

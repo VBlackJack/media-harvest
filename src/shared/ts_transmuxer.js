@@ -22,11 +22,19 @@
  * @param {{ flushPerSegment?: boolean }} [options]
  * @returns {{ initSegment: Uint8Array | null, dataChunks: Array<Uint8Array>, parts: Array<Uint8Array> }}
  */
-export function transmuxTsSegmentsToMp4Parts(tsSegments, TransmuxerCtor, { flushPerSegment = false } = {}) {
+export function transmuxTsSegmentsToMp4Parts(
+  tsSegments,
+  TransmuxerCtor,
+  { flushPerSegment = false, discontinuityIndices = null } = {}
+) {
   const Ctor = TransmuxerCtor || (globalThis.muxjs && globalThis.muxjs.Transmuxer);
   if (typeof Ctor !== 'function') {
     throw new Error('TRANSMUXER_UNAVAILABLE');
   }
+
+  const discontinuitySet = discontinuityIndices instanceof Set
+    ? discontinuityIndices
+    : new Set(Array.isArray(discontinuityIndices) ? discontinuityIndices : []);
 
   const transmuxer = new Ctor({ keepOriginalTimestamps: false });
   let initSegment = null;
@@ -45,7 +53,14 @@ export function transmuxTsSegmentsToMp4Parts(tsSegments, TransmuxerCtor, { flush
     }
   });
 
-  for (const chunk of tsSegments) {
+  for (let i = 0; i < tsSegments.length; i += 1) {
+    if (i > 0 && discontinuitySet.has(i)) {
+      if (typeof transmuxer.endTimeline === 'function') {
+        transmuxer.endTimeline();
+      }
+      transmuxer.flush();
+    }
+    const chunk = tsSegments[i];
     const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
     transmuxer.push(bytes);
     if (flushPerSegment) {

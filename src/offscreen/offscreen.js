@@ -39,6 +39,7 @@ import {
 } from '../shared/fetch_utils.js';
 import {
   countTracksInInit,
+  extractAudioOnlyFromFmp4Parts,
   mergeFmp4VideoAndAudioParts,
   splitFmp4InitAndFragments
 } from '../shared/fmp4_muxer.js';
@@ -47,15 +48,17 @@ import {
   classifyMseMime,
   extractUrlExtension,
   isHttpUrl,
+  isRasterImageDataUrl,
   isSvgDataUrl
 } from '../shared/media_classifier.js';
 import { clampInteger } from '../shared/settings.js';
 import { transmuxTsSegmentsToMp4Parts } from '../shared/ts_transmuxer.js';
-import { buildZipBlob } from '../shared/zip_builder.js';
+import { buildZipBlobAsync } from '../shared/zip_builder.js';
 
 const activeBlobUrls = new Set();
 const activeBuildControllers = new Map();
 const activeLiveRecorders = new Map();
+const activeTabCaptures = new Map();
 const activeMseAssemblies = new Map();
 
 /**
@@ -468,16 +471,35 @@ function tryAssembleProgressiveParts(videoBuffers, audioBuffers) {
 }
 
 /**
+ * Collects zero-based segment indices marked with HLS discontinuity tags.
+ * @param {object} playlist
+ * @returns {Array<number>}
+ */
+function collectDiscontinuityIndices(playlist) {
+  if (!playlist || !Array.isArray(playlist.segments)) {
+    return [];
+  }
+  const indices = [];
+  for (let i = 0; i < playlist.segments.length; i += 1) {
+    if (playlist.segments[i] && playlist.segments[i].discontinuity) {
+      indices.push(i);
+    }
+  }
+  return indices;
+}
+
+/**
  * Transmuxes MPEG-TS segments to MP4 and optionally muxes separate audio tracks.
  * @param {Array<ArrayBuffer>} videoBuffers
  * @param {Array<ArrayBuffer>} audioBuffers
  * @param {boolean} hasAudioBuffers
  * @param {boolean} hasInitAudio
+ * @param {Array<number>} [discontinuityIndices=[]]
  * @returns {{ outputParts: Array<ArrayBuffer | Uint8Array>, outputExtension: string, mimeType: string } | null}
  */
-function tryAssembleTsParts(videoBuffers, audioBuffers, hasAudioBuffers, hasInitAudio) {
+function tryAssembleTsParts(videoBuffers, audioBuffers, hasAudioBuffers, hasInitAudio, discontinuityIndices = []) {
   try {
-    const videoTransmuxed = transmuxTsSegmentsToMp4Parts(videoBuffers);
+    const videoTransmuxed = transmuxTsSegmentsToMp4Parts(videoBuffers, undefined, { discontinuityIndices });
     if (
       hasAudioBuffers &&
       videoTransmuxed.initSegment &&
@@ -486,7 +508,7 @@ function tryAssembleTsParts(videoBuffers, audioBuffers, hasAudioBuffers, hasInit
       try {
         const audioTransmuxed = hasInitAudio
           ? { initSegment: audioBuffers[0], dataChunks: audioBuffers.slice(1) }
-          : transmuxTsSegmentsToMp4Parts(audioBuffers);
+          : transmuxTsSegmentsToMp4Parts(audioBuffers, undefined, { discontinuityIndices });
         if (
           audioTransmuxed.initSegment &&
           countTracksInInit(audioTransmuxed.initSegment) === 1 &&
@@ -557,7 +579,13 @@ function assembleOutputParts(mediaPlaylist, audioPlaylist, videoBuffers, audioBu
   }
 
   if (!mediaPlaylist.initSegmentUrl && !mediaPlaylist.isProgressive) {
-    const tsResult = tryAssembleTsParts(videoBuffers, audioBuffers, hasAudioBuffers, hasInitAudio);
+    const tsResult = tryAssembleTsParts(
+      videoBuffers,
+      audioBuffers,
+      hasAudioBuffers,
+      hasInitAudio,
+      collectDiscontinuityIndices(mediaPlaylist)
+    );
     if (tsResult) {
       return tsResult;
     }
@@ -607,6 +635,38 @@ function assembleAudioOnlyParts(audioPlaylist, audioBuffers) {
 }
 
 /**
+ * Extracts standalone AAC/MP4 audio from a muxed single-playlist fMP4 or MPEG-TS stream.
+ * @param {object} mediaPlaylist
+ * @param {Array<ArrayBuffer>} videoBuffers
+ * @returns {{ outputParts: Array<Uint8Array>, outputExtension: string, mimeType: string }}
+ */
+function assembleMuxedAudioOnlyParts(mediaPlaylist, videoBuffers) {
+  if (mediaPlaylist.outputExtension === 'webm') {
+    throw new Error('NO_AUDIO_TRACK');
+  }
+  if (!mediaPlaylist.initSegmentUrl && !mediaPlaylist.isProgressive) {
+    const transmuxed = transmuxTsSegmentsToMp4Parts(videoBuffers, undefined, {
+      discontinuityIndices: collectDiscontinuityIndices(mediaPlaylist)
+    });
+    if (!transmuxed.initSegment) {
+      throw new Error('NO_AUDIO_TRACK');
+    }
+    return {
+      outputParts: extractAudioOnlyFromFmp4Parts(transmuxed.initSegment, transmuxed.dataChunks),
+      outputExtension: DEFAULT_FILENAMES.AUDIO_M4A_EXT,
+      mimeType: 'audio/mp4'
+    };
+  }
+  const split = splitFmp4InitAndFragments(videoBuffers[0]);
+  const fragments = [...split.fragments, ...videoBuffers.slice(1)];
+  return {
+    outputParts: extractAudioOnlyFromFmp4Parts(split.initSegment, fragments),
+    outputExtension: DEFAULT_FILENAMES.AUDIO_M4A_EXT,
+    mimeType: 'audio/mp4'
+  };
+}
+
+/**
  * Fetches an HLS or DASH stream, muxes segments into a Blob URL, and enforces caps/cancellation.
  * @param {{ playlistUrl: string, originalUrl: string, requestId: string, concurrency?: number, qualityPreference?: string, audioUrl?: string, audioOnly?: boolean }} payload
  * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number }>}
@@ -641,17 +701,17 @@ async function buildStreamBlob(payload) {
       buildController.signal,
       preferredAudioUrl
     );
-    if (audioOnly) {
-      if (!audioPlaylist || !Array.isArray(audioPlaylist.segments) || audioPlaylist.segments.length === 0) {
-        throw new Error('NO_SEPARATE_AUDIO_TRACK');
-      }
-    } else if (mediaPlaylist.segments.length === 0) {
+    const hasSeparateAudio = Boolean(
+      audioPlaylist && Array.isArray(audioPlaylist.segments) && audioPlaylist.segments.length > 0
+    );
+    if (!hasSeparateAudio && mediaPlaylist.segments.length === 0) {
       throw new Error('EMPTY_PLAYLIST');
     }
 
-    const videoRequests = audioOnly ? [] : buildSegmentRequests(mediaPlaylist);
-    const shouldFetchAudio = audioOnly || Boolean(
-      audioPlaylist &&
+    const extractFromMuxed = audioOnly && !hasSeparateAudio;
+    const videoRequests = audioOnly && hasSeparateAudio ? [] : buildSegmentRequests(mediaPlaylist);
+    const shouldFetchAudio = (audioOnly && hasSeparateAudio) || Boolean(
+      hasSeparateAudio &&
       (
         (mediaPlaylist.initSegmentUrl && audioPlaylist.initSegmentUrl) ||
         (!mediaPlaylist.initSegmentUrl && !mediaPlaylist.isProgressive) ||
@@ -706,14 +766,20 @@ async function buildStreamBlob(payload) {
       throw new Error(CANCEL_REASON);
     }
 
-    const { outputParts, outputExtension, mimeType } = audioOnly
-      ? assembleAudioOnlyParts(audioPlaylist, audioBuffers)
-      : assembleOutputParts(
-          mediaPlaylist,
-          audioPlaylist,
-          videoBuffers,
-          audioBuffers
-        );
+    let assembled;
+    if (extractFromMuxed) {
+      assembled = assembleMuxedAudioOnlyParts(mediaPlaylist, videoBuffers);
+    } else if (audioOnly) {
+      assembled = assembleAudioOnlyParts(audioPlaylist, audioBuffers);
+    } else {
+      assembled = assembleOutputParts(
+        mediaPlaylist,
+        audioPlaylist,
+        videoBuffers,
+        audioBuffers
+      );
+    }
+    const { outputParts, outputExtension, mimeType } = assembled;
 
     const blob = new Blob(outputParts, { type: mimeType });
     videoBuffers.length = 0;
@@ -1263,13 +1329,29 @@ function handleMseBlobMessage(message) {
     const audioMime = message.audioMime || '';
     const hasVideo = session.videoChunks.length > 0;
     const hasAudio = session.audioChunks.length > 0;
+    const wantAudioOnly = Boolean(message.audioOnly);
     const isWebm = videoMime.toLowerCase().includes('webm') || audioMime.toLowerCase().includes('webm');
 
     let outputParts = null;
     let outputExtension = DEFAULT_FILENAMES.HLS_FMP4_EXT;
     let mimeType = 'video/mp4';
 
-    if (hasVideo && hasAudio && !isWebm) {
+    if (wantAudioOnly) {
+      if (hasAudio) {
+        outputParts = session.audioChunks;
+        const info = classifyMseMime(audioMime);
+        outputExtension = info.ext;
+        mimeType = isWebm ? 'audio/webm' : 'audio/mp4';
+      } else if (hasVideo && !isWebm) {
+        const videoBuf = concatUint8Arrays(session.videoChunks);
+        const split = splitFmp4InitAndFragments(videoBuf);
+        outputParts = extractAudioOnlyFromFmp4Parts(split.initSegment, split.fragments);
+        outputExtension = DEFAULT_FILENAMES.AUDIO_M4A_EXT;
+        mimeType = 'audio/mp4';
+      } else {
+        return { ok: false, error: 'NO_AUDIO_TRACK' };
+      }
+    } else if (hasVideo && hasAudio && !isWebm) {
       const videoBuf = concatUint8Arrays(session.videoChunks);
       const audioBuf = concatUint8Arrays(session.audioChunks);
       const muxed = tryAssembleProgressiveParts([videoBuf], [audioBuf]);
@@ -1309,22 +1391,25 @@ function handleMseBlobMessage(message) {
 }
 
 /**
- * Decodes an SVG `data:image/svg+xml` URI (base64 or UTF-8 encoded) into a UTF-8 Blob.
+ * Decodes an SVG or raster image `data:image/...` URI into a Blob.
  * @param {string} dataUrl
+ * @param {string} [defaultMime='image/svg+xml;charset=utf-8']
  * @returns {Blob}
  */
-function svgDataUrlToBlob(dataUrl) {
+function imageDataUrlToBlob(dataUrl, defaultMime = 'image/svg+xml;charset=utf-8') {
   const commaIdx = dataUrl.indexOf(',');
   if (commaIdx < 0) {
     throw new Error('INVALID_URL');
   }
-  const header = dataUrl.slice(0, commaIdx).toLowerCase();
+  const header = dataUrl.slice(0, commaIdx);
+  const mimeMatch = header.match(/^data:([^;,]+)/i);
+  const resolvedMime = mimeMatch ? mimeMatch[1] : defaultMime;
   const body = dataUrl.slice(commaIdx + 1);
-  if (header.includes(';base64')) {
+  if (header.toLowerCase().includes(';base64')) {
     const bytes = decodeBase64ToBytes(body);
-    return new Blob([bytes], { type: 'image/svg+xml;charset=utf-8' });
+    return new Blob([bytes], { type: resolvedMime });
   }
-  return new Blob([decodeURIComponent(body)], { type: 'image/svg+xml;charset=utf-8' });
+  return new Blob([decodeURIComponent(body)], { type: resolvedMime });
 }
 
 /**
@@ -1423,8 +1508,8 @@ async function rasterizeImageToBlob(
 ) {
   const isSvg = isSvgDataUrl(targetUrl) || extractUrlExtension(targetUrl) === DEFAULT_FILENAMES.SVG_EXT;
   let sourceBlob;
-  if (isSvgDataUrl(targetUrl)) {
-    sourceBlob = svgDataUrlToBlob(targetUrl);
+  if (isSvgDataUrl(targetUrl) || isRasterImageDataUrl(targetUrl)) {
+    sourceBlob = imageDataUrlToBlob(targetUrl);
   } else {
     const buf = await fetchWithManagedTimeout(targetUrl, {
       responseMode: 'buffer',
@@ -1492,7 +1577,7 @@ async function rasterizeImageToBlob(
 async function convertImageBlob(payload) {
   const targetUrl = typeof payload.targetUrl === 'string' ? payload.targetUrl : '';
   const targetFormat = String(payload.targetFormat || '').toLowerCase();
-  if (!isHttpUrl(targetUrl) && !isSvgDataUrl(targetUrl)) {
+  if (!isHttpUrl(targetUrl) && !isSvgDataUrl(targetUrl) && !isRasterImageDataUrl(targetUrl)) {
     throw new Error('INVALID_URL');
   }
   if (targetFormat !== IMAGE_CONVERT_FORMATS.PNG && targetFormat !== IMAGE_CONVERT_FORMATS.JPG) {
@@ -1597,13 +1682,18 @@ async function buildZipBlobArchive(payload) {
           entryData = new Uint8Array(buf);
           entryName = replaceFilenameExtension(entryName, requestedFormat);
         } else if (isSvgDataUrl(targetUrl)) {
-          const svgBlob = svgDataUrlToBlob(targetUrl);
+          const svgBlob = imageDataUrlToBlob(targetUrl);
           const buf = await svgBlob.arrayBuffer();
           byteTracker.bytes += buf.byteLength;
           entryData = new Uint8Array(buf);
           if (!entryName.toLowerCase().endsWith(`.${DEFAULT_FILENAMES.SVG_EXT}`)) {
             entryName = replaceFilenameExtension(entryName, DEFAULT_FILENAMES.SVG_EXT);
           }
+        } else if (isRasterImageDataUrl(targetUrl)) {
+          const rasterBlob = imageDataUrlToBlob(targetUrl, 'image/png');
+          const buf = await rasterBlob.arrayBuffer();
+          byteTracker.bytes += buf.byteLength;
+          entryData = new Uint8Array(buf);
         } else if (isHttpUrl(targetUrl)) {
           const buf = await fetchWithManagedTimeout(targetUrl, {
             responseMode: 'buffer',
@@ -1636,7 +1726,7 @@ async function buildZipBlobArchive(payload) {
       throw lastError || new Error('DOWNLOAD_FAILED');
     }
 
-    const zipBlob = buildZipBlob(validEntries);
+    const zipBlob = await buildZipBlobAsync(validEntries);
     const blobUrl = URL.createObjectURL(zipBlob);
     activeBlobUrls.add(blobUrl);
     return {
@@ -1647,6 +1737,241 @@ async function buildZipBlobArchive(payload) {
     };
   } finally {
     activeBuildControllers.delete(requestId);
+  }
+}
+
+const TAB_CAPTURE_MIME_CANDIDATES = Object.freeze([
+  'video/webm;codecs=vp9,opus',
+  'video/webm;codecs=vp8,opus',
+  'video/webm',
+  'video/mp4'
+]);
+
+/**
+ * Selects the best supported MediaRecorder MIME type for tab recording.
+ * @returns {string}
+ */
+function selectTabCaptureMimeType() {
+  if (typeof MediaRecorder !== 'function' || typeof MediaRecorder.isTypeSupported !== 'function') {
+    return 'video/webm';
+  }
+  for (const candidate of TAB_CAPTURE_MIME_CANDIDATES) {
+    if (MediaRecorder.isTypeSupported(candidate)) {
+      return candidate;
+    }
+  }
+  return 'video/webm';
+}
+
+/**
+ * Releases media stream tracks and optional WebAudio pass-through resources cleanly.
+ * @param {{ stream?: MediaStream, audioCtx?: AudioContext }} session
+ */
+function releaseTabCaptureMedia(session) {
+  if (!session) {
+    return;
+  }
+  if (session.stream && typeof session.stream.getTracks === 'function') {
+    for (const track of session.stream.getTracks()) {
+      try {
+        track.stop();
+      } catch {
+        // Ignore already stopped track
+      }
+    }
+  }
+  if (session.audioCtx && typeof session.audioCtx.close === 'function') {
+    session.audioCtx.close().catch(() => {});
+  }
+}
+
+/**
+ * Captures live video and audio from a Chrome tab MediaStream ID until stopped or cancelled.
+ * @param {{ streamId: string, originalUrl: string, requestId: string }} payload
+ * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number }>}
+ */
+async function startTabCaptureRecording(payload) {
+  const { streamId, originalUrl = '', requestId } = payload || {};
+  if (
+    !streamId ||
+    typeof navigator === 'undefined' ||
+    !navigator.mediaDevices ||
+    typeof navigator.mediaDevices.getUserMedia !== 'function' ||
+    typeof MediaRecorder !== 'function'
+  ) {
+    throw new Error('TAB_CAPTURE_UNAVAILABLE');
+  }
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        mandatory: {
+          chromeMediaSource: 'tab',
+          chromeMediaSourceId: streamId
+        }
+      },
+      video: {
+        mandatory: {
+          chromeMediaSource: 'tab',
+          chromeMediaSourceId: streamId
+        }
+      }
+    });
+  } catch {
+    throw new Error('TAB_CAPTURE_FAILED');
+  }
+
+  let audioCtx = null;
+  if (typeof AudioContext === 'function' && typeof stream.getAudioTracks === 'function' && stream.getAudioTracks().length > 0) {
+    try {
+      audioCtx = new AudioContext();
+      const source = audioCtx.createMediaStreamSource(stream);
+      source.connect(audioCtx.destination);
+    } catch {
+      audioCtx = null;
+    }
+  }
+
+  const mimeType = selectTabCaptureMimeType();
+  const outputExtension = mimeType.includes('mp4')
+    ? DEFAULT_FILENAMES.HLS_FMP4_EXT
+    : DEFAULT_FILENAMES.WEBM_EXT;
+
+  let recorder;
+  try {
+    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  } catch {
+    releaseTabCaptureMedia({ stream, audioCtx });
+    throw new Error('TAB_CAPTURE_FAILED');
+  }
+
+  const chunks = [];
+  let totalBytes = 0;
+  const startedAt = Date.now();
+  const session = {
+    requestId,
+    recorder,
+    stream,
+    audioCtx,
+    cancelled: false
+  };
+  activeTabCaptures.set(requestId, session);
+
+  const buildController = new AbortController();
+  buildController.signal.addEventListener('abort', () => {
+    session.cancelled = buildController.signal.reason === CANCEL_REASON;
+    if (recorder.state !== 'inactive') {
+      try {
+        recorder.stop();
+      } catch {
+        // Ignore stop race
+      }
+    }
+  }, { once: true });
+  activeBuildControllers.set(requestId, buildController);
+
+  notifyProgress(requestId, originalUrl, 0, 0, {
+    isLiveRecord: true,
+    isTabCapture: true,
+    bytes: 0
+  });
+
+  return new Promise((resolve, reject) => {
+    const finalizeError = (code) => {
+      activeTabCaptures.delete(requestId);
+      activeBuildControllers.delete(requestId);
+      releaseTabCaptureMedia(session);
+      reject(new Error(code));
+    };
+
+    recorder.ondataavailable = (event) => {
+      if (!event || !event.data || event.data.size === 0) {
+        return;
+      }
+      if (totalBytes + event.data.size > LIMITS.MAX_HLS_BUFFER_BYTES) {
+        if (recorder.state !== 'inactive') {
+          try {
+            recorder.stop();
+          } catch {
+            // Stop at max buffer ceiling
+          }
+        }
+        return;
+      }
+      chunks.push(event.data);
+      totalBytes += event.data.size;
+      const elapsedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+      notifyProgress(requestId, originalUrl, elapsedSec, 0, {
+        isLiveRecord: true,
+        isTabCapture: true,
+        bytes: totalBytes
+      });
+    };
+
+    recorder.onerror = () => finalizeError('TAB_CAPTURE_FAILED');
+
+    recorder.onstop = () => {
+      activeTabCaptures.delete(requestId);
+      activeBuildControllers.delete(requestId);
+      releaseTabCaptureMedia(session);
+      if (session.cancelled) {
+        reject(new Error(CANCEL_REASON));
+        return;
+      }
+      if (chunks.length === 0) {
+        reject(new Error('TAB_CAPTURE_FAILED'));
+        return;
+      }
+      const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
+      chunks.length = 0;
+      const blobUrl = URL.createObjectURL(blob);
+      activeBlobUrls.add(blobUrl);
+      resolve({
+        blobUrl,
+        outputExtension,
+        byteLength: blob.size
+      });
+    };
+
+    if (typeof stream.getVideoTracks === 'function') {
+      for (const track of stream.getVideoTracks()) {
+        track.addEventListener('ended', () => {
+          if (recorder.state !== 'inactive') {
+            try {
+              recorder.stop();
+            } catch {
+              // Ignore track ended stop error
+            }
+          }
+        }, { once: true });
+      }
+    }
+
+    try {
+      recorder.start(LIMITS.TAB_CAPTURE_TIMESLICE_MS);
+    } catch {
+      finalizeError('TAB_CAPTURE_FAILED');
+    }
+  });
+}
+
+/**
+ * Stops one or all active MediaRecorder tab capture sessions cleanly.
+ * @param {string} [requestId='']
+ */
+function stopTabCaptureSessions(requestId = '') {
+  const targets = requestId
+    ? [activeTabCaptures.get(requestId)].filter(Boolean)
+    : Array.from(activeTabCaptures.values());
+  for (const session of targets) {
+    if (session.recorder && session.recorder.state !== 'inactive') {
+      try {
+        session.recorder.stop();
+      } catch {
+        // Ignore already stopped recorder
+      }
+    }
   }
 }
 
@@ -1750,6 +2075,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((err) => sendResponse({ ok: false, error: err.message || 'DOWNLOAD_FAILED' }));
     return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.OFFSCREEN_START_TAB_CAPTURE) {
+    const requestId = message.requestId || `cap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    startTabCaptureRecording({
+      streamId: message.streamId,
+      originalUrl: message.originalUrl || '',
+      requestId
+    })
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((err) => sendResponse({ ok: false, error: err.message || 'TAB_CAPTURE_FAILED' }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.OFFSCREEN_STOP_TAB_CAPTURE) {
+    stopTabCaptureSessions(message.requestId || '');
+    sendResponse({ ok: true });
+    return false;
   }
 
   if (message.type === MESSAGE_TYPES.OFFSCREEN_CANCEL_BUILD) {

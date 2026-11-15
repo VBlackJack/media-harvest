@@ -922,5 +922,67 @@
         "example": "1080"
       }
     }
+  },
+  "popup_action_capture_tab": {
+    "message": "Capture tab",
+    "description": "Button label to start recording active tab video and audio."
+  },
+  "popup_action_capture_tab_title": {
+    "message": "Record active tab video and audio directly using browser Tab Capture",
+    "description": "Tooltip for tab capture button."
+  },
+  "popup_action_stop_capture": {
+    "message": "Stop REC",
+    "description": "Button label to stop an active tab capture recording."
+  },
+  "popup_status_tab_capture_active": {
+    "message": "REC tab ($DURATION$ - $SIZE$)",
+    "description": "Live status readout while recording the active browser tab.",
+    "placeholders": {
+      "duration": {
+        "content": "$1",
+        "example": "0:12"
+      },
+      "size": {
+        "content": "$2",
+        "example": "4.2 MB"
+      }
+    }
+  },
+  "popup_error_tab_capture_unavailable": {
+    "message": "Tab capture is unavailable for this page or browser.",
+    "description": "Error when chrome.tabCapture cannot start for the current tab."
+  },
+  "popup_error_tab_capture_failed": {
+    "message": "Tab capture failed or produced no media.",
+    "description": "Error when MediaRecorder tab capture fails."
+  },
+  "popup_error_no_audio_track": {
+    "message": "No audio track was found in this stream.",
+    "description": "Error when audio extraction finds no audio track inside the media."
+  },
+  "popup_lightbox_bg_checker": {
+    "message": "Checker",
+    "description": "Lightbox background toggle button for transparency checkerboard."
+  },
+  "popup_lightbox_bg_light": {
+    "message": "Light",
+    "description": "Lightbox background toggle button for light backdrop."
+  },
+  "popup_lightbox_bg_dark": {
+    "message": "Dark",
+    "description": "Lightbox background toggle button for dark backdrop."
+  },
+  "popup_lightbox_copy_svg": {
+    "message": "Copy SVG",
+    "description": "Lightbox button to copy inline SVG markup."
+  },
+  "popup_lightbox_copy_url": {
+    "message": "Copy URL",
+    "description": "Lightbox button to copy image URL."
+  },
+  "popup_lightbox_download": {
+    "message": "Download",
+    "description": "Lightbox button to download the previewed image or SVG."
   }
 }

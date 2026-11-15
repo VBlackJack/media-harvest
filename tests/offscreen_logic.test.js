@@ -991,3 +991,217 @@ test('offscreen records dynamic live DASH manifests cleanly and respects custom 
     globalThis.document = prevDocument;
   }
 });
+
+test('offscreen extracts autonomous .m4a audio from muxed fMP4 HLS & MSE and captures tab MediaRecorder streams', async () => {
+  const makeFullBox = (ver, size) => {
+    const b = new Uint8Array(4 + size);
+    b[0] = ver;
+    return b;
+  };
+  const makeMvhd = (nextTrackId) => {
+    const p = makeFullBox(0, 96);
+    new DataView(p.buffer).setUint32(96, nextTrackId, false);
+    return buildIsoBox('mvhd', [p]);
+  };
+  const makeTrak = (trackId, handler) => {
+    const tkhd = makeFullBox(0, 80);
+    new DataView(tkhd.buffer).setUint32(12, trackId, false);
+    const hdlr = makeFullBox(0, 20);
+    for (let i = 0; i < 4; i += 1) {
+      hdlr[8 + i] = handler.charCodeAt(i);
+    }
+    return buildIsoBox('trak', [buildIsoBox('tkhd', [tkhd]), buildIsoBox('mdia', [buildIsoBox('hdlr', [hdlr])])]);
+  };
+  const makeTrex = (trackId) => {
+    const p = makeFullBox(0, 20);
+    new DataView(p.buffer).setUint32(4, trackId, false);
+    return buildIsoBox('trex', [p]);
+  };
+  const makeMuxedInit = () => {
+    const ftyp = buildIsoBox('ftyp', [new Uint8Array([0x69, 0x73, 0x6f, 0x6d])]);
+    const moov = buildIsoBox('moov', [
+      makeMvhd(3),
+      makeTrak(1, 'vide'),
+      makeTrak(2, 'soun'),
+      buildIsoBox('mvex', [makeTrex(1), makeTrex(2)])
+    ]);
+    const out = new Uint8Array(ftyp.byteLength + moov.byteLength);
+    out.set(ftyp, 0);
+    out.set(moov, ftyp.byteLength);
+    return out;
+  };
+  const makeFrag = (trackId, byteVal) => {
+    const tfhd = makeFullBox(0, 8);
+    new DataView(tfhd.buffer).setUint32(4, trackId, false);
+    const moof = buildIsoBox('moof', [buildIsoBox('traf', [buildIsoBox('tfhd', [tfhd])])]);
+    const mdat = buildIsoBox('mdat', [new Uint8Array([byteVal, byteVal])]);
+    const out = new Uint8Array(moof.byteLength + mdat.byteLength);
+    out.set(moof, 0);
+    out.set(mdat, moof.byteLength);
+    return out;
+  };
+
+  const muxedInit = makeMuxedInit();
+  const vidFrag = makeFrag(1, 0xaa);
+  const audFrag = makeFrag(2, 0xbb);
+
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target.endsWith('muxed.m3u8')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => '#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:2.0,\nseg0.m4s\n#EXT-X-ENDLIST'
+      };
+    }
+    if (target.endsWith('init.mp4')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => String(muxedInit.byteLength) },
+        arrayBuffer: async () => muxedInit.slice().buffer
+      };
+    }
+    const mergedSeg = new Uint8Array(vidFrag.byteLength + audFrag.byteLength);
+    mergedSeg.set(vidFrag, 0);
+    mergedSeg.set(audFrag, vidFrag.byteLength);
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => String(mergedSeg.byteLength) },
+      arrayBuffer: async () => mergedSeg.buffer
+    };
+  };
+
+  const hlsAudioResp = await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_HLS_BLOB,
+    requestId: 'mux-audio-1',
+    playlistUrl: 'https://cdn.example.com/muxed.m3u8',
+    originalUrl: 'https://cdn.example.com/muxed.m3u8',
+    audioOnly: true
+  });
+  assert.equal(hlsAudioResp.ok, true);
+  assert.equal(hlsAudioResp.outputExtension, 'm4a');
+  const hlsAudioBytes = new Uint8Array(await createdBlobs.get(hlsAudioResp.blobUrl).arrayBuffer());
+  assert.equal(countTracksInInit(hlsAudioBytes), 1);
+
+  const mseCombined = new Uint8Array(muxedInit.byteLength + vidFrag.byteLength + audFrag.byteLength);
+  mseCombined.set(muxedInit, 0);
+  mseCombined.set(vidFrag, muxedInit.byteLength);
+  mseCombined.set(audFrag, muxedInit.byteLength + vidFrag.byteLength);
+  await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_MSE_BLOB,
+    action: 'append',
+    requestId: 'mse-audio-1',
+    track: 'video',
+    chunkBase64: Buffer.from(mseCombined).toString('base64')
+  });
+  const mseAudioResp = await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_MSE_BLOB,
+    action: 'finalize',
+    requestId: 'mse-audio-1',
+    videoMime: 'video/mp4; codecs="avc1.42E01E"',
+    audioMime: '',
+    audioOnly: true
+  });
+  assert.equal(mseAudioResp.ok, true);
+  assert.equal(mseAudioResp.outputExtension, 'm4a');
+
+  // Test OFFSCREEN_START_TAB_CAPTURE + OFFSCREEN_STOP_TAB_CAPTURE
+  const prevMediaDevicesDesc = Object.getOwnPropertyDescriptor(globalThis.navigator, 'mediaDevices');
+  const prevMediaRecorder = globalThis.MediaRecorder;
+  const prevAudioCtx = globalThis.AudioContext;
+  const prevSendMessage = globalThis.chrome.runtime.sendMessage;
+
+  let stoppedTracks = 0;
+  let audioCtxClosed = false;
+  const capProgress = [];
+
+  Object.defineProperty(globalThis.navigator, 'mediaDevices', {
+    configurable: true,
+    value: {
+      getUserMedia: async () => ({
+        getAudioTracks: () => [{ kind: 'audio' }],
+        getTracks: () => [{ stop: () => { stoppedTracks += 1; } }]
+      })
+    }
+  });
+  globalThis.AudioContext = class FakeAudioContext {
+    constructor() {
+      this.destination = {};
+    }
+    createMediaStreamSource() {
+      return { connect: () => {} };
+    }
+    async close() {
+      audioCtxClosed = true;
+    }
+  };
+  globalThis.MediaRecorder = class FakeMediaRecorder {
+    static isTypeSupported(mime) {
+      return mime === 'video/webm;codecs=vp9,opus';
+    }
+    constructor(_stream, opts) {
+      this.mimeType = opts && opts.mimeType ? opts.mimeType : 'video/webm';
+      this.state = 'inactive';
+      this.ondataavailable = null;
+      this.onstop = null;
+    }
+    start() {
+      this.state = 'recording';
+      queueMicrotask(() => {
+        if (this.ondataavailable) {
+          this.ondataavailable({ data: new Blob([new Uint8Array([1, 2, 3, 4, 5])], { type: 'video/webm' }) });
+        }
+      });
+    }
+    stop() {
+      this.state = 'inactive';
+      if (this.onstop) {
+        this.onstop();
+      }
+    }
+  };
+  globalThis.chrome.runtime.sendMessage = async (msg) => {
+    capProgress.push(msg);
+    if (msg && msg.type === MESSAGE_TYPES.DOWNLOAD_PROGRESS && msg.isTabCapture && msg.bytes > 0) {
+      queueMicrotask(() => {
+        dispatchOffscreenMessage({
+          target: 'offscreen',
+          type: MESSAGE_TYPES.OFFSCREEN_STOP_TAB_CAPTURE,
+          requestId: 'tab-cap-1'
+        });
+      });
+    }
+    return { ok: true };
+  };
+
+  try {
+    const capResp = await dispatchOffscreenMessage({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_START_TAB_CAPTURE,
+      requestId: 'tab-cap-1',
+      streamId: 'tab_stream_abc',
+      originalUrl: 'https://example.com/live'
+    });
+    assert.equal(capResp.ok, true);
+    assert.equal(capResp.outputExtension, 'webm');
+    assert.equal(capResp.byteLength, 5);
+    assert.equal(stoppedTracks, 1);
+    assert.equal(audioCtxClosed, true);
+    assert.ok(capProgress.some((m) => m.isTabCapture && m.bytes === 5));
+  } finally {
+    if (prevMediaDevicesDesc) {
+      Object.defineProperty(globalThis.navigator, 'mediaDevices', prevMediaDevicesDesc);
+    } else {
+      delete globalThis.navigator.mediaDevices;
+    }
+    globalThis.MediaRecorder = prevMediaRecorder;
+    globalThis.AudioContext = prevAudioCtx;
+    globalThis.chrome.runtime.sendMessage = prevSendMessage;
+  }
+});

@@ -19,6 +19,7 @@ import {
   DEFAULT_SETTINGS,
   IMAGE_CONVERT_FORMATS,
   IMAGE_EXTENSIONS,
+  LIGHTBOX_BG_MODES,
   LIMITS,
   MEDIA_TYPES,
   MESSAGE_TYPES,
@@ -27,6 +28,7 @@ import {
   STORAGE_KEYS
 } from '../config/constants.js';
 import { applyTranslations, getUiLanguage, t } from '../shared/i18n.js';
+import { isSvgDataUrl } from '../shared/media_classifier.js';
 import { isFolderFilenameTemplate, loadSettings, normalizeSettings } from '../shared/settings.js';
 import {
   applyStreamMetadata,
@@ -39,6 +41,7 @@ import {
 } from './media_card.js';
 import {
   formatBytes,
+  formatDuration,
   localizeError,
   matchesFilter,
   matchesImageQuickFilters,
@@ -79,7 +82,13 @@ export function collectPopupElements(doc) {
     lightboxBackdrop: doc.getElementById('lightboxBackdrop'),
     lightboxTitle: doc.getElementById('lightboxTitle'),
     lightboxMeta: doc.getElementById('lightboxMeta'),
+    lightboxStage: doc.getElementById('lightboxStage'),
     lightboxImg: doc.getElementById('lightboxImg'),
+    lightboxBgCheckerBtn: doc.getElementById('lightboxBgCheckerBtn'),
+    lightboxBgLightBtn: doc.getElementById('lightboxBgLightBtn'),
+    lightboxBgDarkBtn: doc.getElementById('lightboxBgDarkBtn'),
+    lightboxCopyBtn: doc.getElementById('lightboxCopyBtn'),
+    lightboxDownloadBtn: doc.getElementById('lightboxDownloadBtn'),
     lightboxCloseBtn: doc.getElementById('lightboxCloseBtn'),
     downloadAllBtn: doc.getElementById('downloadAllBtn'),
     companionPageBtn: doc.getElementById('companionPageBtn'),
@@ -90,6 +99,8 @@ export function collectPopupElements(doc) {
     batchCancelBtn: doc.getElementById('batchCancelBtn'),
     refreshBtn: doc.getElementById('refreshBtn'),
     reloadTabBtn: doc.getElementById('reloadTabBtn'),
+    tabCaptureBtn: doc.getElementById('tabCaptureBtn'),
+    tabCaptureLabel: doc.getElementById('tabCaptureLabel'),
     clearBtn: doc.getElementById('clearBtn'),
     sidePanelBtn: doc.getElementById('sidePanelBtn'),
     optionsBtn: doc.getElementById('optionsBtn'),
@@ -124,6 +135,7 @@ export function createPopupController(deps = {}) {
   const state = {
     activeTabId: null,
     activeTabUrl: '',
+    activeTabTitle: '',
     filter: 'all',
     searchQuery: '',
     sortBy: SORT_MODES.DEFAULT,
@@ -133,6 +145,9 @@ export function createPopupController(deps = {}) {
     imageExtFilter: '',
     imageScalePx: LIMITS.DEFAULT_SVG_RASTER_SIZE_PX,
     activeZipRequestId: '',
+    activeTabCapture: null,
+    lightboxEntry: null,
+    lightboxBg: LIGHTBOX_BG_MODES.CHECKER,
     items: [],
     hasBlobVideo: false,
     settings: { ...DEFAULT_SETTINGS },
@@ -1078,6 +1093,7 @@ export function createPopupController(deps = {}) {
 
       state.activeTabId = tab.id;
       state.activeTabUrl = tab.url || '';
+      state.activeTabTitle = tab.title || '';
 
       const response = await chromeApi.runtime.sendMessage({
         type: MESSAGE_TYPES.GET_MEDIA_FOR_TAB,
@@ -1097,6 +1113,7 @@ export function createPopupController(deps = {}) {
       state.lastLoadError = false;
       state.hasActiveBuildSnapshot = false;
       state.activeBuildsByUrl.clear();
+      let recoveredTabCapture = null;
       try {
         const buildsResp = await chromeApi.runtime.sendMessage({
           type: MESSAGE_TYPES.GET_ACTIVE_BUILDS
@@ -1107,7 +1124,13 @@ export function createPopupController(deps = {}) {
         if (buildsResp && buildsResp.ok && Array.isArray(buildsResp.builds)) {
           state.hasActiveBuildSnapshot = true;
           for (const build of buildsResp.builds) {
-            if (build && build.url && build.requestId) {
+            if (build && build.isTabCapture && build.requestId) {
+              recoveredTabCapture = {
+                requestId: build.requestId,
+                done: build.done || 0,
+                bytes: build.bytes || 0
+              };
+            } else if (build && build.url && build.requestId) {
               state.activeBuildsByUrl.set(build.url, build);
             }
           }
@@ -1115,8 +1138,18 @@ export function createPopupController(deps = {}) {
       } catch {
         // Active build sync is best-effort
       }
-      if (showLoading) {
-        setStatusBanner('');
+      if (recoveredTabCapture) {
+        state.activeTabCapture = recoveredTabCapture;
+        updateTabCaptureUi();
+        setStatusBanner(formatTabCaptureStatus(recoveredTabCapture.done, recoveredTabCapture.bytes));
+      } else {
+        if (state.activeTabCapture && state.hasActiveBuildSnapshot && !state.localPendingRequestIds.has(state.activeTabCapture.requestId)) {
+          state.activeTabCapture = null;
+          updateTabCaptureUi();
+        }
+        if (showLoading) {
+          setStatusBanner('');
+        }
       }
       updateCounts();
       renderList();
@@ -1294,6 +1327,176 @@ export function createPopupController(deps = {}) {
   }
 
   /**
+   * Formats live elapsed recording duration and byte readout for tab capture.
+   * @param {number} doneSec
+   * @param {number} bytes
+   * @returns {string}
+   */
+  function formatTabCaptureStatus(doneSec, bytes) {
+    const durationText = formatDuration(doneSec) || '0:00';
+    const sizeText = formatBytes(bytes) || '0 KB';
+    return translateFn('popup_status_tab_capture_active', [durationText, sizeText]);
+  }
+
+  /**
+   * Synchronizes the topbar tab capture toggle button state and label.
+   */
+  function updateTabCaptureUi() {
+    const isRecording = Boolean(state.activeTabCapture);
+    if (els.tabCaptureBtn) {
+      els.tabCaptureBtn.classList.toggle('is-recording', isRecording);
+    }
+    if (els.tabCaptureLabel) {
+      els.tabCaptureLabel.textContent = translateFn(
+        isRecording ? 'popup_action_stop_capture' : 'popup_action_capture_tab'
+      );
+    }
+  }
+
+  /**
+   * Starts or stops an active browser tab MediaRecorder capture session.
+   */
+  async function toggleTabCapture() {
+    if (state.activeTabCapture) {
+      if (els.tabCaptureBtn) {
+        els.tabCaptureBtn.disabled = true;
+      }
+      try {
+        const stopResp = await chromeApi.runtime.sendMessage({
+          type: MESSAGE_TYPES.STOP_TAB_CAPTURE,
+          requestId: state.activeTabCapture.requestId
+        });
+        if (!stopResp || !stopResp.ok) {
+          throw new Error((stopResp && stopResp.error) || 'TAB_CAPTURE_FAILED');
+        }
+      } catch (err) {
+        setStatusBanner(localizeError(err && err.message, translateFn), true);
+      } finally {
+        if (els.tabCaptureBtn) {
+          els.tabCaptureBtn.disabled = false;
+        }
+      }
+      return null;
+    }
+
+    if (typeof state.activeTabId !== 'number') {
+      setStatusBanner(localizeError('NO_ACTIVE_TAB', translateFn), true);
+      return null;
+    }
+
+    const requestId = `cap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    state.activeTabCapture = { requestId, done: 0, bytes: 0 };
+    state.localPendingRequestIds.add(requestId);
+    updateTabCaptureUi();
+    setStatusBanner(formatTabCaptureStatus(0, 0));
+
+    try {
+      const response = await chromeApi.runtime.sendMessage({
+        type: MESSAGE_TYPES.START_TAB_CAPTURE,
+        payload: {
+          tabId: state.activeTabId,
+          tabUrl: state.activeTabUrl,
+          title: state.activeTabTitle || '',
+          saveAs: Boolean(state.settings.promptSaveAs),
+          requestId
+        }
+      });
+      if (!response || !response.ok) {
+        throw new Error((response && response.error) || 'TAB_CAPTURE_FAILED');
+      }
+      setStatusBanner(translateFn('popup_status_download_started'));
+      return response;
+    } catch (err) {
+      if (err && err.message === 'DOWNLOAD_CANCELLED') {
+        setStatusBanner(translateFn('popup_status_download_cancelled'));
+      } else {
+        setStatusBanner(localizeError(err && err.message, translateFn), true);
+      }
+      return null;
+    } finally {
+      state.localPendingRequestIds.delete(requestId);
+      if (state.activeTabCapture && state.activeTabCapture.requestId === requestId) {
+        state.activeTabCapture = null;
+        updateTabCaptureUi();
+      }
+    }
+  }
+
+  /**
+   * Applies the active backdrop theme (checker, light, or dark) onto the lightbox preview stage.
+   * @param {'checker' | 'light' | 'dark'} mode
+   */
+  function applyLightboxBg(mode) {
+    const resolved = mode === LIGHTBOX_BG_MODES.LIGHT || mode === LIGHTBOX_BG_MODES.DARK
+      ? mode
+      : LIGHTBOX_BG_MODES.CHECKER;
+    state.lightboxBg = resolved;
+    if (els.lightboxStage) {
+      els.lightboxStage.classList.toggle('is-bg-checker', resolved === LIGHTBOX_BG_MODES.CHECKER);
+      els.lightboxStage.classList.toggle('is-bg-light', resolved === LIGHTBOX_BG_MODES.LIGHT);
+      els.lightboxStage.classList.toggle('is-bg-dark', resolved === LIGHTBOX_BG_MODES.DARK);
+    }
+    if (els.lightboxBgCheckerBtn) {
+      els.lightboxBgCheckerBtn.classList.toggle('is-active', resolved === LIGHTBOX_BG_MODES.CHECKER);
+    }
+    if (els.lightboxBgLightBtn) {
+      els.lightboxBgLightBtn.classList.toggle('is-active', resolved === LIGHTBOX_BG_MODES.LIGHT);
+    }
+    if (els.lightboxBgDarkBtn) {
+      els.lightboxBgDarkBtn.classList.toggle('is-active', resolved === LIGHTBOX_BG_MODES.DARK);
+    }
+  }
+
+  /**
+   * Copies SVG markup or media URL for the currently open lightbox entry.
+   */
+  async function copyLightboxContent() {
+    if (!state.lightboxEntry || !state.lightboxEntry.item) {
+      return;
+    }
+    const { item } = state.lightboxEntry;
+    const isSvgItem = Boolean(
+      item.svgMarkup
+      || (item.ext || '').toLowerCase() === DEFAULT_FILENAMES.SVG_EXT
+      || isSvgDataUrl(item.url)
+    );
+    let payloadText = item.url || '';
+    if (isSvgItem) {
+      if (item.svgMarkup) {
+        payloadText = item.svgMarkup;
+      } else if (isSvgDataUrl(item.url)) {
+        const commaIdx = item.url.indexOf(',');
+        if (commaIdx >= 0) {
+          const header = item.url.slice(0, commaIdx).toLowerCase();
+          const body = item.url.slice(commaIdx + 1);
+          payloadText = header.includes(';base64') ? atob(body) : decodeURIComponent(body);
+        }
+      } else {
+        try {
+          const resp = await fetch(item.url);
+          if (resp.ok) {
+            payloadText = await resp.text();
+          }
+        } catch {
+          payloadText = item.url || '';
+        }
+      }
+    }
+    const writeFn = deps.writeClipboardFn
+      || (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function'
+        ? (text) => navigator.clipboard.writeText(text)
+        : null);
+    if (writeFn && payloadText) {
+      try {
+        await writeFn(payloadText);
+        setStatusBanner(translateFn('popup_action_copied'));
+      } catch (err) {
+        setStatusBanner(localizeError(err && err.message, translateFn), true);
+      }
+    }
+  }
+
+  /**
    * Opens the modal lightbox viewer for inspecting an image or SVG thumbnail in full size.
    * @param {object} entry
    */
@@ -1302,6 +1505,7 @@ export function createPopupController(deps = {}) {
       return;
     }
     const { item } = entry;
+    state.lightboxEntry = entry;
     els.lightboxImg.src = item.url || '';
     els.lightboxImg.alt = item.suggestedFilename || '';
     if (els.lightboxTitle) {
@@ -1318,6 +1522,17 @@ export function createPopupController(deps = {}) {
       els.lightboxMeta.textContent = parts.join(' - ');
       els.lightboxMeta.classList.toggle('hidden', parts.length === 0);
     }
+    if (els.lightboxCopyBtn) {
+      const isSvgItem = Boolean(
+        item.svgMarkup
+        || (item.ext || '').toLowerCase() === DEFAULT_FILENAMES.SVG_EXT
+        || isSvgDataUrl(item.url)
+      );
+      els.lightboxCopyBtn.textContent = translateFn(
+        isSvgItem ? 'popup_lightbox_copy_svg' : 'popup_lightbox_copy_url'
+      );
+    }
+    applyLightboxBg(state.lightboxBg);
     els.imageLightbox.classList.remove('hidden');
     if (els.lightboxCloseBtn && typeof els.lightboxCloseBtn.focus === 'function') {
       els.lightboxCloseBtn.focus();
@@ -1331,6 +1546,7 @@ export function createPopupController(deps = {}) {
     if (!els.imageLightbox) {
       return;
     }
+    state.lightboxEntry = null;
     els.imageLightbox.classList.add('hidden');
     if (els.lightboxImg) {
       els.lightboxImg.src = '';
@@ -1369,6 +1585,19 @@ export function createPopupController(deps = {}) {
           String(message.done || 0),
           String(message.total || 0)
         ]));
+        return;
+      }
+      if (
+        message.isTabCapture
+        || (state.activeTabCapture && message.requestId === state.activeTabCapture.requestId)
+      ) {
+        state.activeTabCapture = {
+          requestId: message.requestId || (state.activeTabCapture && state.activeTabCapture.requestId) || '',
+          done: message.done || 0,
+          bytes: Number.isFinite(message.bytes) ? message.bytes : 0
+        };
+        updateTabCaptureUi();
+        setStatusBanner(formatTabCaptureStatus(state.activeTabCapture.done, state.activeTabCapture.bytes));
         return;
       }
       const progressOpts = {
@@ -1410,6 +1639,18 @@ export function createPopupController(deps = {}) {
         state.activeBuildsByUrl.delete(message.url);
       }
       if (message.requestId && state.localPendingRequestIds.has(message.requestId)) {
+        return;
+      }
+      if (state.activeTabCapture && message.requestId === state.activeTabCapture.requestId) {
+        state.activeTabCapture = null;
+        updateTabCaptureUi();
+        if (message.ok) {
+          setStatusBanner(translateFn('popup_status_download_started'));
+        } else if (message.error === 'DOWNLOAD_CANCELLED') {
+          setStatusBanner(translateFn('popup_status_download_cancelled'));
+        } else {
+          setStatusBanner(localizeError(message.error, translateFn), true);
+        }
         return;
       }
       const entry = findCardEntryForBuild(message.requestId, message.url);
@@ -1574,6 +1815,25 @@ export function createPopupController(deps = {}) {
     if (els.lightboxBackdrop) {
       els.lightboxBackdrop.addEventListener('click', closeLightbox);
     }
+    if (els.lightboxBgCheckerBtn) {
+      els.lightboxBgCheckerBtn.addEventListener('click', () => applyLightboxBg(LIGHTBOX_BG_MODES.CHECKER));
+    }
+    if (els.lightboxBgLightBtn) {
+      els.lightboxBgLightBtn.addEventListener('click', () => applyLightboxBg(LIGHTBOX_BG_MODES.LIGHT));
+    }
+    if (els.lightboxBgDarkBtn) {
+      els.lightboxBgDarkBtn.addEventListener('click', () => applyLightboxBg(LIGHTBOX_BG_MODES.DARK));
+    }
+    if (els.lightboxCopyBtn) {
+      els.lightboxCopyBtn.addEventListener('click', copyLightboxContent);
+    }
+    if (els.lightboxDownloadBtn) {
+      els.lightboxDownloadBtn.addEventListener('click', () => {
+        if (state.lightboxEntry) {
+          triggerDownload(state.lightboxEntry, state.lightboxEntry.item.url, '');
+        }
+      });
+    }
 
     if (els.searchInput) {
       els.searchInput.addEventListener('input', () => {
@@ -1615,6 +1875,9 @@ export function createPopupController(deps = {}) {
 
     els.refreshBtn.addEventListener('click', () => loadActiveTabMedia({ showLoading: true }));
     els.reloadTabBtn.addEventListener('click', reloadActiveTabAndCapture);
+    if (els.tabCaptureBtn) {
+      els.tabCaptureBtn.addEventListener('click', toggleTabCapture);
+    }
 
     els.clearBtn.addEventListener('click', async () => {
       if (typeof state.activeTabId !== 'number') {
@@ -1818,8 +2081,10 @@ export function createPopupController(deps = {}) {
     triggerDownload,
     executeBatchDownloads,
     executeBatchZip,
+    toggleTabCapture,
     openLightbox,
     closeLightbox,
+    applyLightboxBg,
     flushHydrationQueue,
     handleRuntimeMessage,
     handleGlobalKeyDown,

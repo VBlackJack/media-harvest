@@ -55,6 +55,40 @@ const SUBTITLE_EXT_SET = new Set(SUBTITLE_EXTENSIONS);
 const NON_MEDIA_MIME_SET = new Set(NON_MEDIA_MIME_TYPES);
 const STREAM_EXT_SET = new Set(STREAM_EXTENSIONS);
 
+const RASTER_DATA_URI_EXT_MAP = Object.freeze({
+  png: 'png',
+  jpeg: 'jpg',
+  jpg: 'jpg',
+  webp: 'webp',
+  gif: 'gif',
+  avif: 'avif'
+});
+
+/**
+ * Extracts raster extension from a data:image/(png|jpeg|webp|gif|avif) URI, or empty string.
+ * @param {string} rawUrl
+ * @returns {string}
+ */
+export function extractRasterDataUrlExtension(rawUrl) {
+  if (typeof rawUrl !== 'string') {
+    return '';
+  }
+  const match = rawUrl.trim().match(/^data:image\/(png|jpeg|jpg|webp|gif|avif)[;,]/i);
+  if (!match) {
+    return '';
+  }
+  return RASTER_DATA_URI_EXT_MAP[match[1].toLowerCase()] || '';
+}
+
+/**
+ * Checks whether a URL is a standalone raster image data URI.
+ * @param {string} rawUrl
+ * @returns {boolean}
+ */
+export function isRasterImageDataUrl(rawUrl) {
+  return Boolean(extractRasterDataUrlExtension(rawUrl));
+}
+
 /**
  * Extracts a lowercase file extension from a URL pathname, ignoring query params.
  * @param {string} rawUrl
@@ -66,6 +100,10 @@ export function extractUrlExtension(rawUrl) {
   }
   if (isSvgDataUrl(rawUrl)) {
     return DEFAULT_FILENAMES.SVG_EXT;
+  }
+  const rasterDataExt = extractRasterDataUrlExtension(rawUrl);
+  if (rasterDataExt) {
+    return rasterDataExt;
   }
   if (isMseUrl(rawUrl)) {
     return '';
@@ -122,12 +160,12 @@ export function isSvgDataUrl(rawUrl) {
 }
 
 /**
- * Checks whether a URL can be downloaded via Chrome downloads (HTTP/HTTPS or SVG data URI).
+ * Checks whether a URL can be downloaded via Chrome downloads (HTTP/HTTPS or image data URI).
  * @param {string} rawUrl
  * @returns {boolean}
  */
 export function isDownloadableMediaUrl(rawUrl) {
-  return isHttpUrl(rawUrl) || isSvgDataUrl(rawUrl);
+  return isHttpUrl(rawUrl) || isSvgDataUrl(rawUrl) || isRasterImageDataUrl(rawUrl);
 }
 
 /**
@@ -142,6 +180,14 @@ export function classifyMedia(rawUrl, mimeHeader = '') {
     return {
       type: MEDIA_TYPES.IMAGE,
       ext: DEFAULT_FILENAMES.SVG_EXT,
+      isStream: false
+    };
+  }
+  const rasterDataExt = extractRasterDataUrlExtension(rawUrl);
+  if (rasterDataExt) {
+    return {
+      type: MEDIA_TYPES.IMAGE,
+      ext: rasterDataExt,
       isStream: false
     };
   }
@@ -309,7 +355,7 @@ export function deriveFilenameStem(rawUrl, pageTitle = '', pageUrl = '') {
     }
   }
 
-  if (isMseUrl(rawUrl) || isSvgDataUrl(rawUrl)) {
+  if (isMseUrl(rawUrl) || isSvgDataUrl(rawUrl) || isRasterImageDataUrl(rawUrl)) {
     return pageTitle || DEFAULT_FILENAMES.BASE;
   }
 

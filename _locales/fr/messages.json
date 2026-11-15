@@ -922,5 +922,67 @@
         "example": "1080"
       }
     }
+  },
+  "popup_action_capture_tab": {
+    "message": "Capturer onglet",
+    "description": "Bouton pour lancer l'enregistrement vidéo et audio de l'onglet actif."
+  },
+  "popup_action_capture_tab_title": {
+    "message": "Enregistrer directement la vidéo et l'audio de l'onglet actif",
+    "description": "Infobulle du bouton de capture d'onglet."
+  },
+  "popup_action_stop_capture": {
+    "message": "Arrêter REC",
+    "description": "Bouton pour arrêter une capture d'onglet en cours."
+  },
+  "popup_status_tab_capture_active": {
+    "message": "REC onglet ($DURATION$ - $SIZE$)",
+    "description": "Progression affichée pendant la capture vidéo de l'onglet.",
+    "placeholders": {
+      "duration": {
+        "content": "$1",
+        "example": "0:12"
+      },
+      "size": {
+        "content": "$2",
+        "example": "4.2 Mo"
+      }
+    }
+  },
+  "popup_error_tab_capture_unavailable": {
+    "message": "La capture d'onglet est indisponible pour cette page ou ce navigateur.",
+    "description": "Erreur lorsque chrome.tabCapture ne peut pas démarrer."
+  },
+  "popup_error_tab_capture_failed": {
+    "message": "La capture d'onglet a échoué ou n'a produit aucun média.",
+    "description": "Erreur lorsque MediaRecorder échoue pendant une capture."
+  },
+  "popup_error_no_audio_track": {
+    "message": "Aucune piste audio n'a été trouvée dans ce flux.",
+    "description": "Erreur lors de l'extraction audio si le flux ne contient pas de piste sonore."
+  },
+  "popup_lightbox_bg_checker": {
+    "message": "Damier",
+    "description": "Bouton de fond damier transparent dans la visionneuse."
+  },
+  "popup_lightbox_bg_light": {
+    "message": "Clair",
+    "description": "Bouton de fond clair dans la visionneuse."
+  },
+  "popup_lightbox_bg_dark": {
+    "message": "Sombre",
+    "description": "Bouton de fond sombre dans la visionneuse."
+  },
+  "popup_lightbox_copy_svg": {
+    "message": "Copier SVG",
+    "description": "Bouton pour copier le balisage SVG dans la visionneuse."
+  },
+  "popup_lightbox_copy_url": {
+    "message": "Copier URL",
+    "description": "Bouton pour copier l'URL de l'image dans la visionneuse."
+  },
+  "popup_lightbox_download": {
+    "message": "Télécharger",
+    "description": "Bouton pour télécharger l'image ou le SVG affiché dans la visionneuse."
   }
 }

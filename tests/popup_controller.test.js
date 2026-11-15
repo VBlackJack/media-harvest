@@ -209,7 +209,13 @@ function createFakePopupDocument() {
   makeTracked('div', 'lightboxBackdrop');
   makeTracked('span', 'lightboxTitle');
   makeTracked('span', 'lightboxMeta', ['hidden']);
+  makeTracked('div', 'lightboxStage', ['lightbox-stage', 'is-bg-checker']);
   makeTracked('img', 'lightboxImg');
+  makeTracked('button', 'lightboxBgCheckerBtn', ['is-active']);
+  makeTracked('button', 'lightboxBgLightBtn');
+  makeTracked('button', 'lightboxBgDarkBtn');
+  makeTracked('button', 'lightboxCopyBtn');
+  makeTracked('button', 'lightboxDownloadBtn');
   makeTracked('button', 'lightboxCloseBtn');
   makeTracked('button', 'downloadAllBtn', ['hidden']);
   makeTracked('button', 'stopBatchBtn', ['hidden']);
@@ -219,6 +225,8 @@ function createFakePopupDocument() {
   makeTracked('button', 'batchCancelBtn');
   makeTracked('button', 'refreshBtn');
   makeTracked('button', 'reloadTabBtn');
+  makeTracked('button', 'tabCaptureBtn');
+  makeTracked('span', 'tabCaptureLabel');
   makeTracked('button', 'clearBtn');
   makeTracked('button', 'sidePanelBtn');
   makeTracked('button', 'optionsBtn');
@@ -1005,4 +1013,103 @@ test('popup controller manages quick image filters, SVG scale, batch ZIP export,
   assert.equal(zipPayloads[0].items[0].convertTo, 'png');
   assert.equal(zipPayloads[0].items[0].rasterSizePx, 2048);
   assert.equal(zipPayloads[0].items[1].convertTo, '');
+});
+
+test('popup controller manages Tab Capture REC toggle/recovery and Lightbox Pro backdrop, copy, and download', async () => {
+  const doc = createFakePopupDocument();
+  const sentMessages = [];
+  const copiedTexts = [];
+  let releaseCapResolve;
+  const svgCode = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="8"/></svg>';
+  const items = [
+    {
+      url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgCode)}`,
+      type: 'image',
+      ext: 'svg',
+      width: 64,
+      height: 64,
+      svgMarkup: svgCode,
+      source: 'dom',
+      suggestedFilename: 'mark.svg'
+    }
+  ];
+
+  const chromeApi = {
+    tabs: {
+      query: async () => [{ id: 22, url: 'https://example.com/stream', title: 'Concert Stream' }]
+    },
+    runtime: {
+      onMessage: { addListener: () => {} },
+      sendMessage: async (msg) => {
+        sentMessages.push(msg);
+        if (msg.type === MESSAGE_TYPES.GET_MEDIA_FOR_TAB) {
+          return { ok: true, items, hasBlobVideo: false };
+        }
+        if (msg.type === MESSAGE_TYPES.GET_ACTIVE_BUILDS) {
+          return { ok: true, builds: [] };
+        }
+        if (msg.type === MESSAGE_TYPES.START_TAB_CAPTURE) {
+          return new Promise((resolve) => {
+            releaseCapResolve = resolve;
+          });
+        }
+        if (msg.type === MESSAGE_TYPES.STOP_TAB_CAPTURE) {
+          queueMicrotask(() => releaseCapResolve({ ok: true, downloadId: 88 }));
+          return { ok: true };
+        }
+        return { ok: true };
+      }
+    },
+    storage: {
+      local: { get: async () => ({}), set: async () => {} },
+      sync: { get: async () => ({}) }
+    }
+  };
+
+  const controller = createPopupController({
+    documentRef: doc,
+    windowRef: { addEventListener: () => {} },
+    chromeApi,
+    loadSettingsFn: async () => DEFAULT_SETTINGS,
+    translateFn: (k, args = []) => (args.length ? `${k}:${args.join(',')}` : k),
+    getUiLanguageFn: () => 'en',
+    applyTranslationsFn: () => {},
+    writeClipboardFn: async (text) => copiedTexts.push(text)
+  });
+
+  await controller.init();
+
+  // Lightbox Pro: open SVG, toggle Light backdrop, copy SVG markup, trigger download
+  const svgEntry = controller.state.cardsByUrl.get(items[0].url);
+  await svgEntry.thumbEl.dispatchEvent({ type: 'click' });
+  assert.equal(controller.els.lightboxCopyBtn.textContent, 'popup_lightbox_copy_svg');
+  await controller.els.lightboxBgLightBtn.dispatchEvent({ type: 'click' });
+  assert.equal(controller.els.lightboxStage.classList.contains('is-bg-light'), true);
+  assert.equal(controller.els.lightboxBgLightBtn.classList.contains('is-active'), true);
+  await controller.els.lightboxCopyBtn.dispatchEvent({ type: 'click' });
+  assert.deepEqual(copiedTexts, [svgCode]);
+  await controller.els.lightboxDownloadBtn.dispatchEvent({ type: 'click' });
+  assert.ok(sentMessages.some((m) => m.type === MESSAGE_TYPES.DOWNLOAD_MEDIA && m.payload.url === items[0].url));
+  controller.closeLightbox();
+
+  // Tab Capture start, live progress, and stop toggle
+  const startPromise = controller.els.tabCaptureBtn.dispatchEvent({ type: 'click' });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(controller.els.tabCaptureBtn.classList.contains('is-recording'), true);
+  assert.equal(controller.els.tabCaptureLabel.textContent, 'popup_action_stop_capture');
+
+  controller.handleRuntimeMessage({
+    type: MESSAGE_TYPES.DOWNLOAD_PROGRESS,
+    requestId: controller.state.activeTabCapture.requestId,
+    isTabCapture: true,
+    done: 5,
+    bytes: 204800
+  });
+  assert.ok(controller.els.statusBanner.textContent.startsWith('popup_status_tab_capture_active:0:05,'));
+
+  await controller.els.tabCaptureBtn.dispatchEvent({ type: 'click' });
+  await startPromise;
+  assert.ok(sentMessages.some((m) => m.type === MESSAGE_TYPES.STOP_TAB_CAPTURE));
+  assert.equal(controller.els.tabCaptureBtn.classList.contains('is-recording'), false);
+  assert.equal(controller.els.tabCaptureLabel.textContent, 'popup_action_capture_tab');
 });

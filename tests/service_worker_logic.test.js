@@ -724,4 +724,55 @@ test('service_worker applies same-origin/CDN DNR rules, correlates multi-video b
   assert.equal(zipResp.ok, true);
   assert.ok(offscreenMessages.some((m) => m.type === MESSAGE_TYPES.OFFSCREEN_BUILD_ZIP_BLOB && m.requestId === 'req_zip_1'));
   assert.ok(downloads.some((d) => d.filename === 'gallery.zip'));
+
+  // START_TAB_CAPTURE requests chrome.tabCapture streamId, marks REC badge, exposes GET_ACTIVE_BUILDS, and STOP_TAB_CAPTURE stops it
+  badgeHistory.length = 0;
+  downloads.length = 0;
+  offscreenMessages.length = 0;
+  let capturedStreamTargetTab = null;
+  let releaseTabCap;
+  globalThis.chrome.tabCapture = {
+    getMediaStreamId: async ({ targetTabId }) => {
+      capturedStreamTargetTab = targetTabId;
+      return 'stream_id_tab_44';
+    }
+  };
+  offscreenResponder = (msg) => {
+    if (msg && msg.type === MESSAGE_TYPES.OFFSCREEN_START_TAB_CAPTURE) {
+      return new Promise((resolve) => {
+        releaseTabCap = resolve;
+      });
+    }
+    return Promise.resolve({ ok: true });
+  };
+  const capPromise = dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.START_TAB_CAPTURE,
+    payload: {
+      tabId: 44,
+      tabUrl: 'https://example.com/watch',
+      title: 'Live Broadcast',
+      requestId: 'req_tabcap_1'
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(capturedStreamTargetTab, 44);
+  assert.ok(offscreenMessages.some((m) => m.type === MESSAGE_TYPES.OFFSCREEN_START_TAB_CAPTURE && m.streamId === 'stream_id_tab_44'));
+  assert.ok(badgeHistory.some((b) => b.text === BADGE_CONFIG.REC_TEXT && b.color === BADGE_CONFIG.REC_COLOR));
+
+  const buildsSnap = await dispatchRuntimeMessage({ type: MESSAGE_TYPES.GET_ACTIVE_BUILDS });
+  assert.equal(buildsSnap.ok, true);
+  assert.ok(buildsSnap.builds.some((b) => b.requestId === 'req_tabcap_1' && b.isTabCapture === true));
+
+  const stopCapResp = await dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.STOP_TAB_CAPTURE,
+    requestId: 'req_tabcap_1'
+  });
+  assert.equal(stopCapResp.ok, true);
+  assert.ok(offscreenMessages.some((m) => m.type === MESSAGE_TYPES.OFFSCREEN_STOP_TAB_CAPTURE && m.requestId === 'req_tabcap_1'));
+
+  releaseTabCap({ ok: true, blobUrl: 'blob:chrome-extension://id/tab-cap-1', outputExtension: 'webm' });
+  const capDoneResp = await capPromise;
+  assert.equal(capDoneResp.ok, true);
+  assert.ok(downloads.some((d) => d.filename === 'Live_Broadcast.webm'));
+  delete globalThis.chrome.tabCapture;
 });

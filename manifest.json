@@ -13,7 +13,8 @@
     "offscreen",
     "sidePanel",
     "declarativeNetRequest",
-    "nativeMessaging"
+    "nativeMessaging",
+    "tabCapture"
   ],
   "side_panel": {
     "default_path": "src/popup/popup.html"

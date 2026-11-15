@@ -61,6 +61,23 @@ function createFixtureServer() {
     </symbol>
   </svg>
   <svg id="useIcon" width="32" height="32"><use href="#e2e-star"/></svg>
+  <canvas id="paintCanvas" width="160" height="160"></canvas>
+  <script>
+    const c = document.getElementById('paintCanvas');
+    const ctx = c.getContext('2d');
+    const grad = ctx.createLinearGradient(0, 0, 160, 160);
+    grad.addColorStop(0, '#0284c7');
+    grad.addColorStop(0.5, '#10b981');
+    grad.addColorStop(1, '#f59e0b');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 160, 160);
+    ctx.fillStyle = '#0f172a';
+    for (let i = 0; i < 8; i += 1) {
+      ctx.beginPath();
+      ctx.arc(20 + i * 18, 80, 12, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  </script>
 </body>
 </html>`;
 
@@ -255,7 +272,7 @@ async function runE2E() {
     assert.equal(parsedDom.svgs, 3);
     assert.equal(parsedDom.imgs, 1);
 
-    // 2. Verify Canvas SVG -> PNG rasterization in real Chrome engine
+    // 2. Verify Canvas SVG -> PNG rasterization and DEFLATE CompressionStream in real Chrome engine
     const canvasCheck = await cdp.send('Runtime.evaluate', {
       expression: `(async () => {
         const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><circle cx="24" cy="24" r="20" fill="#0369a1"/></svg>';
@@ -267,7 +284,21 @@ async function runE2E() {
         canvas.height = 512;
         canvas.getContext('2d').drawImage(img, 0, 0, 512, 512);
         const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
-        return { width: canvas.width, height: canvas.height, size: blob ? blob.size : 0, type: blob ? blob.type : '' };
+
+        const rawPayload = new TextEncoder().encode(svg.repeat(8));
+        const compressedStream = new Blob([rawPayload]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+        const compressedBuf = new Uint8Array(await new Response(compressedStream).arrayBuffer());
+        const restoredStream = new Blob([compressedBuf]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+        const restoredText = await new Response(restoredStream).text();
+
+        return {
+          width: canvas.width,
+          height: canvas.height,
+          size: blob ? blob.size : 0,
+          type: blob ? blob.type : '',
+          deflateSmaller: compressedBuf.byteLength < rawPayload.byteLength,
+          roundTripOk: restoredText === svg.repeat(8)
+        };
       })()`,
       awaitPromise: true,
       returnByValue: true
@@ -275,6 +306,8 @@ async function runE2E() {
     assert.equal(canvasCheck.result.value.width, 512);
     assert.equal(canvasCheck.result.value.type, 'image/png');
     assert.ok(canvasCheck.result.value.size > 200);
+    assert.equal(canvasCheck.result.value.deflateSmaller, true);
+    assert.equal(canvasCheck.result.value.roundTripOk, true);
 
     // 3. Verify unpacked MV3 extension target / popup UI if allowed by browser build
     const { extensionId } = await waitForExtensionId(cdp, 5000);
@@ -303,7 +336,9 @@ async function runE2E() {
           hasExtSelect: Boolean(document.getElementById('imageExtFilterSelect')),
           hasScaleSelect: Boolean(document.getElementById('imageScaleSelect')),
           hasZipBtn: Boolean(document.getElementById('downloadZipBtn')),
+          hasTabCaptureBtn: Boolean(document.getElementById('tabCaptureBtn')),
           hasLightbox: Boolean(document.getElementById('imageLightbox')),
+          hasLightboxToolbar: Boolean(document.getElementById('lightboxBgLightBtn') && document.getElementById('lightboxCopyBtn') && document.getElementById('lightboxDownloadBtn')),
           scaleOptions: document.getElementById('imageScaleSelect') ? document.getElementById('imageScaleSelect').options.length : 0
         })`,
         returnByValue: true
@@ -313,8 +348,25 @@ async function runE2E() {
       assert.equal(popupState.hasExtSelect, true, popupCheck.result.value);
       assert.equal(popupState.hasScaleSelect, true, popupCheck.result.value);
       assert.equal(popupState.hasZipBtn, true, popupCheck.result.value);
+      assert.equal(popupState.hasTabCaptureBtn, true, popupCheck.result.value);
       assert.equal(popupState.hasLightbox, true, popupCheck.result.value);
+      assert.equal(popupState.hasLightboxToolbar, true, popupCheck.result.value);
       assert.equal(popupState.scaleOptions, 4, popupCheck.result.value);
+
+      const lightboxToggleCheck = await cdp.send('Runtime.evaluate', {
+        expression: `(() => {
+          const lightBtn = document.getElementById('lightboxBgLightBtn');
+          const stage = document.getElementById('lightboxStage');
+          lightBtn.click();
+          return {
+            hasLightClass: stage ? stage.classList.contains('is-bg-light') : false,
+            btnActive: lightBtn.classList.contains('is-active')
+          };
+        })()`,
+        returnByValue: true
+      }, popupSessionId);
+      assert.equal(lightboxToggleCheck.result.value.hasLightClass, true);
+      assert.equal(lightboxToggleCheck.result.value.btnActive, true);
 
       const mediaCheck = await cdp.send('Runtime.evaluate', {
         expression: `(async () => {
@@ -330,6 +382,7 @@ async function runE2E() {
             error: res && res.error ? res.error : '',
             count: res && Array.isArray(res.items) ? res.items.length : 0,
             hasSvg: res && Array.isArray(res.items) ? res.items.some((i) => i.ext === 'svg') : false,
+            hasCanvasPng: res && Array.isArray(res.items) ? res.items.some((i) => i.ext === 'png' && typeof i.url === 'string' && i.url.startsWith('data:image/png;base64,')) : false,
             exts: res && Array.isArray(res.items) ? res.items.map((i) => i.ext) : []
           };
         })()`,
@@ -338,7 +391,8 @@ async function runE2E() {
       }, popupSessionId);
       assert.equal(mediaCheck.result.value.ok, true, JSON.stringify(mediaCheck.result.value));
       assert.equal(mediaCheck.result.value.hasSvg, true, JSON.stringify(mediaCheck.result.value));
-      assert.ok(mediaCheck.result.value.count >= 2, JSON.stringify(mediaCheck.result.value));
+      assert.equal(mediaCheck.result.value.hasCanvasPng, true, JSON.stringify(mediaCheck.result.value));
+      assert.ok(mediaCheck.result.value.count >= 3, JSON.stringify(mediaCheck.result.value));
       console.log(`Chromium MV3 E2E passed (extension loaded: ${extensionId}, detected ${mediaCheck.result.value.count} media items).`);
     } else {
       console.log('Chromium E2E passed (DOM & Canvas checks OK; --load-extension disabled on branded Chrome build).');

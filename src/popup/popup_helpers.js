@@ -34,6 +34,7 @@ const ERROR_KEY_BY_CODE = Object.freeze({
   NO_ACTIVE_TAB: 'popup_error_no_active_tab',
   INVALID_FMP4_INIT: 'popup_error_invalid_fmp4',
   MISSING_AUDIO_TRACK: 'popup_error_missing_audio',
+  NO_AUDIO_TRACK: 'popup_error_no_audio_track',
   TRANSMUXER_UNAVAILABLE: 'popup_error_transmux_failed',
   TRANSMUX_EMPTY: 'popup_error_transmux_failed',
   BUILD_ABORTED: 'popup_error_build_aborted',
@@ -44,6 +45,8 @@ const ERROR_KEY_BY_CODE = Object.freeze({
   MSE_NOT_FOUND: 'popup_error_mse_failed',
   MSE_TIMEOUT: 'popup_error_mse_failed',
   MSE_EXPORT_FAILED: 'popup_error_mse_failed',
+  TAB_CAPTURE_UNAVAILABLE: 'popup_error_tab_capture_unavailable',
+  TAB_CAPTURE_FAILED: 'popup_error_tab_capture_failed',
   COMPANION_UNAVAILABLE: 'popup_error_companion_unavailable',
   COMPANION_FAILED: 'popup_error_companion_failed',
   DOWNLOAD_FAILED: 'popup_error_generic_download'

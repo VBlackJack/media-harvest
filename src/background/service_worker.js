@@ -46,7 +46,6 @@ import {
   isDownloadableMediaUrl,
   isHttpUrl,
   isMseUrl,
-  isSvgDataUrl,
   sanitizeFilename
 } from '../shared/media_classifier.js';
 import { attachVideoPreviews, extractMediaId } from '../shared/preview_matcher.js';
@@ -569,7 +568,8 @@ async function scanTabDom(tabId, tabUrl, settings) {
       subtitleExtensions: SUBTITLE_EXTENSIONS,
       maxJsonLdNodes: LIMITS.MAX_JSON_LD_NODES,
       maxSvgItems: LIMITS.MAX_SVG_ITEMS,
-      minSvgDimensionPx: LIMITS.MIN_SVG_DIMENSION_PX
+      minSvgDimensionPx: LIMITS.MIN_SVG_DIMENSION_PX,
+      minRasterDataUriLength: LIMITS.MIN_RASTER_DATA_URI_LENGTH
     };
 
     const runScan = (cfg) => (
@@ -852,18 +852,23 @@ async function cancelDownloadBuild(requestId) {
 }
 
 /**
- * Signals an active live HLS DVR recorder in the offscreen worker to stop and finalize its MP4 file.
+ * Signals active live DVR or tab capture recorders in the offscreen worker to stop and finalize.
  * @param {string} [requestId]
  * @returns {Promise<void>}
  */
 async function stopLiveRecording(requestId) {
-  await chrome.runtime.sendMessage({
-    target: 'offscreen',
-    type: MESSAGE_TYPES.OFFSCREEN_STOP_LIVE_RECORD,
-    requestId
-  }).catch(() => {
-    // Offscreen document may not exist or already finished recording
-  });
+  await Promise.all([
+    chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_STOP_LIVE_RECORD,
+      requestId
+    }).catch(() => {}),
+    chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_STOP_TAB_CAPTURE,
+      requestId
+    }).catch(() => {})
+  ]);
 }
 
 /**
@@ -884,9 +889,9 @@ async function startDirectDownload(payload, rawStem, requestId) {
   const providedExt = dotIdx > 0 && dotIdx < leafName.length - 1 ? leafName.slice(dotIdx + 1) : '';
   const allowFolders = Boolean(payload.allowFolders) || isFolderFilenameTemplate(settings.filenameTemplate);
   const directFilename = sanitizeFilename(rawStem, providedExt || fallbackExt, { allowFolders });
-  const ruleId = isSvgDataUrl(payload.url)
-    ? null
-    : await addTemporaryRefererRule(payload.url, payload.referer || '');
+  const ruleId = isHttpUrl(payload.url)
+    ? await addTemporaryRefererRule(payload.url, payload.referer || '')
+    : null;
   try {
     const downloadId = await chrome.downloads.download({
       url: payload.url,
@@ -948,6 +953,7 @@ async function executeOffscreenBlobDownload({
   tabId,
   referer = '',
   isLiveRecord = false,
+  isTabCapture = false,
   buildOffscreenMessage,
   runOffscreenBuild
 }) {
@@ -958,7 +964,8 @@ async function executeOffscreenBlobDownload({
     done: 0,
     total: 0,
     tabId,
-    isLiveRecord: Boolean(isLiveRecord)
+    isLiveRecord: Boolean(isLiveRecord),
+    isTabCapture: Boolean(isTabCapture)
   };
   activeBuilds.set(requestId, buildState);
   activeOffscreenBuilds += 1;
@@ -1108,7 +1115,9 @@ async function startMseDownload(payload, rawStem, requestId) {
     throw new Error('MSE_NOT_FOUND');
   }
   const frameId = typeof payload.frameId === 'number' ? payload.frameId : undefined;
-  const fallbackExt = payload.ext || DEFAULT_FILENAMES.HLS_FMP4_EXT;
+  const fallbackExt = payload.audioOnly
+    ? DEFAULT_FILENAMES.AUDIO_M4A_EXT
+    : (payload.ext || DEFAULT_FILENAMES.HLS_FMP4_EXT);
 
   return executeOffscreenBlobDownload({
     requestId,
@@ -1122,7 +1131,8 @@ async function startMseDownload(payload, rawStem, requestId) {
       const msg = {
         type: MESSAGE_TYPES.EXPORT_MSE_STREAM,
         requestId,
-        mseId
+        mseId,
+        audioOnly: Boolean(payload.audioOnly)
       };
       if (typeof frameId === 'number') {
         return chrome.tabs.sendMessage(tabId, msg, { frameId });
@@ -1413,6 +1423,64 @@ async function startImageConversionDownload(payload, rawStem, requestId) {
 }
 
 /**
+ * Starts a MediaRecorder capture of the active browser tab via chrome.tabCapture + offscreen.
+ * @param {object} payload
+ * @returns {Promise<{ downloadId: number, requestId: string }>}
+ */
+async function handleStartTabCapture(payload) {
+  const tabId = payload && typeof payload.tabId === 'number' ? payload.tabId : -1;
+  const tabUrl = payload && typeof payload.tabUrl === 'string' ? payload.tabUrl : '';
+  if (tabId < 0) {
+    throw new Error('NO_ACTIVE_TAB');
+  }
+  if (!isHttpUrl(tabUrl)) {
+    throw new Error('RESTRICTED_PAGE');
+  }
+  if (!chrome.tabCapture || typeof chrome.tabCapture.getMediaStreamId !== 'function') {
+    throw new Error('TAB_CAPTURE_UNAVAILABLE');
+  }
+
+  let streamId = '';
+  try {
+    streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+  } catch {
+    throw new Error('TAB_CAPTURE_UNAVAILABLE');
+  }
+  if (!streamId) {
+    throw new Error('TAB_CAPTURE_UNAVAILABLE');
+  }
+
+  const requestId = payload && typeof payload.requestId === 'string' && payload.requestId
+    ? payload.requestId
+    : `cap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const rawTitle = (payload && typeof payload.title === 'string' && payload.title.trim()) || deriveFilenameStem(tabUrl, '');
+  const settings = await loadSettings().catch(() => ({}));
+  const templatedStem = applyFilenameTemplate(settings.filenameTemplate, {
+    stem: rawTitle,
+    pageUrl: tabUrl
+  });
+
+  return executeOffscreenBlobDownload({
+    requestId,
+    targetUrl: tabUrl,
+    rawStem: templatedStem,
+    fallbackExt: DEFAULT_FILENAMES.WEBM_EXT,
+    saveAs: Boolean(payload && payload.saveAs),
+    allowFolders: isFolderFilenameTemplate(settings.filenameTemplate),
+    tabId,
+    isLiveRecord: true,
+    isTabCapture: true,
+    buildOffscreenMessage: () => ({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_START_TAB_CAPTURE,
+      requestId,
+      streamId,
+      originalUrl: tabUrl
+    })
+  });
+}
+
+/**
  * Packages multiple selected items into a single offscreen ZIP archive and downloads it.
  * @param {object} payload
  * @returns {Promise<{ downloadId: number, requestId: string }>}
@@ -1491,6 +1559,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       buildState.done = message.done || 0;
       buildState.total = message.total || 0;
       buildState.isLiveRecord = Boolean(message.isLiveRecord);
+      buildState.isTabCapture = Boolean(buildState.isTabCapture || message.isTabCapture);
       buildState.bytes = Number.isFinite(message.bytes) ? message.bytes : 0;
       if (buildState.tabId >= 0 && buildState.isLiveRecord && !wasLive) {
         refreshTabBadge(buildState.tabId).catch(() => {});
@@ -1502,6 +1571,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           done: buildState.done,
           total: buildState.total,
           isLiveRecord: buildState.isLiveRecord,
+          isTabCapture: Boolean(buildState.isTabCapture),
           bytes: buildState.bytes
         }).catch(() => {});
       }
@@ -1516,6 +1586,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       done: build.done,
       total: build.total,
       isLiveRecord: Boolean(build.isLiveRecord),
+      isTabCapture: Boolean(build.isTabCapture),
       bytes: Number.isFinite(build.bytes) ? build.bytes : 0
     }));
     sendResponse({ ok: true, builds });
@@ -1597,6 +1668,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === MESSAGE_TYPES.STOP_LIVE_RECORD) {
+    stopLiveRecording(message.requestId)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.START_TAB_CAPTURE) {
+    handleStartTabCapture(message.payload || {})
+      .then((res) => sendResponse({ ok: true, ...res }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.STOP_TAB_CAPTURE) {
     stopLiveRecording(message.requestId)
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));

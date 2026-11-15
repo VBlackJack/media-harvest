@@ -43,7 +43,8 @@
       maxJsonLdNodes = 50,
       maxCssBgElements = 250,
       maxSvgItems = 80,
-      minSvgDimensionPx = 12
+      minSvgDimensionPx = 12,
+      minRasterDataUriLength = 200
     } = config;
     const extSet = new Set(directExtensions);
     const subtitleExtSet = new Set(subtitleExtensions);
@@ -57,6 +58,9 @@
       && (url.startsWith('http://') || url.startsWith('https://'));
     const isSvgDataUri = (url) => typeof url === 'string'
       && /^data:image\/svg\+xml[;,]/i.test(url.trim());
+    const isRasterDataUri = (url) => typeof url === 'string'
+      && /^data:image\/(png|jpeg|jpg|webp|gif|avif)[;,]/i.test(url.trim())
+      && url.trim().length >= minRasterDataUriLength;
 
     const captureVideoFrame = (video) => {
       if (!video.videoWidth || !video.videoHeight || video.readyState < 2) {
@@ -148,8 +152,8 @@
         }
         return;
       }
-      const allowSvgData = type === mediaTypes.IMAGE && isSvgDataUri(url);
-      if (!isSafeHttpUrl(url) && !allowSvgData) {
+      const allowDataImage = type === mediaTypes.IMAGE && (isSvgDataUri(url) || isRasterDataUri(url));
+      if (!isSafeHttpUrl(url) && !allowDataImage) {
         return;
       }
       if (seen.has(url)) {
@@ -296,6 +300,28 @@
       });
     }
 
+    for (const canvas of queryAllRoots('canvas')) {
+      const cWidth = canvas.width || 0;
+      const cHeight = canvas.height || 0;
+      if (cWidth < minImageDimensionPx || cHeight < minImageDimensionPx || typeof canvas.toDataURL !== 'function') {
+        continue;
+      }
+      try {
+        const dataUrl = canvas.toDataURL('image/png');
+        if (isRasterDataUri(dataUrl)) {
+          const label = (canvas.getAttribute && (canvas.getAttribute('aria-label') || canvas.getAttribute('id'))) || '';
+          addItem(dataUrl, mediaTypes.IMAGE, {
+            ext: 'png',
+            width: cWidth,
+            height: cHeight,
+            title: label || document.title || ''
+          });
+        }
+      } catch {
+        // Ignore cross-origin tainted canvases
+      }
+    }
+
     for (const anchor of queryAllRoots('a[href]')) {
       const href = toAbsoluteUrl(anchor.getAttribute('href'));
       if (!href.startsWith('http://') && !href.startsWith('https://')) {
@@ -409,30 +435,25 @@
 
     if (typeof window.getComputedStyle === 'function') {
       const cssUrlRegex = /url\(\s*(['"]?)([^'")]+)\1\s*\)/gi;
-      const bgCandidates = queryAllRoots('div, section, article, figure, span, a');
-      const inspectLimit = Math.min(bgCandidates.length, maxCssBgElements);
-      for (let i = 0; i < inspectLimit; i += 1) {
-        const el = bgCandidates[i];
-        const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
-        if (rect && (rect.width < minImageDimensionPx || rect.height < minImageDimensionPx)) {
-          continue;
-        }
-        let bgImage = '';
-        try {
-          bgImage = window.getComputedStyle(el).backgroundImage || '';
-        } catch {
-          continue;
-        }
-        if (!bgImage || bgImage === 'none' || !bgImage.includes('url(')) {
-          continue;
+      const extractCssUrlCandidates = (rawCssValue, rect) => {
+        if (!rawCssValue || rawCssValue === 'none' || !rawCssValue.includes('url(')) {
+          return;
         }
         cssUrlRegex.lastIndex = 0;
         let match;
-        while ((match = cssUrlRegex.exec(bgImage)) !== null) {
+        while ((match = cssUrlRegex.exec(rawCssValue)) !== null) {
           const rawCandidate = match[2];
           if (isSvgDataUri(rawCandidate)) {
             addItem(rawCandidate.trim(), mediaTypes.IMAGE, {
               ext: 'svg',
+              width: rect ? Math.round(rect.width) : 0,
+              height: rect ? Math.round(rect.height) : 0,
+              title: document.title || ''
+            });
+            continue;
+          }
+          if (isRasterDataUri(rawCandidate)) {
+            addItem(rawCandidate.trim(), mediaTypes.IMAGE, {
               width: rect ? Math.round(rect.width) : 0,
               height: rect ? Math.round(rect.height) : 0,
               title: document.title || ''
@@ -448,6 +469,30 @@
             });
           }
         }
+      };
+
+      const bgCandidates = [
+        ...queryAllRoots('div, section, article, figure, span, a'),
+        ...queryAllRoots('button, i')
+      ];
+      const inspectLimit = Math.min(bgCandidates.length, maxCssBgElements);
+      for (let i = 0; i < inspectLimit; i += 1) {
+        const el = bgCandidates[i];
+        const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+        if (rect && (rect.width < minImageDimensionPx || rect.height < minImageDimensionPx)) {
+          continue;
+        }
+        let computed;
+        try {
+          computed = window.getComputedStyle(el);
+        } catch {
+          continue;
+        }
+        if (!computed) {
+          continue;
+        }
+        extractCssUrlCandidates(computed.backgroundImage || '', rect);
+        extractCssUrlCandidates(computed.maskImage || computed.webkitMaskImage || '', rect);
       }
     }
 
@@ -464,7 +509,7 @@
       return { width: 0, height: 0 };
     };
     const inlineUseSymbols = (svgClone) => {
-      if (typeof svgClone.querySelectorAll !== 'function' || typeof document.getElementById !== 'function') {
+      if (typeof svgClone.querySelectorAll !== 'function') {
         return;
       }
       const uses = svgClone.querySelectorAll('use') || [];
@@ -472,7 +517,20 @@
       let defsEl = null;
       for (const useEl of uses) {
         const rawHref = (useEl.getAttribute && (useEl.getAttribute('href') || useEl.getAttribute('xlink:href'))) || '';
+        if (!rawHref) {
+          continue;
+        }
         if (!rawHref.startsWith('#')) {
+          const externalBase = toAbsoluteUrl(rawHref.split('#')[0]);
+          if (isSafeHttpUrl(externalBase) && /\.svg(?:$|[?#])/i.test(externalBase)) {
+            addItem(externalBase, mediaTypes.IMAGE, {
+              ext: 'svg',
+              title: document.title || 'svg-sprite'
+            });
+          }
+          continue;
+        }
+        if (typeof document.getElementById !== 'function') {
           continue;
         }
         const refId = rawHref.slice(1).trim();
