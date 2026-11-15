@@ -2,6 +2,16 @@
 
 All notable engineering changes to Media Harvest are documented in this file.
 
+## [1.2.1] - 2026-11-15
+
+### Fixed
+- Preserved dual-track audio across WebM DASH and MSE captures via a pure-JS EBML/Matroska muxer (`src/shared/webm_muxer.js`) with `TrackNumber`/`SimpleBlock` remapping and `TimestampScale` alignment, while keeping `popup_badge_video_only` accurate when a compatible `audio/webm` track is available (`src/popup/media_card.js`).
+- Replaced failing raw-ADTS transmuxing for separate HLS `.aac` audio renditions with a dedicated ADTS parser and ISO BMFF `'soun'` builder (`src/shared/adts_transmuxer.js`), including ID3v2-prefixed segments and HLS master playlists missing explicit `AUDIO=` group bindings (`src/offscreen/offscreen.js`).
+- Fixed silent or unplayable merged MP4 tracks by normalizing `tfhd` `base-data-offset-present` (`0x000001`) into `default-base-is-moof` (`0x020000`) with updated `trun.data_offset`, and stripping stray non-`'soun'` tracks from separate audio init segments (`src/shared/fmp4_muxer.js`).
+- Preserved separate audio during direct File System Access disk streaming (>512 MB) by interleaving normalized dual-track fMP4 fragments in `src/saver/stream_saver.js`.
+- Prevented in-page overlay downloads from picking split video-only MP4 URLs (e.g. `DASH_720.mp4`) over matching muxed streams or companion `DASH_AUDIO_*` tracks (`src/background/service_worker.js`, progressive mux forwarding in `src/offscreen/offscreen.js`).
+- Expanded test suite to 143 automated unit/integration tests covering `webm_muxer.js`, `adts_transmuxer.js`, `fmp4_muxer.js`, `stream_saver.js`, `offscreen.js`, `media_card.js`, and `service_worker.js`.
+
 ## [1.2.0] - 2026-11-15
 
 ### Added

@@ -1,6 +1,6 @@
 {
   "name": "media-harvest",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Chrome MV3 extension to detect and download page media and non-DRM HLS streams.",
   "type": "module",
   "license": "Apache-2.0",

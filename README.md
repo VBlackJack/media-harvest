@@ -2,7 +2,7 @@
 
 # Media Harvest
 
-Chrome Manifest V3 extension (`v1.2.0`) to detect, preview, and download videos, non-DRM HLS (`.m3u8`) and DASH (`.mpd`) streams, subtitles, images, and audio from the active tab, in popup or Chrome Side Panel mode.
+Chrome Manifest V3 extension (`v1.2.1`) to detect, preview, and download videos, non-DRM HLS (`.m3u8`) and DASH (`.mpd`) streams, subtitles, images, and audio from the active tab, in popup or Chrome Side Panel mode.
 
 ## Features
 
