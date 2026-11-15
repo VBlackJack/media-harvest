@@ -984,5 +984,131 @@
   "popup_lightbox_download": {
     "message": "Download",
     "description": "Lightbox button to download the previewed image or SVG."
+  },
+  "options_jpg_quality_label": {
+    "message": "JPG export quality (%)",
+    "description": "Options label for JPG compression quality percentage."
+  },
+  "options_jpg_quality_hint": {
+    "message": "Compression quality (50-100) applied when converting images or ZIP galleries to JPG.",
+    "description": "Options helper text explaining JPG export quality bounds."
+  },
+  "options_audio_format_label": {
+    "message": "Browser audio export format",
+    "description": "Options label selecting native browser audio extraction format."
+  },
+  "options_audio_format_m4a": {
+    "message": "M4A / AAC (Lossless stream extract)",
+    "description": "Audio format option using lossless stream remuxing."
+  },
+  "options_audio_format_wav": {
+    "message": "WAV PCM 16-bit (Any video/audio via Web Audio)",
+    "description": "Audio format option decoding media to 16-bit PCM WAV."
+  },
+  "options_audio_format_hint": {
+    "message": "Use M4A for fast lossless extraction on HLS/MSE, or WAV to extract audio from MP4/WebM files without companion.",
+    "description": "Options helper text comparing M4A and WAV autonomous audio export."
+  },
+  "popup_zip_rename_label": {
+    "message": "ZIP entry naming",
+    "description": "Accessible label for ZIP entry naming mode selector."
+  },
+  "popup_zip_rename_original": {
+    "message": "Names: Original",
+    "description": "Option to keep original filenames inside batch ZIP archives."
+  },
+  "popup_zip_rename_sequential": {
+    "message": "Names: 001, 002...",
+    "description": "Option to rename batch ZIP entries sequentially with zero-padded indices."
+  },
+  "popup_action_save_large": {
+    "message": "Stream >512 MB to disk",
+    "description": "Action button to stream oversized videos directly to disk via File System Access API."
+  },
+  "popup_action_save_large_title": {
+    "message": "Stream large video directly to disk using File System Access API without filling RAM",
+    "description": "Tooltip explaining direct disk streaming for oversized streams."
+  },
+  "saver_page_title": {
+    "message": "Media Harvest - Direct Disk Streamer",
+    "description": "HTML document title for the direct disk streaming saver tab."
+  },
+  "saver_heading": {
+    "message": "Direct Disk Stream Saver",
+    "description": "Main heading on the direct disk streaming page."
+  },
+  "saver_subtitle": {
+    "message": "Streams segments directly to a local file so downloads over 512 MB never exhaust browser memory.",
+    "description": "Subtitle explaining how direct disk streaming bypasses the 512 MB RAM cap."
+  },
+  "saver_target_label": {
+    "message": "Stream source",
+    "description": "Label before the source stream URL in the disk saver tab."
+  },
+  "saver_action_pick_file": {
+    "message": "Choose save file & start",
+    "description": "Primary button prompting the browser save picker to start disk streaming."
+  },
+  "saver_action_cancel": {
+    "message": "Cancel",
+    "description": "Button to abort active disk streaming."
+  },
+  "saver_status_ready": {
+    "message": "Click above to pick the output file and start streaming.",
+    "description": "Initial instruction displayed in the disk saver page."
+  },
+  "saver_status_preparing": {
+    "message": "Inspecting stream playlist...",
+    "description": "Status shown while parsing stream manifest before writing segments."
+  },
+  "saver_status_streaming": {
+    "message": "Streaming $DONE$/$TOTAL$ ($BYTES$ written)",
+    "description": "Live progress message during direct disk streaming.",
+    "placeholders": {
+      "done": {
+        "content": "$1",
+        "example": "12"
+      },
+      "total": {
+        "content": "$2",
+        "example": "120"
+      },
+      "bytes": {
+        "content": "$3",
+        "example": "84.5 MB"
+      }
+    }
+  },
+  "saver_status_done": {
+    "message": "Saved directly to disk ($BYTES$ written).",
+    "description": "Completion status after flushing all streamed chunks to disk.",
+    "placeholders": {
+      "bytes": {
+        "content": "$1",
+        "example": "812.4 MB"
+      }
+    }
+  },
+  "saver_status_cancelled": {
+    "message": "Streaming cancelled.",
+    "description": "Status message when the user cancels direct disk streaming."
+  },
+  "saver_error_unsupported": {
+    "message": "File System Access API (showSaveFilePicker) is unavailable in this browser.",
+    "description": "Error when showSaveFilePicker is missing."
+  },
+  "saver_error_missing_job": {
+    "message": "Stream job expired or was not found. Start again from the popup.",
+    "description": "Error when no matching stream job payload exists in session storage."
+  },
+  "saver_error_failed": {
+    "message": "Disk streaming failed: $REASON$",
+    "description": "Error banner when direct disk streaming encounters a failure.",
+    "placeholders": {
+      "reason": {
+        "content": "$1",
+        "example": "Network error"
+      }
+    }
   }
 }

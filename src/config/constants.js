@@ -193,6 +193,9 @@ export const LIMITS = Object.freeze({
   DEFAULT_SVG_RASTER_SIZE_PX: 512,
   SVG_RASTER_SIZES: Object.freeze([256, 512, 1024, 2048]),
   QUICK_MIN_IMAGE_PX_OPTIONS: Object.freeze([0, 100, 300, 800]),
+  DEFAULT_JPG_QUALITY_PERCENT: 90,
+  JPG_QUALITY_MIN_PERCENT: 50,
+  JPG_QUALITY_MAX_PERCENT: 100,
   SEGMENT_FETCH_RETRIES: 2,
   SEGMENT_RETRY_DELAY_MS: 250,
   MAX_ZIP_ITEMS: 150,
@@ -212,11 +215,13 @@ export const STORAGE_KEYS = Object.freeze({
   TAB_MSE_PREFIX: 'tab_mse_',
   TAB_REFERER_PREFIX: 'tab_referer_',
   DOWNLOAD_BLOB_PREFIX: 'download_blob_',
+  STREAM_SAVER_JOB_PREFIX: 'stream_saver_job_',
   USER_SETTINGS: 'user_settings',
   POPUP_UI_STATE: 'popup_ui_state'
 });
 
 export const OFFSCREEN_DOCUMENT_PATH = 'src/offscreen/offscreen.html';
+export const STREAM_SAVER_PATH = 'src/saver/stream_saver.html';
 
 export const MESSAGE_TYPES = Object.freeze({
   GET_MEDIA_FOR_TAB: 'GET_MEDIA_FOR_TAB',
@@ -236,8 +241,11 @@ export const MESSAGE_TYPES = Object.freeze({
   OFFSCREEN_BUILD_SUBTITLE_BLOB: 'OFFSCREEN_BUILD_SUBTITLE_BLOB',
   OFFSCREEN_BUILD_MSE_BLOB: 'OFFSCREEN_BUILD_MSE_BLOB',
   OFFSCREEN_CONVERT_IMAGE: 'OFFSCREEN_CONVERT_IMAGE',
+  OFFSCREEN_EXTRACT_SVG_SYMBOL: 'OFFSCREEN_EXTRACT_SVG_SYMBOL',
+  OFFSCREEN_DECODE_WAV: 'OFFSCREEN_DECODE_WAV',
   OFFSCREEN_BUILD_ZIP_BLOB: 'OFFSCREEN_BUILD_ZIP_BLOB',
   EXPORT_BATCH_ZIP: 'EXPORT_BATCH_ZIP',
+  OPEN_STREAM_SAVER: 'OPEN_STREAM_SAVER',
   START_TAB_CAPTURE: 'START_TAB_CAPTURE',
   STOP_TAB_CAPTURE: 'STOP_TAB_CAPTURE',
   OFFSCREEN_START_TAB_CAPTURE: 'OFFSCREEN_START_TAB_CAPTURE',
@@ -276,6 +284,16 @@ export const IMAGE_CONVERT_FORMATS = Object.freeze({
   JPG: 'jpg'
 });
 
+export const ZIP_RENAME_MODES = Object.freeze({
+  ORIGINAL: 'original',
+  SEQUENTIAL: 'sequential'
+});
+
+export const AUDIO_EXPORT_FORMATS = Object.freeze({
+  M4A: 'm4a',
+  WAV: 'wav'
+});
+
 export const FILENAME_TEMPLATES = Object.freeze({
   DEFAULT: 'default',
   HOST_STEM: 'host_stem',
@@ -290,6 +308,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   minImageDimensionPx: LIMITS.MIN_IMAGE_DIMENSION_PX,
   hlsFetchConcurrency: LIMITS.HLS_FETCH_CONCURRENCY,
   largeStreamWarningMb: LIMITS.DEFAULT_LARGE_STREAM_WARNING_MB,
+  jpgQualityPercent: LIMITS.DEFAULT_JPG_QUALITY_PERCENT,
+  audioExportFormat: AUDIO_EXPORT_FORMATS.M4A,
   enableXOverlay: true,
   enableSocialOverlay: true,
   enableGenericVideoOverlay: true,
@@ -330,6 +350,7 @@ export const DEFAULT_FILENAMES = Object.freeze({
   HLS_FMP4_EXT: 'mp4',
   HLS_TS_EXT: 'ts',
   AUDIO_M4A_EXT: 'm4a',
+  AUDIO_WAV_EXT: 'wav',
   AUDIO_MP3_EXT: 'mp3',
   SUBTITLE_EXT: 'vtt',
   SVG_EXT: 'svg',

@@ -2,14 +2,14 @@
 
 # Media Harvest
 
-Extension Chrome Manifest V3 (`v1.0.0`) pour détecter, prévisualiser et télécharger les vidéos, flux HLS (`.m3u8`) et DASH (`.mpd`) sans DRM, sous-titres, images et fichiers audio de l'onglet actif, en popup ou dans le panneau latéral Chrome.
+Extension Chrome Manifest V3 (`v1.1.0`) pour détecter, prévisualiser et télécharger les vidéos, flux HLS (`.m3u8`) et DASH (`.mpd`) sans DRM, sous-titres, images et fichiers audio de l'onglet actif, en popup ou dans le panneau latéral Chrome.
 
 ## Fonctionnalités
 
-- Analyse le DOM de la page (`<video>`, `<audio>`, `<img>`, `<canvas>` non corrompus, `<track>`, vecteurs `<svg>` en ligne avec résolution de symboles `<use>` et sprites externes, ressources CSS `data:image/svg+xml` / `background-image` / `mask-image`, liens directs, Shadow DOM ouvert, balises OpenGraph/Twitter et JSON-LD `VideoObject`/`AudioObject`/`ImageObject`) sur tous les cadres (`allFrames: true`), avec aperçu vidéo et lecture `<audio>` intégrée.
+- Analyse le DOM de la page (`<video>`, `<audio>`, `<img>`, `<canvas>` non corrompus, `<track>`, vecteurs `<svg>` en ligne avec résolution de symboles `<use>`, extraction de symboles sur sprites `.svg#id` et nettoyage XML via `svg_utils.js`, ressources CSS `data:image/svg+xml` / `background-image` / `mask-image`, liens directs, Shadow DOM ouvert, balises OpenGraph/Twitter et JSON-LD `VideoObject`/`AudioObject`/`ImageObject`) sur tous les cadres (`allFrames: true`), avec aperçu vidéo et lecture `<audio>` intégrée.
 - Capture les réponses réseau média (`.mp4`, `.webm`, `.m3u8`, `.mpd`, `.vtt`, `.srt`, `.ttml`, `.ass`, audio, images) par onglet via `chrome.webRequest`, propage `Referer`/`Origin` via des règles temporaires `declarativeNetRequest` pour les CDN protégés, capture en secours les flux MSE (`MediaSource`) jusqu'à `150` Mo (`enableMseCapture`) et enregistre la vidéo+audio de l'onglet actif via `chrome.tabCapture` (`Capture onglet` / `Arrêter REC`).
-- Parse les playlists HLS VOD et direct (y compris `#EXT-X-BYTERANGE`, réinitialisation sur `#EXT-X-DISCONTINUITY`, `#EXT-X-MEDIA:TYPE=SUBTITLES`, déchiffrement natif Web Crypto `AES-128`, extraction audio `.m4a` autonome sur pistes séparées, flux fMP4/TS muxés et captures MSE MP4, et enregistrement DVR HLS/DASH en direct) ainsi que les manifestes DASH `.mpd` sans DRM ; réessaie automatiquement les segments en erreur transitoire, estime la taille des variantes avec alerte de flux volumineux configurable, permet l'annulation en cours de téléchargement et assemble les segments en document offscreen dans une limite mémoire de `512` Mo (fragments `Uint8Array` sans copie contiguë pour muxage fMP4 vidéo+audio et transmuxage MPEG-TS/ADTS vers MP4 via `mux-mp4.min.js`).
-- Propose une vue galerie grille (`list` / `grid`), un onglet `SVG` avec copie du XML (`Copier SVG`), des filtres rapides par dimension (`>= 100/300/800 px`) et format d'image, une résolution d'export SVG configurable (`256` - `2048` px), une visionneuse Lightbox Pro (bascule de fond `Damier` / `Clair` / `Sombre`, copie SVG/URL et téléchargement), une conversion raster à la volée (`WebP` / `AVIF` / `SVG` -> `PNG` ou `JPG`), une sélection multiple avec export groupé en archive `.zip` compressée DEFLATE sélectivement, persistance des réglages UI et panneau latéral Chrome.
+- Parse les playlists HLS VOD et direct (y compris `#EXT-X-BYTERANGE`, réinitialisation sur `#EXT-X-DISCONTINUITY`, `#EXT-X-MEDIA:TYPE=SUBTITLES`, déchiffrement natif Web Crypto `AES-128`, extraction audio autonome dans le navigateur en `.m4a` ou `.wav` PCM 16 bits sur flux HLS, DASH, MSE et médias directs HTTP MP4/WebM via `wav_encoder.js`, et enregistrement DVR HLS/DASH en direct) ainsi que les manifestes DASH `.mpd` sans DRM ; réessaie automatiquement les segments en erreur transitoire, estime la taille des variantes avec alerte de flux volumineux configurable, propose un enregistrement direct sur disque via File System Access (`src/saver/`) pour les flux progressifs et playlists de plus de `512` Mo sans compagnon, permet l'annulation en cours de téléchargement et assemble les segments en document offscreen dans une limite mémoire de `512` Mo (fragments `Uint8Array` sans copie contiguë pour muxage fMP4 vidéo+audio et transmuxage MPEG-TS/ADTS vers MP4 via `mux-mp4.min.js`).
+- Propose une vue galerie grille (`list` / `grid`), un onglet `SVG` avec copie du XML (`Copier SVG`) et isolation des symboles de sprites, des filtres rapides par dimension (`>= 100/300/800 px`) et format d'image, une résolution d'export SVG configurable (`256` - `2048` px) et qualité de compression JPG (`50` - `100` %), une visionneuse Lightbox Pro (bascule de fond `Damier` / `Clair` / `Sombre`, copie SVG/URL et téléchargement), une conversion raster à la volée (`WebP` / `AVIF` / `SVG` -> `PNG` ou `JPG`), une sélection multiple avec export groupé en archive `.zip` compressée DEFLATE sélectivement (noms d'origine ou séquentiels indexés), persistance des réglages UI et panneau latéral Chrome.
 - Ajoute des boutons de téléchargement intégrés directement sur X/Twitter (`x.com` / `twitter.com`), les lecteurs vidéo sociaux (`youtube.com`, `instagram.com`, `tiktok.com`, `reddit.com`, `facebook.com`, `bsky.app`, `vimeo.com`, `dailymotion.com`, `twitch.tv`, `linkedin.com`) et tout lecteur HTML5 générique (`enableGenericVideoOverlay`), activables en direct dans les paramètres.
 - Inclut un compagnon Windows optionnel Native Messaging (`companion/` pilotant `yt-dlp` et `ffmpeg`) avec progression en direct et transmission optionnelle des cookies Chrome (`enableCompanionCookies`) pour les vidéos lourdes (`>512` Mo) ou flux complexes.
 - Inclut une page d'options (`chrome.storage.sync`) et une interface localisée en français et en anglais (`_locales/fr`, `_locales/en`).
@@ -24,7 +24,9 @@ Ouvrir les paramètres via l'icône engrenage dans la popup ou depuis Chrome (D�
 | Modèle de nommage | `default` | `default`, `host_stem`, `date_stem`, `host_folder`, `date_folder` | Format des noms (`{name}.{ext}`, `{host}_{name}.{ext}`, `{YYYY-MM-DD}_{name}.{ext}`, `{host}/{name}.{ext}`, `{YYYY-MM-DD}/{name}.{ext}`) |
 | Taille minimale d'image | `64` px | `0` - `2000` px | Ignore les petites icônes DOM et pixels de suivi |
 | Téléchargements parallèles | `4` | `1` - `8` | Concurrence maximale du pool de téléchargement dans `offscreen.js` |
-| Seuil d'alerte flux volumineux | `250` Mo | `0` - `512` Mo | Affiche un badge d'alerte au-dessus du seuil (`0` désactive) |
+| Seuil d'alerte flux volumineux | `250` Mo | `0` - `512` Mo | Affiche un badge d'alerte au-dessus du seuil (`0` désactive) ; les flux `>512` Mo proposent l'écriture directe sur disque (`src/saver/`) |
+| Qualité de conversion JPG | `90` % | `50` - `100` % | Qualité de compression utilisée lors de la conversion raster ou SVG vers `.jpg` |
+| Format d'export audio | `m4a` | `m4a`, `wav` | Conteneur cible pour l'extraction audio autonome (AAC `.m4a` sans réencodage ou `.wav` PCM 16 bits décodé) |
 | Bouton sur X / Twitter | Activé | `true` / `false` | Active ou retire en direct le bouton de téléchargement sur `x.com` / `twitter.com` |
 | Bouton sur les réseaux sociaux | Activé | `true` / `false` | Active ou retire en direct le bouton flottant sur Instagram, TikTok, Reddit, YouTube, Facebook, Bluesky, Vimeo, Dailymotion, Twitch et LinkedIn |
 | Bouton sur les autres sites | Activé | `true` / `false` | Active ou retire en direct le bouton flottant sur tout lecteur vidéo HTML5 générique (`>= 220x140` px) |
@@ -76,11 +78,12 @@ Le bouton **Tester la connexion** dans les Options vérifie que l'hôte répond.
 - Journal des modifications (EN) : [CHANGELOG.md](CHANGELOG.md)
 - Vue des répertoires :
   - `src/config/constants.js` - Constantes partagées, extensions/MIME, seuils, clés de stockage, réglages par défaut et types de messages.
-  - `src/shared/` - Modules ES purs (`media_classifier.js`, `fetch_utils.js`, `hls_parser.js`, `hls_crypto.js`, `dash_parser.js`, `fmp4_muxer.js`, `ts_transmuxer.js`, `zip_builder.js`, `preview_matcher.js`, `settings.js`, `i18n.js`).
-  - `src/background/` - Capture réseau, état de session, badge, règles DNR temporaires (`dnr_manager.js`), cycle de vie offscreen, annulation et téléchargements.
-  - `src/offscreen/` - Document offscreen assemblant les segments HLS et DASH en URL Blob téléchargeable.
-  - `src/content/` - Scanner DOM à la demande (support `srcset` et `<picture>`) et bouton intégré aux posts X/Twitter.
-  - `src/popup/` - Interface popup modulaire (`popup.js`, `media_card.js`, `preview_player.js`, `batch_runner.js`, `popup_helpers.js`) avec aperçu vidéo, recherche/tri, file d'inspection bornée avec réessai, sélection de qualité et de piste audio, alerte >512 Mo, confirmation par lot, annulation et suivi de progression.
+  - `src/shared/` - Modules ES purs (`media_classifier.js`, `fetch_utils.js`, `hls_parser.js`, `hls_crypto.js`, `dash_parser.js`, `fmp4_muxer.js`, `ts_transmuxer.js`, `wav_encoder.js`, `svg_utils.js`, `zip_builder.js`, `preview_matcher.js`, `settings.js`, `i18n.js`).
+  - `src/background/` - Capture réseau, état de session, badge, règles DNR temporaires (`dnr_manager.js`), cycle de vie offscreen, annulation, transfert au module d'écriture directe et téléchargements.
+  - `src/offscreen/` - Document offscreen assemblant les segments HLS/DASH, décodant l'audio PCM `.wav`, convertissant les images/SVG et générant les archives ZIP.
+  - `src/saver/` - Page dédiée d'écriture continue sur disque via File System Access (`stream_saver.html`, `stream_saver.js`) pour les flux progressifs et playlists de plus de `512` Mo.
+  - `src/content/` - Scanner DOM à la demande (`srcset`, `<picture>` et sprites SVG `<use>`), capture MSE et boutons intégrés aux lecteurs vidéo.
+  - `src/popup/` - Interface popup modulaire (`popup.js`, `media_card.js`, `preview_player.js`, `batch_runner.js`, `popup_helpers.js`) avec aperçu vidéo, Lightbox Pro, recherche/tri, file d'inspection bornée avec réessai, sélection de qualité, piste audio et sous-titres, action disque >512 Mo, export ZIP, annulation et suivi de progression.
   - `src/options/` - Page de paramètres synchronisés (`options.html`, `options.css`, `options.js`).
 
 ## Installation dans Chrome
@@ -92,7 +95,7 @@ Le bouton **Tester la connexion** dans les Options vérifie que l'hôte répond.
 
 ## Tests, intégration continue et distribution
 
-Aucune dépendance npm externe n'est nécessaire : la vérification syntaxique, l'empaquetage et la suite de tests reposent uniquement sur `node --check`, `node:test` et `node:assert/strict` (`118` tests dans `tests/`, exécutés aussi en CI sous Node 22 via `.github/workflows/ci.yml`), ainsi qu'un test E2E MV3 sous Chromium/Edge headless (`npm run test:e2e`) :
+Aucune dépendance npm externe n'est nécessaire : la vérification syntaxique, l'empaquetage et la suite de tests reposent uniquement sur `node --check`, `node:test` et `node:assert/strict` (`129` tests dans `tests/`, exécutés aussi en CI sous Node 22 via `.github/workflows/ci.yml`), ainsi qu'un test E2E MV3 sous Chromium/Edge headless (`npm run test:e2e`) :
 
 ```powershell
 npm run check

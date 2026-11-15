@@ -730,4 +730,72 @@ test('createMediaCard supports HLS subtitles, live stream blocking, audio previe
   await mseMp4Card.audioExtractBtn.dispatchEvent({ type: 'click' });
   assert.equal(mseAudioCalls.length, 1);
   assert.equal(mseAudioCalls[0].useCompanion, false);
+
+  // Oversized >512 MB non-DRM stream exposes direct disk saver button and forwards job callback
+  const largeSaverCalls = [];
+  const hugeStreamCard = createMediaCard(
+    {
+      url: 'https://cdn.example.com/4k/master.m3u8',
+      type: 'stream',
+      ext: 'm3u8',
+      isStream: true,
+      source: 'network',
+      suggestedFilename: 'movie_4k.mp4'
+    },
+    {
+      documentRef: doc,
+      translateFn: (k) => k,
+      hlsMetaByUrl: metaMap,
+      getSettings: () => DEFAULT_SETTINGS,
+      onSaveLargeStream: (_entry, chosenUrl, chosenAudioUrl) => {
+        largeSaverCalls.push({ chosenUrl, chosenAudioUrl });
+      }
+    }
+  );
+  assert.ok(hugeStreamCard.saveLargeBtn);
+  assert.equal(hugeStreamCard.saveLargeBtn.classList.contains('hidden'), true);
+  const hugeMeta = {
+    encrypted: false,
+    isDynamic: false,
+    variants: [{ url: 'https://cdn.example.com/4k/2160.m3u8', resolution: '3840x2160', bandwidth: 12000000, estimatedBytes: 800 * 1024 * 1024 }],
+    audioTracks: []
+  };
+  metaMap.set(hugeStreamCard.item.url, hugeMeta);
+  applyStreamMetadata(hugeStreamCard, hugeMeta, {
+    documentRef: doc,
+    translateFn: (k) => k,
+    hlsMetaByUrl: metaMap,
+    getSettings: () => DEFAULT_SETTINGS
+  });
+  assert.equal(hugeStreamCard.saveLargeBtn.classList.contains('hidden'), false);
+  await hugeStreamCard.saveLargeBtn.dispatchEvent({ type: 'click' });
+  assert.deepEqual(largeSaverCalls, [{ chosenUrl: 'https://cdn.example.com/4k/2160.m3u8', chosenAudioUrl: '' }]);
+
+  // WAV export setting unlocks native browser audio extraction on direct HTTP MP4 cards without companion
+  const wavDirectCalls = [];
+  const directMp4Card = createMediaCard(
+    {
+      url: 'https://cdn.example.com/clip.mp4',
+      type: 'video',
+      ext: 'mp4',
+      isStream: false,
+      isMse: false,
+      source: 'network',
+      suggestedFilename: 'clip.mp4'
+    },
+    {
+      documentRef: doc,
+      translateFn: (k) => k,
+      hlsMetaByUrl: metaMap,
+      getSettings: () => ({ ...DEFAULT_SETTINGS, audioExportFormat: 'wav' }),
+      isCompanionAvailable: () => false,
+      onExtractAudio: (_entry, chosenUrl, chosenAudioUrl, useCompanion) => {
+        wavDirectCalls.push({ chosenUrl, chosenAudioUrl, useCompanion });
+      }
+    }
+  );
+  assert.ok(directMp4Card.audioExtractBtn);
+  assert.equal(directMp4Card.audioExtractBtn.classList.contains('hidden'), false);
+  await directMp4Card.audioExtractBtn.dispatchEvent({ type: 'click' });
+  assert.deepEqual(wavDirectCalls, [{ chosenUrl: 'https://cdn.example.com/clip.mp4', chosenAudioUrl: '', useCompanion: false }]);
 });

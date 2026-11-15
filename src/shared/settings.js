@@ -15,6 +15,7 @@
  */
 
 import {
+  AUDIO_EXPORT_FORMATS,
   DEFAULT_FILENAMES,
   DEFAULT_SETTINGS,
   FILENAME_TEMPLATES,
@@ -25,6 +26,7 @@ import {
 
 const VALID_QUALITIES = new Set(Object.values(QUALITY_PREFERENCES));
 const VALID_TEMPLATES = new Set(Object.values(FILENAME_TEMPLATES));
+const VALID_AUDIO_FORMATS = new Set(Object.values(AUDIO_EXPORT_FORMATS));
 
 /**
  * Clamps an integer setting within [min, max], falling back when invalid.
@@ -76,6 +78,15 @@ export function normalizeSettings(raw) {
       LIMITS.LARGE_STREAM_WARNING_MIN_MB,
       LIMITS.LARGE_STREAM_WARNING_MAX_MB
     ),
+    jpgQualityPercent: clampInteger(
+      src.jpgQualityPercent,
+      DEFAULT_SETTINGS.jpgQualityPercent,
+      LIMITS.JPG_QUALITY_MIN_PERCENT,
+      LIMITS.JPG_QUALITY_MAX_PERCENT
+    ),
+    audioExportFormat: VALID_AUDIO_FORMATS.has(src.audioExportFormat)
+      ? src.audioExportFormat
+      : DEFAULT_SETTINGS.audioExportFormat,
     enableXOverlay: typeof src.enableXOverlay === 'boolean'
       ? src.enableXOverlay
       : DEFAULT_SETTINGS.enableXOverlay,

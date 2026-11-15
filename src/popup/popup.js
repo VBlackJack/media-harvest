@@ -15,6 +15,7 @@
  */
 
 import {
+  AUDIO_EXPORT_FORMATS,
   DEFAULT_FILENAMES,
   DEFAULT_SETTINGS,
   IMAGE_CONVERT_FORMATS,
@@ -25,7 +26,8 @@ import {
   MESSAGE_TYPES,
   POPUP_VIEW_MODES,
   SORT_MODES,
-  STORAGE_KEYS
+  STORAGE_KEYS,
+  ZIP_RENAME_MODES
 } from '../config/constants.js';
 import { applyTranslations, getUiLanguage, t } from '../shared/i18n.js';
 import { isSvgDataUrl } from '../shared/media_classifier.js';
@@ -36,6 +38,7 @@ import {
   markInspectionFailed,
   refreshAudioExtractButton,
   renderBadges,
+  resolveSvgMarkup,
   updateCardEntry,
   updateStreamLimitWarning
 } from './media_card.js';
@@ -73,6 +76,7 @@ export function collectPopupElements(doc) {
     imageExtFilterSelect: doc.getElementById('imageExtFilterSelect'),
     imageScaleSelect: doc.getElementById('imageScaleSelect'),
     imageConvertSelect: doc.getElementById('imageConvertSelect'),
+    zipRenameSelect: doc.getElementById('zipRenameSelect'),
     selectionBar: doc.getElementById('selectionBar'),
     selectAllBtn: doc.getElementById('selectAllBtn'),
     clearSelectionBtn: doc.getElementById('clearSelectionBtn'),
@@ -141,6 +145,7 @@ export function createPopupController(deps = {}) {
     sortBy: SORT_MODES.DEFAULT,
     viewMode: POPUP_VIEW_MODES.LIST,
     imageConvertFormat: IMAGE_CONVERT_FORMATS.ORIGINAL,
+    zipRenameMode: ZIP_RENAME_MODES.ORIGINAL,
     minImagePx: 0,
     imageExtFilter: '',
     imageScalePx: LIMITS.DEFAULT_SVG_RASTER_SIZE_PX,
@@ -214,6 +219,7 @@ export function createPopupController(deps = {}) {
   const VALID_SVG_SCALES = new Set(LIMITS.SVG_RASTER_SIZES);
   const QUICK_IMAGE_EXTENSIONS = IMAGE_EXTENSIONS.filter((ext) => ext !== 'jpeg');
   const VALID_IMAGE_EXTS = new Set(['', ...QUICK_IMAGE_EXTENSIONS]);
+  const VALID_ZIP_RENAME_MODES = new Set(Object.values(ZIP_RENAME_MODES));
 
   /**
    * Populates quick image filter and SVG export resolution selectors from shared constants.
@@ -301,11 +307,17 @@ export function createPopupController(deps = {}) {
       if (Number.isFinite(saved.imageScalePx) && VALID_SVG_SCALES.has(saved.imageScalePx)) {
         state.imageScalePx = saved.imageScalePx;
       }
+      if (typeof saved.zipRenameMode === 'string' && VALID_ZIP_RENAME_MODES.has(saved.zipRenameMode)) {
+        state.zipRenameMode = saved.zipRenameMode;
+      }
       applyActiveFilterUi();
       applyViewModeUi();
       applyImageFiltersUi();
       if (els.sortSelect) {
         els.sortSelect.value = state.sortBy;
+      }
+      if (els.zipRenameSelect) {
+        els.zipRenameSelect.value = state.zipRenameMode;
       }
     } catch {
       // Ignore storage read failures and retain default view state
@@ -327,7 +339,8 @@ export function createPopupController(deps = {}) {
           viewMode: state.viewMode,
           minImagePx: state.minImagePx,
           imageExtFilter: state.imageExtFilter,
-          imageScalePx: state.imageScalePx
+          imageScalePx: state.imageScalePx,
+          zipRenameMode: state.zipRenameMode
         }
       });
       if (result && typeof result.catch === 'function') {
@@ -415,6 +428,12 @@ export function createPopupController(deps = {}) {
         [String(selectedZipTargets.length)]
       );
       els.downloadZipBtn.disabled = selectedZipTargets.length === 0 || Boolean(state.activeZipRequestId);
+    }
+    if (els.zipRenameSelect) {
+      const hasZipSelectable = selectableVisible.some((item) => !item.isStream && !item.isMse);
+      els.zipRenameSelect.classList.toggle('hidden', !hasZipSelectable);
+      els.zipRenameSelect.disabled = Boolean(state.batchRunning || state.activeZipRequestId);
+      els.zipRenameSelect.value = state.zipRenameMode || ZIP_RENAME_MODES.ORIGINAL;
     }
     if (els.clearSelectionBtn) {
       els.clearSelectionBtn.classList.toggle('hidden', state.selectedUrls.size === 0);
@@ -576,7 +595,11 @@ export function createPopupController(deps = {}) {
       ? (Number(state.imageScalePx) || LIMITS.DEFAULT_SVG_RASTER_SIZE_PX)
       : 0;
     const recordLive = Boolean(options.recordLive || (item.canRecordLive && !options.audioOnly && !convertTo));
-    const isOffscreenBuild = Boolean(item.isStream || item.isMse || convertTo);
+    const isAudioWavExtract = Boolean(options.audioOnly && !item.isStream && !item.isMse);
+    const isSvgSymbolExtract = Boolean(item.svgSymbolId && !convertTo && !item.isStream);
+    const isOffscreenBuild = Boolean(
+      item.isStream || item.isMse || convertTo || isAudioWavExtract || isSvgSymbolExtract
+    );
     const requestId = `dl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     entry.activeRequestId = requestId;
     entry.showingCapWarning = false;
@@ -612,6 +635,7 @@ export function createPopupController(deps = {}) {
           recordLive,
           convertTo,
           rasterSizePx,
+          svgSymbolId: item.svgSymbolId || '',
           width: item.width || 0,
           height: item.height || 0,
           isStream: Boolean(item.isStream),
@@ -795,10 +819,43 @@ export function createPopupController(deps = {}) {
         audioFormat: DEFAULT_FILENAMES.AUDIO_MP3_EXT
       });
     }
+    const audioExt = state.settings.audioExportFormat === AUDIO_EXPORT_FORMATS.WAV
+      ? DEFAULT_FILENAMES.AUDIO_WAV_EXT
+      : DEFAULT_FILENAMES.AUDIO_M4A_EXT;
     return triggerDownload(entry, selectedPlaylistUrl, selectedAudioUrl, {
       audioOnly: true,
-      filenameOverride: `${baseStem}_audio.${DEFAULT_FILENAMES.AUDIO_M4A_EXT}`
+      filenameOverride: `${baseStem}_audio.${audioExt}`
     });
+  }
+
+  /**
+   * Launches the dedicated direct disk stream saver tab for streams over 512 MB.
+   * @param {object} entry
+   * @param {string} selectedPlaylistUrl
+   * @param {string} selectedAudioUrl
+   */
+  async function triggerOpenStreamSaver(entry, selectedPlaylistUrl, selectedAudioUrl) {
+    if (!entry || !entry.item) {
+      return;
+    }
+    try {
+      const response = await chromeApi.runtime.sendMessage({
+        type: MESSAGE_TYPES.OPEN_STREAM_SAVER,
+        payload: {
+          url: entry.item.url,
+          playlistUrl: selectedPlaylistUrl || entry.item.url,
+          audioUrl: selectedAudioUrl || '',
+          isStream: Boolean(entry.item.isStream),
+          referer: entry.item.referer || state.activeTabUrl || '',
+          filename: entry.item.suggestedFilename
+        }
+      });
+      if (!response || !response.ok) {
+        throw new Error((response && response.error) || 'DOWNLOAD_FAILED');
+      }
+    } catch (err) {
+      setStatusBanner(localizeError(err && err.message, translateFn), true);
+    }
   }
 
   /**
@@ -846,6 +903,7 @@ export function createPopupController(deps = {}) {
     isCompanionAvailable: () => state.companionAvailable,
     onCompanionDownload: (entry, targetUrl) => triggerCompanionDownload(entry, targetUrl),
     onExtractAudio: triggerAudioExtraction,
+    onSaveLargeStream: triggerOpenStreamSaver,
     onConvertImage: triggerImageConversion,
     onOpenLightbox: (entry) => openLightbox(entry),
     isSelected: (url) => state.selectedUrls.has(url),
@@ -1291,6 +1349,7 @@ export function createPopupController(deps = {}) {
         ext: item.ext || '',
         width: item.width || 0,
         height: item.height || 0,
+        symbolId: item.svgSymbolId || '',
         convertTo,
         rasterSizePx: convertTo ? rasterSizePx : 0
       };
@@ -1305,6 +1364,7 @@ export function createPopupController(deps = {}) {
           referer: state.activeTabUrl || '',
           tabId: typeof state.activeTabId === 'number' ? state.activeTabId : -1,
           allowFolders: isFolderFilenameTemplate(state.settings.filenameTemplate),
+          renameMode: state.zipRenameMode || ZIP_RENAME_MODES.ORIGINAL,
           saveAs: Boolean(state.settings.promptSaveAs),
           requestId
         }
@@ -1462,24 +1522,10 @@ export function createPopupController(deps = {}) {
     );
     let payloadText = item.url || '';
     if (isSvgItem) {
-      if (item.svgMarkup) {
-        payloadText = item.svgMarkup;
-      } else if (isSvgDataUrl(item.url)) {
-        const commaIdx = item.url.indexOf(',');
-        if (commaIdx >= 0) {
-          const header = item.url.slice(0, commaIdx).toLowerCase();
-          const body = item.url.slice(commaIdx + 1);
-          payloadText = header.includes(';base64') ? atob(body) : decodeURIComponent(body);
-        }
-      } else {
-        try {
-          const resp = await fetch(item.url);
-          if (resp.ok) {
-            payloadText = await resp.text();
-          }
-        } catch {
-          payloadText = item.url || '';
-        }
+      try {
+        payloadText = (await resolveSvgMarkup(item)) || payloadText;
+      } catch {
+        payloadText = item.url || '';
       }
     }
     const writeFn = deps.writeClipboardFn
@@ -1870,6 +1916,14 @@ export function createPopupController(deps = {}) {
         )
           ? val
           : IMAGE_CONVERT_FORMATS.ORIGINAL;
+      });
+    }
+
+    if (els.zipRenameSelect) {
+      els.zipRenameSelect.addEventListener('change', () => {
+        const val = els.zipRenameSelect.value;
+        state.zipRenameMode = VALID_ZIP_RENAME_MODES.has(val) ? val : ZIP_RENAME_MODES.ORIGINAL;
+        persistPopupUiState();
       });
     }
 

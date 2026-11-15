@@ -984,5 +984,131 @@
   "popup_lightbox_download": {
     "message": "Télécharger",
     "description": "Bouton pour télécharger l'image ou le SVG affiché dans la visionneuse."
+  },
+  "options_jpg_quality_label": {
+    "message": "Qualité d'export JPG (%)",
+    "description": "Libellé pour le pourcentage de compression JPG."
+  },
+  "options_jpg_quality_hint": {
+    "message": "Qualité de compression (50-100) appliquée lors de la conversion en JPG ou dans un ZIP.",
+    "description": "Texte d'aide expliquant la plage de qualité JPG."
+  },
+  "options_audio_format_label": {
+    "message": "Format d'export audio autonome",
+    "description": "Libellé de sélection du format d'extraction audio dans le navigateur."
+  },
+  "options_audio_format_m4a": {
+    "message": "M4A / AAC (Extraction directe sans perte)",
+    "description": "Option d'export audio par remuxage direct sans réencodage."
+  },
+  "options_audio_format_wav": {
+    "message": "WAV PCM 16 bits (Tout média via Web Audio)",
+    "description": "Option d'export audio décodant le média en WAV PCM 16 bits."
+  },
+  "options_audio_format_hint": {
+    "message": "M4A pour extraire l'audio des flux sans réencodage, ou WAV pour décoder tout MP4/WebM sans compagnon.",
+    "description": "Texte d'aide comparant l'export audio autonome M4A et WAV."
+  },
+  "popup_zip_rename_label": {
+    "message": "Nommage dans le ZIP",
+    "description": "Libellé accessible pour le mode de renommage dans les archives ZIP."
+  },
+  "popup_zip_rename_original": {
+    "message": "Noms : Origine",
+    "description": "Option conservant les noms de fichiers d'origine dans le ZIP."
+  },
+  "popup_zip_rename_sequential": {
+    "message": "Noms : 001, 002...",
+    "description": "Option renommant les fichiers du ZIP de manière séquentielle."
+  },
+  "popup_action_save_large": {
+    "message": "Flux >512 Mo sur disque",
+    "description": "Bouton pour enregistrer un flux volumineux directement sur disque via File System Access."
+  },
+  "popup_action_save_large_title": {
+    "message": "Écrire directement les gros flux sur le disque sans saturer la mémoire",
+    "description": "Infobulle expliquant la sauvegarde directe sur disque pour les gros flux."
+  },
+  "saver_page_title": {
+    "message": "Media Harvest - Sauvegarde directe sur disque",
+    "description": "Titre HTML de l'onglet de sauvegarde directe sur disque."
+  },
+  "saver_heading": {
+    "message": "Sauvegarde directe sur disque",
+    "description": "Titre principal de la page de sauvegarde directe sur disque."
+  },
+  "saver_subtitle": {
+    "message": "Écrit les segments directement dans un fichier local pour dépasser la limite mémoire de 512 Mo.",
+    "description": "Sous-titre expliquant le contournement de la limite RAM de 512 Mo."
+  },
+  "saver_target_label": {
+    "message": "Source du flux",
+    "description": "Libellé précédant l'URL du flux dans l'onglet de sauvegarde directe."
+  },
+  "saver_action_pick_file": {
+    "message": "Choisir le fichier et démarrer",
+    "description": "Bouton principal ouvrant le sélecteur de fichier pour démarrer l'écriture disque."
+  },
+  "saver_action_cancel": {
+    "message": "Annuler",
+    "description": "Bouton pour interrompre l'écriture disque en cours."
+  },
+  "saver_status_ready": {
+    "message": "Cliquez ci-dessus pour choisir le fichier de destination et démarrer.",
+    "description": "Message initial sur la page de sauvegarde directe sur disque."
+  },
+  "saver_status_preparing": {
+    "message": "Analyse de la playlist du flux...",
+    "description": "Statut affiché pendant l'analyse du manifeste avant l'écriture."
+  },
+  "saver_status_streaming": {
+    "message": "Écriture $DONE$/$TOTAL$ ($BYTES$ écrits)",
+    "description": "Progression affichée pendant la sauvegarde directe sur disque.",
+    "placeholders": {
+      "done": {
+        "content": "$1",
+        "example": "12"
+      },
+      "total": {
+        "content": "$2",
+        "example": "120"
+      },
+      "bytes": {
+        "content": "$3",
+        "example": "84.5 Mo"
+      }
+    }
+  },
+  "saver_status_done": {
+    "message": "Enregistré directement sur le disque ($BYTES$ écrits).",
+    "description": "Statut affiché une fois tous les segments écrits sur le disque.",
+    "placeholders": {
+      "bytes": {
+        "content": "$1",
+        "example": "812.4 Mo"
+      }
+    }
+  },
+  "saver_status_cancelled": {
+    "message": "Écriture annulée.",
+    "description": "Message affiché lorsque l'utilisateur annule la sauvegarde directe."
+  },
+  "saver_error_unsupported": {
+    "message": "L'API File System Access (showSaveFilePicker) n'est pas prise en charge par ce navigateur.",
+    "description": "Erreur si showSaveFilePicker est indisponible."
+  },
+  "saver_error_missing_job": {
+    "message": "Tâche introuvable ou expirée. Relancez depuis la popup.",
+    "description": "Erreur si les données du flux sont absentes du stockage de session."
+  },
+  "saver_error_failed": {
+    "message": "Échec de la sauvegarde directe : $REASON$",
+    "description": "Erreur affichée en cas d'échec de l'écriture directe sur disque.",
+    "placeholders": {
+      "reason": {
+        "content": "$1",
+        "example": "Erreur réseau"
+      }
+    }
   }
 }

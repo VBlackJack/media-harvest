@@ -176,6 +176,15 @@
       if (meta.svgMarkup) {
         entry.svgMarkup = meta.svgMarkup;
       }
+      if (meta.svgSpriteUrl) {
+        entry.svgSpriteUrl = meta.svgSpriteUrl;
+      }
+      if (meta.svgSymbolId) {
+        entry.svgSymbolId = meta.svgSymbolId;
+      }
+      if (meta.suggestedFilename) {
+        entry.suggestedFilename = meta.suggestedFilename;
+      }
       items.push(entry);
     };
 
@@ -521,12 +530,24 @@
           continue;
         }
         if (!rawHref.startsWith('#')) {
-          const externalBase = toAbsoluteUrl(rawHref.split('#')[0]);
+          const hashIdx = rawHref.indexOf('#');
+          const rawBase = hashIdx >= 0 ? rawHref.slice(0, hashIdx) : rawHref;
+          const symbolId = hashIdx >= 0 ? rawHref.slice(hashIdx + 1).trim() : '';
+          const externalBase = toAbsoluteUrl(rawBase);
           if (isSafeHttpUrl(externalBase) && /\.svg(?:$|[?#])/i.test(externalBase)) {
             addItem(externalBase, mediaTypes.IMAGE, {
               ext: 'svg',
               title: document.title || 'svg-sprite'
             });
+            if (symbolId) {
+              addItem(`${externalBase}#${symbolId}`, mediaTypes.IMAGE, {
+                ext: 'svg',
+                title: symbolId,
+                svgSpriteUrl: externalBase,
+                svgSymbolId: symbolId,
+                suggestedFilename: `${symbolId}.svg`
+              });
+            }
           }
           continue;
         }

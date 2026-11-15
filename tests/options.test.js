@@ -56,6 +56,8 @@ function createFakeDocument() {
     ['minImageDimensionPx', createFakeElement({ value: '80' })],
     ['hlsFetchConcurrency', createFakeElement({ value: '4' })],
     ['largeStreamWarningMb', createFakeElement({ value: '250' })],
+    ['jpgQualityPercent', createFakeElement({ value: '90' })],
+    ['audioExportFormat', createFakeElement({ value: 'm4a' })],
     ['enableXOverlay', createFakeElement({ checked: true })],
     ['enableSocialOverlay', createFakeElement({ checked: true })],
     ['enableGenericVideoOverlay', createFakeElement({ checked: true })],
@@ -121,9 +123,13 @@ test('options controller syncs LIMITS bounds, confirms resets, keeps errors visi
 
   controller.els.hlsFetchConcurrency.value = '99';
   controller.els.largeStreamWarningMb.value = '2048';
+  controller.els.jpgQualityPercent.value = '10';
+  controller.els.audioExportFormat.value = 'wav';
   await controller.handleSubmit({ preventDefault: () => {} });
   assert.equal(stored.hlsFetchConcurrency, LIMITS.MAX_HLS_CONCURRENCY);
   assert.equal(stored.largeStreamWarningMb, LIMITS.LARGE_STREAM_WARNING_MAX_MB);
+  assert.equal(stored.jpgQualityPercent, LIMITS.JPG_QUALITY_MIN_PERCENT);
+  assert.equal(stored.audioExportFormat, 'wav');
   assert.equal(controller.els.statusBanner.textContent, 'options_status_saved');
   assert.equal(controller.els.statusBanner.classList.contains('status-error'), false);
 

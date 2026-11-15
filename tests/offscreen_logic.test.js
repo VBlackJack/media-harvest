@@ -1205,3 +1205,72 @@ test('offscreen extracts autonomous .m4a audio from muxed fMP4 HLS & MSE and cap
     globalThis.chrome.runtime.sendMessage = prevSendMessage;
   }
 });
+
+test('offscreen handles OFFSCREEN_EXTRACT_SVG_SYMBOL and OFFSCREEN_DECODE_WAV natively', async () => {
+  const prevFetch = globalThis.fetch;
+  const prevAudioCtx = globalThis.AudioContext;
+  let closedWavCtx = false;
+
+  const spriteXml = '<svg xmlns="http://www.w3.org/2000/svg"><symbol id="star" viewBox="0 0 24 24"><!-- c --><path d="M1 1"/></symbol></svg>';
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('sprite.svg')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => spriteXml
+      };
+    }
+    if (String(url).includes('clip.mp4')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        arrayBuffer: async () => new Uint8Array([0, 1, 2, 3]).buffer
+      };
+    }
+    return { ok: false, status: 404, headers: { get: () => null } };
+  };
+  globalThis.AudioContext = class FakeDecodeAudioContext {
+    async decodeAudioData() {
+      return {
+        numberOfChannels: 1,
+        length: 4,
+        sampleRate: 44100,
+        getChannelData: () => new Float32Array([0, 0.25, -0.25, 0])
+      };
+    }
+    async close() {
+      closedWavCtx = true;
+    }
+  };
+
+  try {
+    const svgRes = await dispatchOffscreenMessage({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_EXTRACT_SVG_SYMBOL,
+      requestId: 'svg-sym-1',
+      targetUrl: 'https://cdn.example.com/sprite.svg#star',
+      symbolId: 'star'
+    });
+    assert.equal(svgRes.ok, true);
+    assert.equal(svgRes.outputExtension, 'svg');
+    const extractedBlob = createdBlobs.get(svgRes.blobUrl);
+    const extractedXml = await extractedBlob.text();
+    assert.equal(extractedXml, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M1 1"/></svg>');
+
+    const wavRes = await dispatchOffscreenMessage({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_DECODE_WAV,
+      requestId: 'wav-1',
+      targetUrl: 'https://cdn.example.com/clip.mp4'
+    });
+    assert.equal(wavRes.ok, true);
+    assert.equal(wavRes.outputExtension, 'wav');
+    assert.equal(wavRes.byteLength, 44 + 4 * 2);
+    assert.equal(closedWavCtx, true);
+  } finally {
+    globalThis.fetch = prevFetch;
+    globalThis.AudioContext = prevAudioCtx;
+  }
+});

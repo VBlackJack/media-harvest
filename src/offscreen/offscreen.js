@@ -15,12 +15,14 @@
  */
 
 import {
+  AUDIO_EXPORT_FORMATS,
   DEFAULT_FILENAMES,
   HLS_SUBTITLE_CONSTANTS,
   IMAGE_CONVERT_FORMATS,
   LIMITS,
   MESSAGE_TYPES,
-  QUALITY_PREFERENCES
+  QUALITY_PREFERENCES,
+  ZIP_RENAME_MODES
 } from '../config/constants.js';
 import { parseDashManifest } from '../shared/dash_parser.js';
 import {
@@ -52,8 +54,15 @@ import {
   isSvgDataUrl
 } from '../shared/media_classifier.js';
 import { clampInteger } from '../shared/settings.js';
+import {
+  decodeSvgDataUrl,
+  extractSymbolFromSvgSprite,
+  optimizeSvgMarkup,
+  splitSvgSpriteUrl
+} from '../shared/svg_utils.js';
 import { transmuxTsSegmentsToMp4Parts } from '../shared/ts_transmuxer.js';
-import { buildZipBlobAsync } from '../shared/zip_builder.js';
+import { encodePcmWav } from '../shared/wav_encoder.js';
+import { buildZipBlobAsync, resolveZipEntryFilename } from '../shared/zip_builder.js';
 
 const activeBlobUrls = new Set();
 const activeBuildControllers = new Map();
@@ -781,20 +790,27 @@ async function buildStreamBlob(payload) {
     }
     const { outputParts, outputExtension, mimeType } = assembled;
 
-    const blob = new Blob(outputParts, { type: mimeType });
+    let finalBlob;
+    let finalExtension = outputExtension;
+    if (audioOnly && payload.audioFormat === AUDIO_EXPORT_FORMATS.WAV) {
+      finalBlob = await decodeMediaPartsToWavBlob(outputParts);
+      finalExtension = DEFAULT_FILENAMES.AUDIO_WAV_EXT;
+    } else {
+      finalBlob = new Blob(outputParts, { type: mimeType });
+    }
     videoBuffers.length = 0;
     audioBuffers.length = 0;
     outputParts.length = 0;
     fullBodyCache.clear();
     keyCacheByUrl.clear();
 
-    const blobUrl = URL.createObjectURL(blob);
+    const blobUrl = URL.createObjectURL(finalBlob);
     activeBlobUrls.add(blobUrl);
 
     return {
       blobUrl,
-      outputExtension,
-      byteLength: blob.size
+      outputExtension: finalExtension,
+      byteLength: finalBlob.size
     };
   } finally {
     fullBodyCache.clear();
@@ -1489,6 +1505,122 @@ function resolveConvertDimensions(
 }
 
 /**
+ * Decodes assembled or fetched media bytes via Web Audio and encodes PCM 16-bit WAV.
+ * @param {Array<ArrayBuffer | Uint8Array>} mediaParts
+ * @returns {Promise<Blob>}
+ */
+async function decodeMediaPartsToWavBlob(mediaParts) {
+  const AudioCtx = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (typeof AudioCtx !== 'function') {
+    throw new Error('NO_AUDIO_TRACK');
+  }
+  const sourceBlob = new Blob(mediaParts);
+  const rawBuffer = await sourceBlob.arrayBuffer();
+  const audioCtx = new AudioCtx();
+  try {
+    const decoded = await audioCtx.decodeAudioData(rawBuffer);
+    const wavBytes = encodePcmWav(decoded);
+    return new Blob([wavBytes], { type: 'audio/wav' });
+  } catch {
+    throw new Error('NO_AUDIO_TRACK');
+  } finally {
+    if (typeof audioCtx.close === 'function') {
+      audioCtx.close().catch(() => {});
+    }
+  }
+}
+
+/**
+ * Fetches a direct HTTP media URL and decodes its audio track to PCM WAV.
+ * @param {{ targetUrl: string, requestId: string }} payload
+ * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number }>}
+ */
+async function decodeDirectMediaToWav(payload) {
+  const targetUrl = typeof payload.targetUrl === 'string' ? payload.targetUrl : '';
+  if (!isHttpUrl(targetUrl)) {
+    throw new Error('INVALID_URL');
+  }
+  const requestId = payload.requestId || `wav_${Date.now()}`;
+  const buildController = new AbortController();
+  activeBuildControllers.set(requestId, buildController);
+  try {
+    const buf = await fetchWithManagedTimeout(targetUrl, {
+      responseMode: 'buffer',
+      cancelSignal: buildController.signal,
+      byteTracker: { bytes: 0 },
+      retries: LIMITS.SEGMENT_FETCH_RETRIES
+    });
+    const wavBlob = await decodeMediaPartsToWavBlob([buf]);
+    const blobUrl = URL.createObjectURL(wavBlob);
+    activeBlobUrls.add(blobUrl);
+    return {
+      blobUrl,
+      outputExtension: DEFAULT_FILENAMES.AUDIO_WAV_EXT,
+      byteLength: wavBlob.size
+    };
+  } finally {
+    activeBuildControllers.delete(requestId);
+  }
+}
+
+/**
+ * Resolves and optimizes standalone SVG XML or extracts a symbol from an external sprite sheet.
+ * @param {string} targetUrl
+ * @param {string} symbolIdHint
+ * @param {AbortSignal} cancelSignal
+ * @returns {Promise<string>}
+ */
+async function resolveSvgSourceText(targetUrl, symbolIdHint, cancelSignal) {
+  if (isSvgDataUrl(targetUrl)) {
+    const decoded = decodeSvgDataUrl(targetUrl);
+    return optimizeSvgMarkup(decoded) || decoded;
+  }
+  const { baseUrl, symbolId } = splitSvgSpriteUrl(targetUrl);
+  const fetchUrl = baseUrl || targetUrl;
+  const activeSymbolId = symbolIdHint || symbolId;
+  const rawText = await fetchWithManagedTimeout(fetchUrl, {
+    responseMode: 'text',
+    cancelSignal,
+    retries: LIMITS.SEGMENT_FETCH_RETRIES
+  });
+  if (activeSymbolId) {
+    const extracted = extractSymbolFromSvgSprite(rawText, activeSymbolId);
+    if (extracted) {
+      return extracted;
+    }
+  }
+  return optimizeSvgMarkup(rawText) || rawText;
+}
+
+/**
+ * Fetches an external SVG sprite or file, isolates the requested `<symbol>`, and creates a Blob URL.
+ * @param {{ targetUrl: string, symbolId?: string, requestId: string }} payload
+ * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number }>}
+ */
+async function extractSvgSymbolBlob(payload) {
+  const targetUrl = typeof payload.targetUrl === 'string' ? payload.targetUrl : '';
+  if (!isHttpUrl(targetUrl) && !isSvgDataUrl(targetUrl)) {
+    throw new Error('INVALID_URL');
+  }
+  const requestId = payload.requestId || `svg_${Date.now()}`;
+  const buildController = new AbortController();
+  activeBuildControllers.set(requestId, buildController);
+  try {
+    const svgText = await resolveSvgSourceText(targetUrl, payload.symbolId || '', buildController.signal);
+    const outBlob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
+    const blobUrl = URL.createObjectURL(outBlob);
+    activeBlobUrls.add(blobUrl);
+    return {
+      blobUrl,
+      outputExtension: DEFAULT_FILENAMES.SVG_EXT,
+      byteLength: outBlob.size
+    };
+  } finally {
+    activeBuildControllers.delete(requestId);
+  }
+}
+
+/**
  * Fetches or decodes an image/SVG and rasterizes it to a PNG or JPG Blob.
  * @param {string} targetUrl
  * @param {string} targetFormat
@@ -1496,6 +1628,8 @@ function resolveConvertDimensions(
  * @param {number} hintHeight
  * @param {number} rasterSizePx
  * @param {AbortSignal} cancelSignal
+ * @param {number} [jpgQualityPercent]
+ * @param {string} [symbolIdHint]
  * @returns {Promise<Blob>}
  */
 async function rasterizeImageToBlob(
@@ -1504,11 +1638,20 @@ async function rasterizeImageToBlob(
   hintWidth,
   hintHeight,
   rasterSizePx,
-  cancelSignal
+  cancelSignal,
+  jpgQualityPercent = LIMITS.DEFAULT_JPG_QUALITY_PERCENT,
+  symbolIdHint = ''
 ) {
-  const isSvg = isSvgDataUrl(targetUrl) || extractUrlExtension(targetUrl) === DEFAULT_FILENAMES.SVG_EXT;
+  const { symbolId: urlSymbolId } = splitSvgSpriteUrl(targetUrl);
+  const effectiveSymbolId = symbolIdHint || urlSymbolId;
+  const isSvg = isSvgDataUrl(targetUrl)
+    || extractUrlExtension(targetUrl) === DEFAULT_FILENAMES.SVG_EXT
+    || Boolean(effectiveSymbolId);
   let sourceBlob;
-  if (isSvgDataUrl(targetUrl) || isRasterImageDataUrl(targetUrl)) {
+  if (isSvg) {
+    const svgMarkup = await resolveSvgSourceText(targetUrl, effectiveSymbolId, cancelSignal);
+    sourceBlob = new Blob([svgMarkup], { type: 'image/svg+xml;charset=utf-8' });
+  } else if (isRasterImageDataUrl(targetUrl)) {
     sourceBlob = imageDataUrlToBlob(targetUrl);
   } else {
     const buf = await fetchWithManagedTimeout(targetUrl, {
@@ -1516,7 +1659,7 @@ async function rasterizeImageToBlob(
       cancelSignal,
       retries: LIMITS.SEGMENT_FETCH_RETRIES
     });
-    sourceBlob = new Blob([buf], { type: isSvg ? 'image/svg+xml;charset=utf-8' : undefined });
+    sourceBlob = new Blob([buf]);
   }
 
   if (cancelSignal && cancelSignal.aborted && cancelSignal.reason === CANCEL_REASON) {
@@ -1553,8 +1696,16 @@ async function rasterizeImageToBlob(
   }
   ctx.drawImage(img, 0, 0, width, height);
 
+  const clampedJpgPercent = clampInteger(
+    jpgQualityPercent,
+    LIMITS.DEFAULT_JPG_QUALITY_PERCENT,
+    LIMITS.JPG_QUALITY_MIN_PERCENT,
+    LIMITS.JPG_QUALITY_MAX_PERCENT
+  );
+  const normalizedJpgQuality = clampedJpgPercent / 100;
+
   return new Promise((resolve, reject) => {
-    const quality = targetFormat === IMAGE_CONVERT_FORMATS.JPG ? LIMITS.JPEG_EXPORT_QUALITY : undefined;
+    const quality = targetFormat === IMAGE_CONVERT_FORMATS.JPG ? normalizedJpgQuality : undefined;
     if (typeof canvas.toBlob === 'function') {
       canvas.toBlob((blob) => {
         if (blob) {
@@ -1571,7 +1722,7 @@ async function rasterizeImageToBlob(
 
 /**
  * Fetches or decodes an image (WebP, AVIF, SVG, etc.) and converts it to PNG or JPG via canvas.
- * @param {{ targetUrl: string, targetFormat: string, width?: number, height?: number, rasterSizePx?: number, requestId: string }} payload
+ * @param {{ targetUrl: string, targetFormat: string, width?: number, height?: number, rasterSizePx?: number, jpgQualityPercent?: number, symbolId?: string, requestId: string }} payload
  * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number }>}
  */
 async function convertImageBlob(payload) {
@@ -1595,7 +1746,9 @@ async function convertImageBlob(payload) {
       payload.width || 0,
       payload.height || 0,
       payload.rasterSizePx || 0,
-      buildController.signal
+      buildController.signal,
+      payload.jpgQualityPercent,
+      payload.symbolId || ''
     );
 
     const blobUrl = URL.createObjectURL(outBlob);
@@ -1608,17 +1761,6 @@ async function convertImageBlob(payload) {
   } finally {
     activeBuildControllers.delete(requestId);
   }
-}
-
-/**
- * Replaces or appends the file extension on a ZIP entry filename.
- * @param {string} rawFilename
- * @param {string} targetExt
- * @returns {string}
- */
-function replaceFilenameExtension(rawFilename, targetExt) {
-  const base = String(rawFilename || DEFAULT_FILENAMES.BASE).replace(/\.[^./\\]+$/, '');
-  return `${base || DEFAULT_FILENAMES.BASE}.${targetExt}`;
 }
 
 /**
@@ -1641,6 +1783,15 @@ async function buildZipBlobArchive(payload) {
     LIMITS.MIN_HLS_CONCURRENCY,
     LIMITS.MAX_HLS_CONCURRENCY
   );
+  const jpgQualityPercent = clampInteger(
+    payload.jpgQualityPercent,
+    LIMITS.DEFAULT_JPG_QUALITY_PERCENT,
+    LIMITS.JPG_QUALITY_MIN_PERCENT,
+    LIMITS.JPG_QUALITY_MAX_PERCENT
+  );
+  const renameMode = payload.renameMode === ZIP_RENAME_MODES.SEQUENTIAL
+    ? ZIP_RENAME_MODES.SEQUENTIAL
+    : ZIP_RENAME_MODES.ORIGINAL;
 
   notifyProgress(requestId, 'zip', 0, items.length);
 
@@ -1655,6 +1806,11 @@ async function buildZipBlobArchive(payload) {
       }
       const targetUrl = item && typeof item.url === 'string' ? item.url : '';
       const rawExt = item && typeof item.ext === 'string' ? item.ext.toLowerCase() : extractUrlExtension(targetUrl);
+      const { symbolId: urlSymbolId } = splitSvgSpriteUrl(targetUrl);
+      const effectiveSymbolId = (item && item.symbolId) || urlSymbolId || '';
+      const isSvgEntry = isSvgDataUrl(targetUrl)
+        || rawExt === DEFAULT_FILENAMES.SVG_EXT
+        || Boolean(effectiveSymbolId);
       const requestedFormat = item && typeof item.convertTo === 'string' ? item.convertTo.toLowerCase() : '';
       const needsConversion = (
         (requestedFormat === IMAGE_CONVERT_FORMATS.PNG || requestedFormat === IMAGE_CONVERT_FORMATS.JPG)
@@ -1664,7 +1820,16 @@ async function buildZipBlobArchive(payload) {
 
       try {
         let entryData;
-        let entryName = (item && item.filename) || `${DEFAULT_FILENAMES.BASE}_${index + 1}.${rawExt || DEFAULT_FILENAMES.FALLBACK_EXT}`;
+        const outputExt = needsConversion
+          ? requestedFormat
+          : (isSvgEntry ? DEFAULT_FILENAMES.SVG_EXT : (rawExt || DEFAULT_FILENAMES.FALLBACK_EXT));
+        const entryName = resolveZipEntryFilename(
+          item && item.filename,
+          outputExt,
+          index,
+          items.length,
+          renameMode
+        );
         if (needsConversion) {
           const convertedBlob = await rasterizeImageToBlob(
             targetUrl,
@@ -1672,7 +1837,9 @@ async function buildZipBlobArchive(payload) {
             item.width || 0,
             item.height || 0,
             item.rasterSizePx || 0,
-            buildController.signal
+            buildController.signal,
+            jpgQualityPercent,
+            effectiveSymbolId
           );
           const buf = await convertedBlob.arrayBuffer();
           if (byteTracker.bytes + buf.byteLength > LIMITS.MAX_HLS_BUFFER_BYTES) {
@@ -1680,15 +1847,14 @@ async function buildZipBlobArchive(payload) {
           }
           byteTracker.bytes += buf.byteLength;
           entryData = new Uint8Array(buf);
-          entryName = replaceFilenameExtension(entryName, requestedFormat);
-        } else if (isSvgDataUrl(targetUrl)) {
-          const svgBlob = imageDataUrlToBlob(targetUrl);
-          const buf = await svgBlob.arrayBuffer();
-          byteTracker.bytes += buf.byteLength;
-          entryData = new Uint8Array(buf);
-          if (!entryName.toLowerCase().endsWith(`.${DEFAULT_FILENAMES.SVG_EXT}`)) {
-            entryName = replaceFilenameExtension(entryName, DEFAULT_FILENAMES.SVG_EXT);
+        } else if (isSvgEntry && (isSvgDataUrl(targetUrl) || isHttpUrl(targetUrl))) {
+          const svgText = await resolveSvgSourceText(targetUrl, effectiveSymbolId, buildController.signal);
+          const svgBytes = new TextEncoder().encode(svgText);
+          if (byteTracker.bytes + svgBytes.byteLength > LIMITS.MAX_HLS_BUFFER_BYTES) {
+            throw new Error('STREAM_TOO_LARGE');
           }
+          byteTracker.bytes += svgBytes.byteLength;
+          entryData = svgBytes;
         } else if (isRasterImageDataUrl(targetUrl)) {
           const rasterBlob = imageDataUrlToBlob(targetUrl, 'image/png');
           const buf = await rasterBlob.arrayBuffer();
@@ -1987,6 +2153,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       originalUrl: message.originalUrl || message.playlistUrl,
       audioUrl: message.audioUrl || '',
       audioOnly: Boolean(message.audioOnly),
+      audioFormat: message.audioFormat || AUDIO_EXPORT_FORMATS.M4A,
       requestId,
       concurrency: message.concurrency,
       qualityPreference: message.qualityPreference
@@ -2046,7 +2213,34 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === MESSAGE_TYPES.OFFSCREEN_BUILD_MSE_BLOB) {
-    sendResponse(handleMseBlobMessage(message));
+    const mseResult = handleMseBlobMessage(message);
+    if (
+      mseResult
+      && mseResult.ok
+      && mseResult.blobUrl
+      && message.action === 'finalize'
+      && message.audioOnly
+      && message.audioFormat === AUDIO_EXPORT_FORMATS.WAV
+    ) {
+      fetch(mseResult.blobUrl)
+        .then((res) => res.arrayBuffer())
+        .then((buf) => decodeMediaPartsToWavBlob([buf]))
+        .then((wavBlob) => {
+          URL.revokeObjectURL(mseResult.blobUrl);
+          activeBlobUrls.delete(mseResult.blobUrl);
+          const wavBlobUrl = URL.createObjectURL(wavBlob);
+          activeBlobUrls.add(wavBlobUrl);
+          sendResponse({
+            ok: true,
+            blobUrl: wavBlobUrl,
+            outputExtension: DEFAULT_FILENAMES.AUDIO_WAV_EXT,
+            byteLength: wavBlob.size
+          });
+        })
+        .catch((err) => sendResponse({ ok: false, error: (err && err.message) || 'NO_AUDIO_TRACK' }));
+      return true;
+    }
+    sendResponse(mseResult);
     return false;
   }
 
@@ -2058,10 +2252,35 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       width: message.width,
       height: message.height,
       rasterSizePx: message.rasterSizePx,
+      jpgQualityPercent: message.jpgQualityPercent,
+      symbolId: message.symbolId || '',
       requestId
     })
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((err) => sendResponse({ ok: false, error: err.message || 'IMAGE_CONVERT_FAILED' }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.OFFSCREEN_EXTRACT_SVG_SYMBOL) {
+    const requestId = message.requestId || `svg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    extractSvgSymbolBlob({
+      targetUrl: message.targetUrl,
+      symbolId: message.symbolId || '',
+      requestId
+    })
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((err) => sendResponse({ ok: false, error: err.message || 'DOWNLOAD_FAILED' }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.OFFSCREEN_DECODE_WAV) {
+    const requestId = message.requestId || `wav_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    decodeDirectMediaToWav({
+      targetUrl: message.targetUrl,
+      requestId
+    })
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((err) => sendResponse({ ok: false, error: err.message || 'NO_AUDIO_TRACK' }));
     return true;
   }
 
@@ -2070,6 +2289,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     buildZipBlobArchive({
       items: message.items,
       concurrency: message.concurrency,
+      jpgQualityPercent: message.jpgQualityPercent,
+      renameMode: message.renameMode,
       requestId
     })
       .then((result) => sendResponse({ ok: true, ...result }))

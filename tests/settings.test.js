@@ -16,7 +16,13 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_SETTINGS, FILENAME_TEMPLATES, QUALITY_PREFERENCES, STORAGE_KEYS } from '../src/config/constants.js';
+import {
+  AUDIO_EXPORT_FORMATS,
+  DEFAULT_SETTINGS,
+  FILENAME_TEMPLATES,
+  QUALITY_PREFERENCES,
+  STORAGE_KEYS
+} from '../src/config/constants.js';
 import {
   applyFilenameTemplate,
   isFolderFilenameTemplate,
@@ -34,6 +40,8 @@ test('normalizeSettings validates enums and clamps numeric thresholds safely', (
     minImageDimensionPx: -20,
     hlsFetchConcurrency: 99,
     largeStreamWarningMb: 99999,
+    jpgQualityPercent: 12,
+    audioExportFormat: AUDIO_EXPORT_FORMATS.WAV,
     enableXOverlay: false
   });
 
@@ -42,7 +50,13 @@ test('normalizeSettings validates enums and clamps numeric thresholds safely', (
   assert.equal(normalized.minImageDimensionPx, 0);
   assert.equal(normalized.hlsFetchConcurrency, 8);
   assert.equal(normalized.largeStreamWarningMb, 512);
+  assert.equal(normalized.jpgQualityPercent, 50);
+  assert.equal(normalized.audioExportFormat, AUDIO_EXPORT_FORMATS.WAV);
   assert.equal(normalized.enableXOverlay, false);
+
+  const overQuality = normalizeSettings({ jpgQualityPercent: 180, audioExportFormat: 'ogg' });
+  assert.equal(overQuality.jpgQualityPercent, 100);
+  assert.equal(overQuality.audioExportFormat, AUDIO_EXPORT_FORMATS.M4A);
 });
 
 test('applyFilenameTemplate formats default, host_stem, and date_stem consistently', () => {

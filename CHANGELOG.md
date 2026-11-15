@@ -5,14 +5,19 @@ All notable engineering changes to Media Harvest are documented in this file.
 ## [1.1.0] - 2026-11-15
 
 ### Added
-- Native Messaging companion host (`companion/media_harvest_host.py`) wrapping yt-dlp and ffmpeg with Windows (`install_companion.ps1`), Linux, and macOS (`install_companion.sh`) installers.
+- Direct File System Access disk streaming tab (`src/saver/stream_saver.html`, `src/saver/stream_saver.js`) for saving progressive and non-DRM HLS/DASH streams over 512 MB directly to disk without a companion.
+- Autonomous browser 16-bit PCM `.wav` audio extraction (`src/shared/wav_encoder.js`, `OFFSCREEN_DECODE_WAV`, selectable `audioExportFormat` `m4a`/`wav` in Settings) supporting HLS, DASH, MSE, and direct HTTP MP4/WebM media.
+- SVG Gobbler++ sprite symbol isolation and markup optimization (`src/shared/svg_utils.js`, `OFFSCREEN_EXTRACT_SVG_SYMBOL`) across DOM scan, Copy SVG, Lightbox Pro, PNG/JPG conversion, and ZIP export.
+- Configurable JPG compression quality (`50-100%` in Settings) and sequential zero-padded ZIP batch filenames (`media_001.ext` toggle in popup).
+- SVG category filter, Lightbox Pro backdrop toggle (`Checker`/`Light`/`Dark`), Tab Capture `REC` mode (`chrome.tabCapture`), live HLS/DASH DVR recording, selective DEFLATE ZIP batch packaging, quick image pixel/format filters, persistent popup filter/sort/grid state, and Chrome Side Panel support.
+- Native Messaging companion host (`companion/media_harvest_host.py`) wrapping yt-dlp and ffmpeg with Windows (`install_companion.ps1`), Linux, and macOS (`install_companion.sh`) installers and optional Chrome cookies passthrough.
 - MediaSource (MSE) capture in MAIN world with ISOLATED world bridge (`src/content/mse_hook.js`, `src/content/mse_bridge.js`) and offscreen chunked assembly.
-- Universal and modular social site overlay adapters (`src/content/site_overlay.js`, `src/content/site_overlay.css`) for YouTube, Instagram, TikTok, Reddit, Bluesky, Facebook, Vimeo, Dailymotion, Twitch, and LinkedIn.
+- Universal and modular social site overlay adapters (`src/content/site_overlay.js`, `src/content/site_overlay.css`) for YouTube, Instagram, TikTok, Reddit, Bluesky, Facebook, Vimeo, Dailymotion, Twitch, and LinkedIn, plus generic HTML5 `<video>` players.
 - Keyboard shortcut `Alt+Shift+M` (`Option+Shift+M` on macOS) to toggle the extension popup directly.
 - Standalone zero-dependency ZIP packager script (`scripts/package_extension.mjs`) generating release archives with SHA-256 digests via `npm run package`.
 - Modular popup subcomponents (`src/popup/media_card.js`, `src/popup/preview_player.js`, `src/popup/batch_runner.js`, `src/popup/popup_helpers.js`) and declarativeNetRequest manager (`src/background/dnr_manager.js`).
 - Subtitle extraction, WebVTT track merging, and dedicated category filter.
-- Comprehensive automated test suite expanded to 94 tests across 24 test suites with 87% coverage.
+- Automated test suite expanded to 129 unit/integration tests across 24 test suites plus headless Chromium MV3 E2E runner (`npm run test:e2e`, CI-safe on Linux).
 
 ### Fixed
 - Enforced strict 512 MB buffer cap with early Content-Length reservation and streaming chunk checks in offscreen fetch pools.

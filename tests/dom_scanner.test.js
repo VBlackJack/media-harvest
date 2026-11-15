@@ -396,6 +396,11 @@ test('dom_scanner captures non-tainted canvas, CSS mask-image, and external <use
     assert.ok(urls.includes(longPngDataUrl));
     assert.ok(urls.includes('https://cdn.example.com/icons/mask-logo.svg'));
     assert.ok(urls.includes('https://example.com/sprites/ui.svg'));
+    assert.ok(urls.includes('https://example.com/sprites/ui.svg#arrow-right'));
+    const symbolItem = result.items.find((item) => item.url === 'https://example.com/sprites/ui.svg#arrow-right');
+    assert.equal(symbolItem.svgSpriteUrl, 'https://example.com/sprites/ui.svg');
+    assert.equal(symbolItem.svgSymbolId, 'arrow-right');
+    assert.equal(symbolItem.suggestedFilename, 'arrow-right.svg');
     const canvasItem = result.items.find((item) => item.url === longPngDataUrl);
     assert.equal(canvasItem.ext, 'png');
     assert.equal(canvasItem.title, 'Chart Snapshot');

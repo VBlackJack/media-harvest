@@ -23,6 +23,7 @@ import {
   buildZipUint8Array,
   buildZipUint8ArrayAsync,
   crc32,
+  resolveZipEntryFilename,
   sanitizeZipEntryName
 } from '../src/shared/zip_builder.js';
 
@@ -135,4 +136,11 @@ test('buildZipUint8ArrayAsync compresses compressible text/SVG entries with DEFL
   const asyncBlob = await buildZipBlobAsync([{ name: 'captions.vtt', data: repeatedSvg }]);
   assert.equal(asyncBlob.type, 'application/zip');
   assert.ok(asyncBlob.size > 0);
+});
+
+test('resolveZipEntryFilename supports original and zero-padded sequential naming', () => {
+  assert.equal(resolveZipEntryFilename('hero-banner.webp', 'jpg', 0, 12, 'original'), 'hero-banner.jpg');
+  assert.equal(resolveZipEntryFilename('hero-banner.webp', 'jpg', 0, 12, 'sequential'), 'media_001.jpg');
+  assert.equal(resolveZipEntryFilename('logo.svg', 'png', 9, 12, 'sequential'), 'media_010.png');
+  assert.equal(resolveZipEntryFilename('shot.png', 'png', 999, 1200, 'sequential'), 'media_1000.png');
 });

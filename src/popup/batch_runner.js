@@ -114,7 +114,7 @@ export async function runBatchDownloads({
       const filename = convertTo
         ? `${(item.suggestedFilename || DEFAULT_FILENAMES.BASE).replace(/\.[^./\\]+$/, '')}.${convertTo}`
         : item.suggestedFilename;
-      const requestId = (item.isStream || item.isMse || convertTo)
+      const requestId = (item.isStream || item.isMse || convertTo || item.svgSymbolId)
         ? `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
         : '';
       if (requestId) {
@@ -132,6 +132,7 @@ export async function runBatchDownloads({
             audioUrl: selectedAudioUrl,
             convertTo,
             rasterSizePx,
+            svgSymbolId: item.svgSymbolId || '',
             width: item.width || 0,
             height: item.height || 0,
             isStream: Boolean(item.isStream),

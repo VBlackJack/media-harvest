@@ -163,6 +163,9 @@ async function launchChromeWithExtension(chromePath, userDataDir) {
     `--disable-extensions-except=${ROOT_DIR}`,
     `--load-extension=${ROOT_DIR}`
   ];
+  if (process.platform === 'linux') {
+    args.push('--no-sandbox', '--disable-setuid-sandbox');
+  }
 
   const proc = spawn(chromePath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   let stderrText = '';

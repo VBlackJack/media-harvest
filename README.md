@@ -2,14 +2,14 @@
 
 # Media Harvest
 
-Chrome Manifest V3 extension (`v1.0.0`) to detect, preview, and download videos, non-DRM HLS (`.m3u8`) and DASH (`.mpd`) streams, subtitles, images, and audio from the active tab, in popup or Chrome Side Panel mode.
+Chrome Manifest V3 extension (`v1.1.0`) to detect, preview, and download videos, non-DRM HLS (`.m3u8`) and DASH (`.mpd`) streams, subtitles, images, and audio from the active tab, in popup or Chrome Side Panel mode.
 
 ## Features
 
-- Scans page DOM (`<video>`, `<audio>`, `<img>`, non-tainted `<canvas>`, `<track>`, inline `<svg>` vectors with `<use>` symbol and external `.svg` sprite resolution, CSS `data:image/svg+xml` / `background-image` / `mask-image` assets, direct media links, open Shadow DOM roots, OpenGraph/Twitter meta tags, and JSON-LD `VideoObject`/`AudioObject`/`ImageObject`) across all frames (`allFrames: true`), including live video frame previews and inline `<audio>` playback.
+- Scans page DOM (`<video>`, `<audio>`, `<img>`, non-tainted `<canvas>`, `<track>`, inline `<svg>` vectors with `<use>` symbol and external `.svg#symbol` sprite extraction and SVG markup optimization, CSS `data:image/svg+xml` / `background-image` / `mask-image` assets, direct media links, open Shadow DOM roots, OpenGraph/Twitter meta tags, and JSON-LD `VideoObject`/`AudioObject`/`ImageObject`) across all frames (`allFrames: true`), including live video frame previews and inline `<audio>` playback.
 - Captures network media responses (`.mp4`, `.webm`, `.m3u8`, `.mpd`, `.vtt`, `.srt`, `.ttml`, `.ass`, audio, images) per tab via `chrome.webRequest`, propagates `Referer`/`Origin` via temporary `declarativeNetRequest` session rules on restricted CDNs, provides a universal MSE (`MediaSource`) fallback buffer capture up to `150` MB (`enableMseCapture`), and records active tab video+audio directly via `chrome.tabCapture` (`Capture tab` / `Stop REC` with pass-through audio and red `REC` badge).
-- Resolves VOD and live HLS playlists (including `#EXT-X-BYTERANGE`, `#EXT-X-DISCONTINUITY` timeline flushes, `#EXT-X-MEDIA:TYPE=SUBTITLES`, native Web Crypto `AES-128` decryption, autonomous `.m4a` audio extraction from separated tracks, muxed fMP4/TS streams, and MP4 MSE captures, plus live HLS/DASH DVR recording) as well as non-DRM DASH `.mpd` manifests; retries transient segment errors automatically, estimates variant sizes with configurable large-stream warnings, supports mid-flight cancellation, and assembles segments in an offscreen document within a `512` MB memory cap (zero-copy `Uint8Array` parts for dual-track fMP4 muxing and MPEG-TS/ADTS to MP4 transmuxing via vendored `mux-mp4.min.js`).
-- Offers an image gallery grid view (`list` / `grid` toggle), an `SVG` filter tab with `Copy SVG` markup action, quick pixel-size (`>= 100/300/800 px`) and extension filters, configurable SVG raster scale (`256` - `2048` px), Lightbox Pro preview (backdrop toggle `Checker` / `Light` / `Dark`, Copy SVG/URL, and Download), one-click and batch on-the-fly raster image conversion (`WebP` / `AVIF` / `SVG` -> `PNG` or `JPG`), per-card multi-select with selective DEFLATE `.zip` archive packaging, persistent filter/sort/view state, and a Chrome Side Panel view.
+- Resolves VOD and live HLS playlists (including `#EXT-X-BYTERANGE`, `#EXT-X-DISCONTINUITY` timeline flushes, `#EXT-X-MEDIA:TYPE=SUBTITLES`, native Web Crypto `AES-128` decryption, autonomous browser `.m4a` and 16-bit PCM `.wav` audio extraction across HLS, DASH, MSE, and direct HTTP MP4/WebM media, plus live HLS/DASH DVR recording) as well as non-DRM DASH `.mpd` manifests; retries transient segment errors automatically, estimates variant sizes with configurable large-stream warnings, supports direct disk streaming via File System Access (`src/saver/`) for progressive and playlist streams exceeding `512` MB without a companion, supports mid-flight cancellation, and assembles segments in an offscreen document within a `512` MB memory cap (zero-copy `Uint8Array` parts for dual-track fMP4 muxing and MPEG-TS/ADTS to MP4 transmuxing via vendored `mux-mp4.min.js`).
+- Offers an image gallery grid view (`list` / `grid` toggle), an `SVG` filter tab with `Copy SVG` markup action and clean sprite symbol extraction, quick pixel-size (`>= 100/300/800 px`) and extension filters, configurable SVG raster scale (`256` - `2048` px) and JPG compression quality (`50` - `100` %), Lightbox Pro preview (backdrop toggle `Checker` / `Light` / `Dark`, Copy SVG/URL, and Download), one-click and batch on-the-fly raster image conversion (`WebP` / `AVIF` / `SVG` -> `PNG` or `JPG`), per-card multi-select with selective DEFLATE `.zip` archive packaging (original or zero-padded sequential filenames), persistent filter/sort/view state, and a Chrome Side Panel view.
 - Injects inline download buttons directly on X/Twitter (`x.com` / `twitter.com`), modular social video players (`youtube.com`, `instagram.com`, `tiktok.com`, `reddit.com`, `facebook.com`, `bsky.app`, `vimeo.com`, `dailymotion.com`, `twitch.tv`, `linkedin.com`), and generic HTML5 `<video>` players across the web (`enableGenericVideoOverlay`), each toggleable live in Settings.
 - Includes an optional Windows Native Messaging companion (`companion/` delegating to local `yt-dlp` and `ffmpeg`) with live percentage progress and optional browser cookie passthrough (`enableCompanionCookies`) for heavy (`>512` MB) or authenticated streams.
 - Includes an Options page (`chrome.storage.sync`) plus English and French localization (`_locales/en`, `_locales/fr`).
@@ -24,7 +24,9 @@ Open Settings from the gear button in the popup or via Chrome's Extension Detail
 | Filename template | `default` | `default`, `host_stem`, `date_stem`, `host_folder`, `date_folder` | Naming format (`{name}.{ext}`, `{host}_{name}.{ext}`, `{YYYY-MM-DD}_{name}.{ext}`, `{host}/{name}.{ext}`, `{YYYY-MM-DD}/{name}.{ext}`) |
 | Minimum image size | `64` px | `0` - `2000` px | Ignores smaller DOM images and tracking pixels |
 | Parallel segment downloads | `4` | `1` - `8` | Bounded concurrency pool in `offscreen.js` |
-| Large stream warning | `250` MB | `0` - `512` MB | Shows a warning badge above threshold (`0` disables) |
+| Large stream warning | `250` MB | `0` - `512` MB | Shows a warning badge above threshold (`0` disables); streams over `512` MB expose direct disk saving (`src/saver/`) |
+| JPG conversion quality | `90` % | `50` - `100` % | Compression quality used when converting raster or SVG assets to `.jpg` |
+| Audio export format | `m4a` | `m4a`, `wav` | Output container used for browser-side audio extraction (stream-copied AAC `.m4a` or decoded 16-bit PCM `.wav`) |
 | X / Twitter post button | Enabled | `true` / `false` | Live-toggles the inline download button on `x.com` / `twitter.com` |
 | Social sites video button | Enabled | `true` / `false` | Live-toggles floating video buttons on Instagram, TikTok, Reddit, YouTube, Facebook, Bluesky, Vimeo, Dailymotion, Twitch, and LinkedIn |
 | Other websites video button | Enabled | `true` / `false` | Live-toggles floating download buttons on any generic HTML5 `<video>` (`>= 220x140` px) outside social platforms |
@@ -76,11 +78,12 @@ Use **Check status** in Extension Options to verify the connection. Downloads tr
 - Change history: [CHANGELOG.md](CHANGELOG.md)
 - Directory overview:
   - `src/config/constants.js` - Media tables, limits, storage keys, settings defaults, and message types.
-  - `src/shared/` - Pure ES modules (`media_classifier.js`, `fetch_utils.js`, `hls_parser.js`, `hls_crypto.js`, `dash_parser.js`, `fmp4_muxer.js`, `ts_transmuxer.js`, `zip_builder.js`, `preview_matcher.js`, `settings.js`, `i18n.js`).
-  - `src/background/` - Network capture, session state, badge updates, temporary DNR rules (`dnr_manager.js`), offscreen lifecycle, cancellation, and downloads.
-  - `src/offscreen/` - Offscreen document assembling HLS and DASH segments into downloadable Blob URLs.
-  - `src/content/` - On-demand DOM media scanner (`srcset` and `<picture>` support) and X/Twitter inline post overlay.
-  - `src/popup/` - Modular extension popup UI (`popup.js`, `media_card.js`, `preview_player.js`, `batch_runner.js`, `popup_helpers.js`) with live preview, search/sort controls, bounded inspection queue with retry, quality and audio track selection, over-cap warnings, batch confirmation, cancellation, and progress reporting.
+  - `src/shared/` - Pure ES modules (`media_classifier.js`, `fetch_utils.js`, `hls_parser.js`, `hls_crypto.js`, `dash_parser.js`, `fmp4_muxer.js`, `ts_transmuxer.js`, `wav_encoder.js`, `svg_utils.js`, `zip_builder.js`, `preview_matcher.js`, `settings.js`, `i18n.js`).
+  - `src/background/` - Network capture, session state, badge updates, temporary DNR rules (`dnr_manager.js`), offscreen lifecycle, cancellation, stream saver handoff, and downloads.
+  - `src/offscreen/` - Offscreen document assembling HLS/DASH segments, decoding Web Audio PCM `.wav`, converting raster/SVG assets, and packaging ZIP archives.
+  - `src/saver/` - Dedicated File System Access disk streamer (`stream_saver.html`, `stream_saver.js`) saving `>512` MB progressive/HLS/DASH streams straight to disk.
+  - `src/content/` - On-demand DOM media scanner (`srcset`, `<picture>`, and external `<use>` SVG sprites), MSE capture hook/bridge, and modular social/video inline overlays.
+  - `src/popup/` - Modular extension popup UI (`popup.js`, `media_card.js`, `preview_player.js`, `batch_runner.js`, `popup_helpers.js`) with live preview, Lightbox Pro, search/sort controls, bounded inspection queue with retry, quality/audio/subtitle selection, over-cap disk-save action, batch ZIP controls, cancellation, and progress reporting.
   - `src/options/` - Synced extension settings page (`options.html`, `options.css`, `options.js`).
 
 ## Installation in Chrome
@@ -92,7 +95,7 @@ Use **Check status** in Extension Options to verify the connection. Downloads tr
 
 ## Tests, CI & Distribution
 
-Zero external runtime or dev npm packages are required; syntax checking, packaging, and tests use Node.js built-in `node --check`, `node:test`, and `node:assert/strict` (`118` tests in `tests/`, also executed in CI on Node 22 via `.github/workflows/ci.yml`), plus a real headless Chromium/Edge MV3 E2E runner (`npm run test:e2e`):
+Zero external runtime or dev npm packages are required; syntax checking, packaging, and tests use Node.js built-in `node --check`, `node:test`, and `node:assert/strict` (`129` tests in `tests/`, also executed in CI on Node 22 via `.github/workflows/ci.yml`), plus a headless Chromium/Edge MV3 E2E runner (`npm run test:e2e`):
 
 ```powershell
 npm run check

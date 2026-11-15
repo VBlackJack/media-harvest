@@ -158,6 +158,7 @@
             action: 'finalize',
             requestId: payload.requestId,
             audioOnly: Boolean(pending.audioOnly),
+            audioFormat: pending.audioFormat || 'm4a',
             videoMime: payload.videoMime || '',
             audioMime: payload.audioMime || ''
           });
@@ -190,6 +191,7 @@
           resolve,
           timer,
           audioOnly: Boolean(message.audioOnly),
+          audioFormat: typeof message.audioFormat === 'string' ? message.audioFormat : 'm4a',
           queue: Promise.resolve()
         });
         postToHook(BRIDGE_CONFIG.EVENTS.EXPORT_REQUEST, {

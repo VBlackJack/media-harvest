@@ -15,6 +15,7 @@
  */
 
 import {
+  AUDIO_EXPORT_FORMATS,
   DEFAULT_FILENAMES,
   IMAGE_CONVERT_FORMATS,
   LIMITS,
@@ -26,6 +27,12 @@ import {
 import { isDashDescriptor } from '../shared/fetch_utils.js';
 import { t } from '../shared/i18n.js';
 import { isSvgDataUrl } from '../shared/media_classifier.js';
+import {
+  decodeSvgDataUrl,
+  extractSymbolFromSvgSprite,
+  optimizeSvgMarkup,
+  splitSvgSpriteUrl
+} from '../shared/svg_utils.js';
 import { formatBytes, formatDuration, getEstimatedStreamBytes, localizeError } from './popup_helpers.js';
 import { closeCardPreview, refreshOpenPreview, toggleVideoPreview } from './preview_player.js';
 
@@ -230,10 +237,17 @@ export function updateStreamLimitWarning(entry, context = {}) {
   }
   const meta = context.hlsMetaByUrl ? context.hlsMetaByUrl.get(entry.item.url) : null;
   if (meta && (meta.encrypted || meta.isDynamic)) {
+    if (entry.saveLargeBtn) {
+      entry.saveLargeBtn.classList.add('hidden');
+    }
     return;
   }
   const estBytes = getEstimatedStreamBytes(entry, context.hlsMetaByUrl);
-  if (estBytes > LIMITS.MAX_HLS_BUFFER_BYTES) {
+  const exceedsCap = estBytes > LIMITS.MAX_HLS_BUFFER_BYTES;
+  if (entry.saveLargeBtn) {
+    entry.saveLargeBtn.classList.toggle('hidden', !exceedsCap || Boolean(entry.item.isMse));
+  }
+  if (exceedsCap) {
     const maxMb = String(Math.round(LIMITS.MAX_HLS_BUFFER_BYTES / UNIT_CONVERSIONS.BYTES_PER_MB));
     entry.progressEl.className = 'error-line';
     entry.progressEl.textContent = translate('popup_warning_exceeds_limit', [maxMb]);
@@ -369,8 +383,12 @@ function setPreviewDisabled(entry, disabled) {
  * @param {object | null} meta
  * @returns {{ hasSeparateAudio: boolean, canBrowserMuxedAudio: boolean, canMseAudio: boolean }}
  */
-function resolveAudioExtractCapabilities(entry, meta) {
+function resolveAudioExtractCapabilities(entry, meta, context = {}) {
   const { item } = entry;
+  const settings = context.getSettings ? context.getSettings() : null;
+  const audioFormat = settings && settings.audioExportFormat
+    ? settings.audioExportFormat
+    : AUDIO_EXPORT_FORMATS.M4A;
   const hasSeparateAudio = Boolean(meta && Array.isArray(meta.audioTracks) && meta.audioTracks.length > 0);
   const selectedVariantUrl = entry.qualitySelect && !entry.qualitySelect.classList.contains('hidden')
     ? entry.qualitySelect.value
@@ -396,7 +414,13 @@ function resolveAudioExtractCapabilities(entry, meta) {
     && item.type === MEDIA_TYPES.VIDEO
     && (item.ext || '').toLowerCase() !== DEFAULT_FILENAMES.WEBM_EXT
   );
-  return { hasSeparateAudio, canBrowserMuxedAudio, canMseAudio };
+  const canBrowserDirectWav = Boolean(
+    audioFormat === AUDIO_EXPORT_FORMATS.WAV
+    && !item.isStream
+    && !item.isMse
+    && item.type === MEDIA_TYPES.VIDEO
+  );
+  return { hasSeparateAudio, canBrowserMuxedAudio, canMseAudio, canBrowserDirectWav };
 }
 
 /**
@@ -410,9 +434,10 @@ export function refreshAudioExtractButton(entry, context = {}) {
   }
   const { item } = entry;
   const meta = context.hlsMetaByUrl ? context.hlsMetaByUrl.get(item.url) : null;
-  const { hasSeparateAudio, canBrowserMuxedAudio, canMseAudio } = resolveAudioExtractCapabilities(entry, meta);
+  const { hasSeparateAudio, canBrowserMuxedAudio, canMseAudio, canBrowserDirectWav } =
+    resolveAudioExtractCapabilities(entry, meta, context);
   const companionOk = !item.isMse && Boolean(context.isCompanionAvailable && context.isCompanionAvailable());
-  const visible = !item.isBlocked && (hasSeparateAudio || canBrowserMuxedAudio || canMseAudio || companionOk);
+  const visible = !item.isBlocked && (hasSeparateAudio || canBrowserMuxedAudio || canMseAudio || canBrowserDirectWav || companionOk);
   entry.audioExtractBtn.classList.toggle('hidden', !visible);
 }
 
@@ -592,27 +617,36 @@ function createCopyButton(entry, onStatus, doc, translate, context = {}) {
 }
 
 /**
- * Decodes inline SVG markup from a card item or data URI, or fetches remote SVG XML.
+ * Decodes, extracts symbol sprite definitions when referenced, and optimizes SVG XML markup.
  * @param {object} item
  * @returns {Promise<string>}
  */
-async function resolveSvgMarkup(item) {
+export async function resolveSvgMarkup(item) {
+  if (!item) {
+    return '';
+  }
   if (item.svgMarkup) {
-    return item.svgMarkup;
+    return optimizeSvgMarkup(item.svgMarkup) || item.svgMarkup;
   }
   if (isSvgDataUrl(item.url)) {
-    const commaIdx = item.url.indexOf(',');
-    if (commaIdx >= 0) {
-      const header = item.url.slice(0, commaIdx).toLowerCase();
-      const body = item.url.slice(commaIdx + 1);
-      return header.includes(';base64') ? atob(body) : decodeURIComponent(body);
-    }
+    const decoded = decodeSvgDataUrl(item.url);
+    return optimizeSvgMarkup(decoded) || decoded;
   }
-  const resp = await fetch(item.url);
+  const { baseUrl, symbolId } = splitSvgSpriteUrl(item.url);
+  const fetchUrl = item.svgSpriteUrl || baseUrl || item.url;
+  const activeSymbolId = item.svgSymbolId || symbolId;
+  const resp = await fetch(fetchUrl);
   if (!resp.ok) {
     throw new Error('DOWNLOAD_FAILED');
   }
-  return resp.text();
+  const rawText = await resp.text();
+  if (activeSymbolId) {
+    const extracted = extractSymbolFromSvgSprite(rawText, activeSymbolId);
+    if (extracted) {
+      return extracted;
+    }
+  }
+  return optimizeSvgMarkup(rawText) || rawText;
 }
 
 /**
@@ -896,8 +930,9 @@ export function createMediaCard(item, context = {}) {
     audioExtractBtn.title = translate('popup_action_extract_audio_title');
     audioExtractBtn.addEventListener('click', () => {
       const streamMeta = context.hlsMetaByUrl ? context.hlsMetaByUrl.get(entry.item.url) : null;
-      const { hasSeparateAudio, canBrowserMuxedAudio, canMseAudio } = resolveAudioExtractCapabilities(entry, streamMeta);
-      const canBrowserAudio = hasSeparateAudio || canBrowserMuxedAudio || canMseAudio;
+      const { hasSeparateAudio, canBrowserMuxedAudio, canMseAudio, canBrowserDirectWav } =
+        resolveAudioExtractCapabilities(entry, streamMeta, context);
+      const canBrowserAudio = hasSeparateAudio || canBrowserMuxedAudio || canMseAudio || canBrowserDirectWav;
       const chosenUrl = !qualitySelect.classList.contains('hidden') ? qualitySelect.value : entry.item.url;
       const chosenAudioUrl = !audioSelect.classList.contains('hidden') ? audioSelect.value : '';
       if (context.onExtractAudio) {
@@ -927,7 +962,22 @@ export function createMediaCard(item, context = {}) {
   }
 
   let stopRecordBtn = null;
+  let saveLargeBtn = null;
   if (item.isStream) {
+    saveLargeBtn = doc.createElement('button');
+    saveLargeBtn.type = 'button';
+    saveLargeBtn.className = 'action-chip save-large-btn hidden';
+    saveLargeBtn.textContent = translate('popup_action_save_large');
+    saveLargeBtn.title = translate('popup_action_save_large_title');
+    saveLargeBtn.addEventListener('click', () => {
+      const chosenUrl = !qualitySelect.classList.contains('hidden') ? qualitySelect.value : entry.item.url;
+      const chosenAudioUrl = !audioSelect.classList.contains('hidden') ? audioSelect.value : '';
+      if (context.onSaveLargeStream) {
+        context.onSaveLargeStream(entry, chosenUrl, chosenAudioUrl);
+      }
+    });
+    controls.appendChild(saveLargeBtn);
+
     stopRecordBtn = doc.createElement('button');
     stopRecordBtn.type = 'button';
     stopRecordBtn.className = 'btn btn-primary hidden';
@@ -972,6 +1022,7 @@ export function createMediaCard(item, context = {}) {
   card.appendChild(progressEl);
 
   entry.downloadBtn = downloadBtn;
+  entry.saveLargeBtn = saveLargeBtn;
   entry.stopRecordBtn = stopRecordBtn;
   entry.cancelBtn = cancelBtn;
   entry.progressEl = progressEl;

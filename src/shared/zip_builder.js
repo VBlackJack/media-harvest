@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { DEFAULT_FILENAMES, LIMITS, ZIP_COMPRESSIBLE_EXTENSIONS } from '../config/constants.js';
+import { DEFAULT_FILENAMES, LIMITS, ZIP_COMPRESSIBLE_EXTENSIONS, ZIP_RENAME_MODES } from '../config/constants.js';
 
 const ZIP_LOCAL_HEADER_SIG = 0x04034b50;
 const ZIP_CENTRAL_HEADER_SIG = 0x02014b50;
@@ -311,4 +311,29 @@ export function buildZipBlob(entries) {
  */
 export async function buildZipBlobAsync(entries) {
   return new Blob([await buildZipUint8ArrayAsync(entries)], { type: 'application/zip' });
+}
+
+/**
+ * Resolves the filename for a ZIP archive entry under original or sequential indexed naming.
+ * @param {string} rawFilename
+ * @param {string} targetExt
+ * @param {number} index
+ * @param {number} totalCount
+ * @param {string} renameMode
+ * @returns {string}
+ */
+export function resolveZipEntryFilename(rawFilename, targetExt, index, totalCount, renameMode) {
+  const cleanExt = String(targetExt || DEFAULT_FILENAMES.FALLBACK_EXT).replace(/^\.+/, '') || DEFAULT_FILENAMES.FALLBACK_EXT;
+  if (renameMode === ZIP_RENAME_MODES.SEQUENTIAL) {
+    const padWidth = Math.max(3, String(Math.max(1, totalCount || 1)).length);
+    const paddedIndex = String((index || 0) + 1).padStart(padWidth, '0');
+    return `${DEFAULT_FILENAMES.BASE}_${paddedIndex}.${cleanExt}`;
+  }
+  const fallbackName = `${DEFAULT_FILENAMES.BASE}_${(index || 0) + 1}.${cleanExt}`;
+  const candidate = typeof rawFilename === 'string' && rawFilename.trim() ? rawFilename.trim() : fallbackName;
+  if (targetExt) {
+    const base = candidate.replace(/\.[^./\\]+$/, '');
+    return `${base || `${DEFAULT_FILENAMES.BASE}_${(index || 0) + 1}`}.${cleanExt}`;
+  }
+  return candidate;
 }

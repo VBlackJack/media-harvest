@@ -200,6 +200,7 @@ function createFakePopupDocument() {
   makeTracked('select', 'imageExtFilterSelect');
   makeTracked('select', 'imageScaleSelect');
   makeTracked('select', 'imageConvertSelect', ['hidden']);
+  makeTracked('select', 'zipRenameSelect', ['hidden']);
   makeTracked('div', 'selectionBar', ['hidden']);
   makeTracked('button', 'selectAllBtn');
   makeTracked('button', 'clearSelectionBtn', ['hidden']);
@@ -1003,12 +1004,15 @@ test('popup controller manages quick image filters, SVG scale, batch ZIP export,
   assert.equal(controller.els.imageLightbox.classList.contains('hidden'), true);
   assert.equal(controller.els.lightboxImg.src, '');
 
-  // Select visible images + choose PNG conversion -> Download ZIP bundles with EXPORT_BATCH_ZIP
+  // Select visible images + choose PNG conversion + sequential ZIP naming -> Download ZIP bundles with EXPORT_BATCH_ZIP
   await controller.els.selectAllBtn.dispatchEvent({ type: 'click' });
   controller.els.imageConvertSelect.value = IMAGE_CONVERT_FORMATS.PNG;
   await controller.els.imageConvertSelect.dispatchEvent({ type: 'change' });
+  controller.els.zipRenameSelect.value = 'sequential';
+  await controller.els.zipRenameSelect.dispatchEvent({ type: 'change' });
   await controller.els.downloadZipBtn.dispatchEvent({ type: 'click' });
   assert.equal(zipPayloads.length, 1);
+  assert.equal(zipPayloads[0].renameMode, 'sequential');
   assert.equal(zipPayloads[0].items.length, 3);
   assert.equal(zipPayloads[0].items[0].convertTo, 'png');
   assert.equal(zipPayloads[0].items[0].rasterSizePx, 2048);
@@ -1031,6 +1035,15 @@ test('popup controller manages Tab Capture REC toggle/recovery and Lightbox Pro 
       svgMarkup: svgCode,
       source: 'dom',
       suggestedFilename: 'mark.svg'
+    },
+    {
+      url: 'https://cdn.example.com/huge.m3u8',
+      type: 'stream',
+      ext: 'm3u8',
+      isStream: true,
+      streamKind: 'hls',
+      source: 'network',
+      suggestedFilename: 'movie.mp4'
     }
   ];
 
@@ -1047,6 +1060,16 @@ test('popup controller manages Tab Capture REC toggle/recovery and Lightbox Pro 
         }
         if (msg.type === MESSAGE_TYPES.GET_ACTIVE_BUILDS) {
           return { ok: true, builds: [] };
+        }
+        if (msg.type === MESSAGE_TYPES.INSPECT_HLS) {
+          return {
+            ok: true,
+            encrypted: false,
+            isDynamic: false,
+            variants: [
+              { url: 'https://cdn.example.com/huge_4k.m3u8', height: 2160, estimatedBytes: 700 * 1024 * 1024 }
+            ]
+          };
         }
         if (msg.type === MESSAGE_TYPES.START_TAB_CAPTURE) {
           return new Promise((resolve) => {
@@ -1112,4 +1135,14 @@ test('popup controller manages Tab Capture REC toggle/recovery and Lightbox Pro 
   assert.ok(sentMessages.some((m) => m.type === MESSAGE_TYPES.STOP_TAB_CAPTURE));
   assert.equal(controller.els.tabCaptureBtn.classList.contains('is-recording'), false);
   assert.equal(controller.els.tabCaptureLabel.textContent, 'popup_action_capture_tab');
+
+  // Stream card >512 MB direct saver action dispatches OPEN_STREAM_SAVER
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const hugeEntry = controller.state.cardsByUrl.get(items[1].url);
+  assert.equal(hugeEntry.saveLargeBtn.classList.contains('hidden'), false);
+  await hugeEntry.saveLargeBtn.dispatchEvent({ type: 'click' });
+  const saverMsg = sentMessages.find((m) => m.type === MESSAGE_TYPES.OPEN_STREAM_SAVER);
+  assert.ok(saverMsg);
+  assert.equal(saverMsg.payload.playlistUrl, 'https://cdn.example.com/huge_4k.m3u8');
+  assert.equal(saverMsg.payload.isStream, true);
 });

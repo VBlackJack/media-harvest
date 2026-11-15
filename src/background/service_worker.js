@@ -15,6 +15,7 @@
  */
 
 import {
+  AUDIO_EXPORT_FORMATS,
   AUDIO_EXTENSIONS,
   BADGE_CONFIG,
   DEFAULT_FILENAMES,
@@ -28,8 +29,10 @@ import {
   NATIVE_HOST,
   OFFSCREEN_DOCUMENT_PATH,
   STORAGE_KEYS,
+  STREAM_SAVER_PATH,
   SUBTITLE_EXTENSIONS,
-  VIDEO_EXTENSIONS
+  VIDEO_EXTENSIONS,
+  ZIP_RENAME_MODES
 } from '../config/constants.js';
 import { parseDashManifest } from '../shared/dash_parser.js';
 import {
@@ -670,7 +673,9 @@ async function collectMediaForTab(tabId, tabUrl) {
     deduplicateMedia([...networkItems, ...mseItems, ...normalizedDomItems]),
     domResult.videoElements || []
   ).map((item) => {
-    const baseStem = deriveFilenameStem(item.url, item.title || domResult.pageTitle, tabUrl);
+    const baseStem = item.svgSymbolId
+      ? item.svgSymbolId
+      : deriveFilenameStem(item.url, item.title || domResult.pageTitle, tabUrl);
     const templatedStem = applyFilenameTemplate(settings.filenameTemplate, {
       stem: baseStem,
       pageUrl: tabUrl
@@ -1091,6 +1096,7 @@ async function startStreamDownload(payload, rawStem, requestId) {
       originalUrl: payload.url,
       audioUrl: typeof payload.audioUrl === 'string' ? payload.audioUrl : '',
       audioOnly: Boolean(payload.audioOnly),
+      audioFormat: settings.audioExportFormat || AUDIO_EXPORT_FORMATS.M4A,
       concurrency: settings.hlsFetchConcurrency,
       qualityPreference: settings.defaultQuality,
       pollIntervalMs: typeof payload.pollIntervalMs === 'number' ? payload.pollIntervalMs : undefined
@@ -1127,12 +1133,13 @@ async function startMseDownload(payload, rawStem, requestId) {
     saveAs: Boolean(payload.saveAs),
     allowFolders: Boolean(payload.allowFolders),
     tabId,
-    runOffscreenBuild: () => {
+    runOffscreenBuild: (settings) => {
       const msg = {
         type: MESSAGE_TYPES.EXPORT_MSE_STREAM,
         requestId,
         mseId,
-        audioOnly: Boolean(payload.audioOnly)
+        audioOnly: Boolean(payload.audioOnly),
+        audioFormat: (settings && settings.audioExportFormat) || AUDIO_EXPORT_FORMATS.M4A
       };
       if (typeof frameId === 'number') {
         return chrome.tabs.sendMessage(tabId, msg, { frameId });
@@ -1409,7 +1416,7 @@ async function startImageConversionDownload(payload, rawStem, requestId) {
     allowFolders: Boolean(payload.allowFolders),
     tabId: typeof payload.tabId === 'number' ? payload.tabId : -1,
     referer: typeof payload.referer === 'string' ? payload.referer : '',
-    buildOffscreenMessage: () => ({
+    buildOffscreenMessage: (settings) => ({
       target: 'offscreen',
       type: MESSAGE_TYPES.OFFSCREEN_CONVERT_IMAGE,
       requestId,
@@ -1417,7 +1424,62 @@ async function startImageConversionDownload(payload, rawStem, requestId) {
       targetFormat,
       width: Number.isFinite(payload.width) ? payload.width : 0,
       height: Number.isFinite(payload.height) ? payload.height : 0,
-      rasterSizePx: Number.isFinite(payload.rasterSizePx) ? payload.rasterSizePx : 0
+      rasterSizePx: Number.isFinite(payload.rasterSizePx) ? payload.rasterSizePx : 0,
+      jpgQualityPercent: settings.jpgQualityPercent,
+      symbolId: typeof payload.svgSymbolId === 'string' ? payload.svgSymbolId : ''
+    })
+  });
+}
+
+/**
+ * Extracts and optimizes an external SVG sprite symbol via offscreen and initiates download.
+ * @param {object} payload
+ * @param {string} rawStem
+ * @param {string} requestId
+ * @returns {Promise<{ downloadId: number, requestId: string }>}
+ */
+async function startSvgSymbolDownload(payload, rawStem, requestId) {
+  return executeOffscreenBlobDownload({
+    requestId,
+    targetUrl: payload.url,
+    rawStem,
+    fallbackExt: DEFAULT_FILENAMES.SVG_EXT,
+    saveAs: Boolean(payload.saveAs),
+    allowFolders: Boolean(payload.allowFolders),
+    tabId: typeof payload.tabId === 'number' ? payload.tabId : -1,
+    referer: typeof payload.referer === 'string' ? payload.referer : '',
+    buildOffscreenMessage: () => ({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_EXTRACT_SVG_SYMBOL,
+      requestId,
+      targetUrl: payload.url,
+      symbolId: typeof payload.svgSymbolId === 'string' ? payload.svgSymbolId : ''
+    })
+  });
+}
+
+/**
+ * Fetches a direct HTTP video/audio URL and decodes its audio track into PCM 16-bit WAV in offscreen.
+ * @param {object} payload
+ * @param {string} rawStem
+ * @param {string} requestId
+ * @returns {Promise<{ downloadId: number, requestId: string }>}
+ */
+async function startDirectAudioWavDownload(payload, rawStem, requestId) {
+  return executeOffscreenBlobDownload({
+    requestId,
+    targetUrl: payload.url,
+    rawStem,
+    fallbackExt: DEFAULT_FILENAMES.AUDIO_WAV_EXT,
+    saveAs: Boolean(payload.saveAs),
+    allowFolders: Boolean(payload.allowFolders),
+    tabId: typeof payload.tabId === 'number' ? payload.tabId : -1,
+    referer: typeof payload.referer === 'string' ? payload.referer : '',
+    buildOffscreenMessage: () => ({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_DECODE_WAV,
+      requestId,
+      targetUrl: payload.url
     })
   });
 }
@@ -1510,9 +1572,63 @@ async function handleExportBatchZip(payload) {
       type: MESSAGE_TYPES.OFFSCREEN_BUILD_ZIP_BLOB,
       requestId,
       items,
-      concurrency: settings.hlsFetchConcurrency
+      concurrency: settings.hlsFetchConcurrency,
+      jpgQualityPercent: settings.jpgQualityPercent,
+      renameMode: payload.renameMode === ZIP_RENAME_MODES.SEQUENTIAL
+        ? ZIP_RENAME_MODES.SEQUENTIAL
+        : ZIP_RENAME_MODES.ORIGINAL
     })
   });
+}
+
+/**
+ * Persists a large-stream descriptor in session storage and opens the direct disk saver tab.
+ * @param {object} payload
+ * @returns {Promise<{ jobId: string, tabId: number }>}
+ */
+async function handleOpenStreamSaver(payload) {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('INVALID_URL');
+  }
+  const targetUrl = typeof payload.playlistUrl === 'string' && payload.playlistUrl
+    ? payload.playlistUrl
+    : (typeof payload.url === 'string' ? payload.url : '');
+  if (!isHttpUrl(targetUrl)) {
+    throw new Error('INVALID_URL');
+  }
+  const settings = await loadSettings();
+  const jobId = `saver_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const rawStem = resolveDownloadStem(payload.filename, targetUrl);
+  const jobRecord = {
+    jobId,
+    url: typeof payload.url === 'string' ? payload.url : targetUrl,
+    playlistUrl: targetUrl,
+    audioUrl: typeof payload.audioUrl === 'string' ? payload.audioUrl : '',
+    isStream: Boolean(payload.isStream),
+    referer: typeof payload.referer === 'string' ? payload.referer : '',
+    suggestedFilename: sanitizeFilename(rawStem, DEFAULT_FILENAMES.HLS_FMP4_EXT),
+    qualityPreference: settings.defaultQuality,
+    concurrency: settings.hlsFetchConcurrency
+  };
+  await chrome.storage.session.set({
+    [`${STORAGE_KEYS.STREAM_SAVER_JOB_PREFIX}${jobId}`]: jobRecord
+  });
+  const refererRuleId = jobRecord.referer
+    ? await addTemporaryRefererRule(targetUrl, jobRecord.referer).catch(() => null)
+    : null;
+  const saverUrl = chrome.runtime.getURL(`${STREAM_SAVER_PATH}?jobId=${encodeURIComponent(jobId)}`);
+  const createdTab = await chrome.tabs.create({ url: saverUrl });
+  const saverTabId = createdTab && typeof createdTab.id === 'number' ? createdTab.id : -1;
+  if (refererRuleId !== null && saverTabId >= 0 && chrome.tabs && chrome.tabs.onRemoved) {
+    const cleanupOnClose = (closedTabId) => {
+      if (closedTabId === saverTabId) {
+        chrome.tabs.onRemoved.removeListener(cleanupOnClose);
+        removeTemporaryRefererRule(refererRuleId).catch(() => {});
+      }
+    };
+    chrome.tabs.onRemoved.addListener(cleanupOnClose);
+  }
+  return { jobId, tabId: saverTabId };
 }
 
 /**
@@ -1542,6 +1658,12 @@ async function handleDownloadMedia(payload) {
     return startImageConversionDownload(payload, rawStem, requestId);
   }
   if (!payload.isStream) {
+    if (payload.audioOnly) {
+      return startDirectAudioWavDownload(payload, rawStem, requestId);
+    }
+    if (payload.svgSymbolId) {
+      return startSvgSymbolDownload(payload, rawStem, requestId);
+    }
     return startDirectDownload(payload, rawStem, requestId);
   }
   return startStreamDownload(payload, rawStem, requestId);
@@ -1648,6 +1770,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === MESSAGE_TYPES.EXPORT_BATCH_ZIP) {
     handleExportBatchZip(message.payload)
+      .then((res) => sendResponse({ ok: true, ...res }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.OPEN_STREAM_SAVER) {
+    handleOpenStreamSaver(message.payload)
       .then((res) => sendResponse({ ok: true, ...res }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
