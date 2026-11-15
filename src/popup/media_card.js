@@ -15,6 +15,8 @@
  */
 
 import {
+  DEFAULT_FILENAMES,
+  IMAGE_CONVERT_FORMATS,
   LIMITS,
   MEDIA_SOURCES,
   MEDIA_TYPES,
@@ -23,6 +25,7 @@ import {
 } from '../config/constants.js';
 import { isDashDescriptor } from '../shared/fetch_utils.js';
 import { t } from '../shared/i18n.js';
+import { isSvgDataUrl } from '../shared/media_classifier.js';
 import { formatBytes, formatDuration, getEstimatedStreamBytes, localizeError } from './popup_helpers.js';
 import { closeCardPreview, refreshOpenPreview, toggleVideoPreview } from './preview_player.js';
 
@@ -69,7 +72,11 @@ function createPlayOverlay(doc) {
  */
 function renderThumbnailContent(thumbEl, item, doc) {
   const isVideoLike = item.type === MEDIA_TYPES.VIDEO || item.type === MEDIA_TYPES.STREAM;
-  const key = `${item.type}|${item.poster || ''}|${item.ext || ''}`;
+  const isSvgImage = item.type === MEDIA_TYPES.IMAGE && (
+    (item.ext || '').toLowerCase() === DEFAULT_FILENAMES.SVG_EXT || isSvgDataUrl(item.url)
+  );
+  thumbEl.classList.toggle('thumb-svg', isSvgImage);
+  const key = `${item.type}|${item.poster || ''}|${item.ext || ''}|${isSvgImage ? item.url : ''}`;
   if (thumbEl.dataset.thumbKey === key) {
     return;
   }
@@ -149,6 +156,9 @@ export function renderBadges(badgesEl, item, entry = null, context = {}) {
   const isDash = isDashDescriptor(item.url, item.mimeType, meta);
   if (item.isStream) {
     badgesEl.appendChild(createBadge(translate(isDash ? 'popup_badge_dash' : 'popup_badge_stream'), 'accent', doc));
+    if (meta && meta.decryptableAes128) {
+      badgesEl.appendChild(createBadge(translate('popup_badge_aes128'), 'default', doc));
+    }
     if (meta && meta.isDynamic) {
       badgesEl.appendChild(createBadge(translate('popup_badge_live'), 'warning', doc));
     }
@@ -354,6 +364,23 @@ function setPreviewDisabled(entry, disabled) {
 }
 
 /**
+ * Updates visibility of the audio extraction button based on separated stream audio tracks or companion availability.
+ * @param {object} entry
+ * @param {object} [context={}]
+ */
+export function refreshAudioExtractButton(entry, context = {}) {
+  if (!entry || !entry.audioExtractBtn) {
+    return;
+  }
+  const { item } = entry;
+  const meta = context.hlsMetaByUrl ? context.hlsMetaByUrl.get(item.url) : null;
+  const hasSeparateAudio = Boolean(meta && Array.isArray(meta.audioTracks) && meta.audioTracks.length > 0);
+  const companionOk = Boolean(context.isCompanionAvailable && context.isCompanionAvailable());
+  const visible = !item.isMse && !item.isBlocked && (hasSeparateAudio || companionOk);
+  entry.audioExtractBtn.classList.toggle('hidden', !visible);
+}
+
+/**
  * Applies inspected stream metadata (DRM, live status, video/audio variants) onto a card.
  * @param {object} entry
  * @param {object} meta
@@ -382,12 +409,15 @@ export function applyStreamMetadata(entry, meta, context = {}) {
     progressEl.textContent = translate('popup_error_encrypted_stream');
     progressEl.classList.remove('hidden');
     renderBadges(entry.badgesEl, item, entry, context);
+    refreshAudioExtractButton(entry, context);
     return;
   }
 
-  if (meta.isDynamic) {
+  const isLiveHls = Boolean(meta.isDynamic && meta.streamFormat === 'hls');
+  if (meta.isDynamic && !isLiveHls) {
     item.isDynamic = true;
     item.isBlocked = true;
+    item.canRecordLive = false;
     downloadBtn.disabled = true;
     if (entry.selectCheckbox) {
       entry.selectCheckbox.checked = false;
@@ -401,16 +431,28 @@ export function applyStreamMetadata(entry, meta, context = {}) {
     progressEl.textContent = translate('popup_error_live_stream');
     progressEl.classList.remove('hidden');
     renderBadges(entry.badgesEl, item, entry, context);
+    refreshAudioExtractButton(entry, context);
     return;
   }
 
-  item.isDynamic = false;
+  item.isDynamic = isLiveHls;
   item.isBlocked = false;
+  item.canRecordLive = isLiveHls;
+  downloadBtn.disabled = Boolean(entry.activeRequestId);
+  downloadBtn.textContent = translate(isLiveHls ? 'popup_action_record_live' : 'popup_action_download');
   if (entry.selectCheckbox) {
-    entry.selectCheckbox.disabled = false;
+    if (isLiveHls) {
+      entry.selectCheckbox.checked = false;
+      entry.selectCheckbox.disabled = true;
+      if (context.onSelectionChange) {
+        context.onSelectionChange(entry, false);
+      }
+    } else {
+      entry.selectCheckbox.disabled = false;
+    }
   }
 
-  setPreviewDisabled(entry, false);
+  setPreviewDisabled(entry, isLiveHls);
   if (!entry.activeRequestId && !entry.showingCapWarning) {
     progressEl.classList.add('hidden');
     progressEl.textContent = '';
@@ -444,6 +486,7 @@ export function applyStreamMetadata(entry, meta, context = {}) {
   }
   renderBadges(entry.badgesEl, item, entry, context);
   updateStreamLimitWarning(entry, context);
+  refreshAudioExtractButton(entry, context);
 }
 
 /**
@@ -508,6 +551,96 @@ function createCopyButton(entry, onStatus, doc, translate, context = {}) {
   });
 
   return copyBtn;
+}
+
+/**
+ * Decodes inline SVG markup from a card item or data URI, or fetches remote SVG XML.
+ * @param {object} item
+ * @returns {Promise<string>}
+ */
+async function resolveSvgMarkup(item) {
+  if (item.svgMarkup) {
+    return item.svgMarkup;
+  }
+  if (isSvgDataUrl(item.url)) {
+    const commaIdx = item.url.indexOf(',');
+    if (commaIdx >= 0) {
+      const header = item.url.slice(0, commaIdx).toLowerCase();
+      const body = item.url.slice(commaIdx + 1);
+      return header.includes(';base64') ? atob(body) : decodeURIComponent(body);
+    }
+  }
+  const resp = await fetch(item.url);
+  if (!resp.ok) {
+    throw new Error('DOWNLOAD_FAILED');
+  }
+  return resp.text();
+}
+
+/**
+ * Builds the Copy SVG code button for inline and external SVG cards.
+ * @param {object} entry
+ * @param {(text: string, isError?: boolean) => void} onStatus
+ * @param {Document} doc
+ * @param {Function} translate
+ * @param {object} [context={}]
+ * @returns {HTMLButtonElement}
+ */
+function createCopySvgButton(entry, onStatus, doc, translate, context = {}) {
+  const svgBtn = doc.createElement('button');
+  svgBtn.type = 'button';
+  svgBtn.className = 'action-chip copy-svg-btn';
+  svgBtn.textContent = translate('popup_action_copy_svg');
+
+  let resetTimer = null;
+  svgBtn.addEventListener('click', async () => {
+    try {
+      const markup = await resolveSvgMarkup(entry.item);
+      const writeFn = context.writeClipboardFn
+        || (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function'
+          ? (text) => navigator.clipboard.writeText(text)
+          : null);
+      if (writeFn) {
+        await writeFn(markup);
+      }
+      svgBtn.textContent = translate('popup_action_copied');
+      svgBtn.classList.add('is-copied');
+      onStatus(translate('popup_action_copied'));
+      clearTimeout(resetTimer);
+      resetTimer = setTimeout(() => {
+        svgBtn.textContent = translate('popup_action_copy_svg');
+        svgBtn.classList.remove('is-copied');
+      }, LIMITS.COPY_FEEDBACK_MS);
+    } catch (err) {
+      onStatus(localizeError(err && err.message, translate), true);
+    }
+  });
+
+  return svgBtn;
+}
+
+/**
+ * Builds a quick PNG/JPG conversion button for raster images and SVG graphics.
+ * @param {'png' | 'jpg'} targetFormat
+ * @param {object} entry
+ * @param {Document} doc
+ * @param {Function} translate
+ * @param {object} context
+ * @returns {HTMLButtonElement}
+ */
+function createImageConvertButton(targetFormat, entry, doc, translate, context) {
+  const isPng = targetFormat === IMAGE_CONVERT_FORMATS.PNG;
+  const btn = doc.createElement('button');
+  btn.type = 'button';
+  btn.className = 'action-chip convert-btn';
+  btn.textContent = translate(isPng ? 'popup_action_convert_png' : 'popup_action_convert_jpg');
+  btn.title = translate(isPng ? 'popup_action_convert_png_title' : 'popup_action_convert_jpg_title');
+  btn.addEventListener('click', () => {
+    if (context.onConvertImage) {
+      context.onConvertImage(entry, targetFormat);
+    }
+  });
+  return btn;
 }
 
 /**
@@ -670,15 +803,59 @@ export function createMediaCard(item, context = {}) {
     entry.retryInspectBtn = retryInspectBtn;
   }
 
-  const copyBtn = createCopyButton(entry, context.onStatus || (() => {}), doc, translate, context);
-  controls.appendChild(copyBtn);
-  entry.copyBtn = copyBtn;
+  const copyBtn = isSvgDataUrl(item.url)
+    ? null
+    : createCopyButton(entry, context.onStatus || (() => {}), doc, translate, context);
+  if (copyBtn) {
+    controls.appendChild(copyBtn);
+    entry.copyBtn = copyBtn;
+  }
+
+  const itemExt = (item.ext || '').toLowerCase();
+  if (item.type === MEDIA_TYPES.IMAGE && !item.isMse) {
+    if (itemExt === DEFAULT_FILENAMES.SVG_EXT || isSvgDataUrl(item.url)) {
+      const copySvgBtn = createCopySvgButton(entry, context.onStatus || (() => {}), doc, translate, context);
+      controls.appendChild(copySvgBtn);
+      entry.copySvgBtn = copySvgBtn;
+    }
+    if (itemExt !== IMAGE_CONVERT_FORMATS.PNG) {
+      const toPngBtn = createImageConvertButton(IMAGE_CONVERT_FORMATS.PNG, entry, doc, translate, context);
+      controls.appendChild(toPngBtn);
+      entry.convertPngBtn = toPngBtn;
+    }
+    if (itemExt !== IMAGE_CONVERT_FORMATS.JPG && itemExt !== 'jpeg') {
+      const toJpgBtn = createImageConvertButton(IMAGE_CONVERT_FORMATS.JPG, entry, doc, translate, context);
+      controls.appendChild(toJpgBtn);
+      entry.convertJpgBtn = toJpgBtn;
+    }
+  }
 
   const isCompanionEligible = !item.isMse && (
     item.type === MEDIA_TYPES.VIDEO ||
     item.type === MEDIA_TYPES.STREAM ||
     item.type === MEDIA_TYPES.AUDIO
   );
+  if (!item.isMse && (item.type === MEDIA_TYPES.VIDEO || item.type === MEDIA_TYPES.STREAM)) {
+    const audioExtractBtn = doc.createElement('button');
+    audioExtractBtn.type = 'button';
+    audioExtractBtn.className = 'action-chip audio-extract-btn hidden';
+    audioExtractBtn.textContent = translate('popup_action_extract_audio');
+    audioExtractBtn.title = translate('popup_action_extract_audio_title');
+    audioExtractBtn.addEventListener('click', () => {
+      const streamMeta = context.hlsMetaByUrl ? context.hlsMetaByUrl.get(entry.item.url) : null;
+      const hasSeparateAudio = Boolean(
+        streamMeta && Array.isArray(streamMeta.audioTracks) && streamMeta.audioTracks.length > 0
+      );
+      const chosenUrl = !qualitySelect.classList.contains('hidden') ? qualitySelect.value : entry.item.url;
+      const chosenAudioUrl = !audioSelect.classList.contains('hidden') ? audioSelect.value : '';
+      if (context.onExtractAudio) {
+        context.onExtractAudio(entry, chosenUrl, chosenAudioUrl, !hasSeparateAudio);
+      }
+    });
+    controls.appendChild(audioExtractBtn);
+    entry.audioExtractBtn = audioExtractBtn;
+    refreshAudioExtractButton(entry, context);
+  }
   if (isCompanionEligible) {
     const companionBtn = doc.createElement('button');
     companionBtn.type = 'button';
@@ -695,6 +872,24 @@ export function createMediaCard(item, context = {}) {
     });
     controls.appendChild(companionBtn);
     entry.companionBtn = companionBtn;
+  }
+
+  let stopRecordBtn = null;
+  if (item.isStream) {
+    stopRecordBtn = doc.createElement('button');
+    stopRecordBtn.type = 'button';
+    stopRecordBtn.className = 'btn btn-primary hidden';
+    stopRecordBtn.textContent = translate('popup_action_stop_record');
+    stopRecordBtn.addEventListener('click', () => {
+      if (!entry.activeRequestId) {
+        return;
+      }
+      stopRecordBtn.disabled = true;
+      if (context.onStopRecord) {
+        context.onStopRecord(entry.activeRequestId);
+      }
+    });
+    controls.appendChild(stopRecordBtn);
   }
 
   const cancelBtn = doc.createElement('button');
@@ -725,6 +920,7 @@ export function createMediaCard(item, context = {}) {
   card.appendChild(progressEl);
 
   entry.downloadBtn = downloadBtn;
+  entry.stopRecordBtn = stopRecordBtn;
   entry.cancelBtn = cancelBtn;
   entry.progressEl = progressEl;
 
@@ -732,7 +928,9 @@ export function createMediaCard(item, context = {}) {
     const chosenUrl = !qualitySelect.classList.contains('hidden') ? qualitySelect.value : entry.item.url;
     const chosenAudioUrl = !audioSelect.classList.contains('hidden') ? audioSelect.value : '';
     if (context.onDownload) {
-      context.onDownload(entry, chosenUrl, chosenAudioUrl);
+      context.onDownload(entry, chosenUrl, chosenAudioUrl, {
+        recordLive: Boolean(entry.item.canRecordLive)
+      });
     }
   });
 
@@ -773,6 +971,7 @@ export function updateCardEntry(entry, nextItem, context = {}) {
   if (entry.companionBtn && context.isCompanionAvailable) {
     entry.companionBtn.classList.toggle('hidden', !context.isCompanionAvailable());
   }
+  refreshAudioExtractButton(entry, context);
   if (nextItem.isStream && nextItem.type === MEDIA_TYPES.STREAM && !entry.hlsHydrated && context.onHydrateRequest) {
     context.onHydrateRequest(entry);
   }

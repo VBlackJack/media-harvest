@@ -16,7 +16,14 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_SETTINGS, MESSAGE_TYPES, SORT_MODES, STORAGE_KEYS } from '../src/config/constants.js';
+import {
+  DEFAULT_SETTINGS,
+  IMAGE_CONVERT_FORMATS,
+  MESSAGE_TYPES,
+  POPUP_VIEW_MODES,
+  SORT_MODES,
+  STORAGE_KEYS
+} from '../src/config/constants.js';
 import { createPopupController } from '../src/popup/popup.js';
 
 function createFakeNode(tagName, id = '', initialClasses = []) {
@@ -187,6 +194,8 @@ function createFakePopupDocument() {
   makeTracked('div', 'statusBanner', ['hidden']);
   makeTracked('input', 'searchInput');
   makeTracked('select', 'sortSelect');
+  makeTracked('button', 'viewModeBtn');
+  makeTracked('select', 'imageConvertSelect', ['hidden']);
   makeTracked('div', 'selectionBar', ['hidden']);
   makeTracked('button', 'selectAllBtn');
   makeTracked('button', 'clearSelectionBtn', ['hidden']);
@@ -205,6 +214,7 @@ function createFakePopupDocument() {
   makeTracked('span', 'countAll');
   makeTracked('span', 'countVideos');
   makeTracked('span', 'countImages');
+  makeTracked('span', 'countSvg');
   makeTracked('span', 'countAudio');
   makeTracked('span', 'countSubtitles');
 
@@ -214,6 +224,8 @@ function createFakePopupDocument() {
   filterVideos.dataset.filter = 'videos';
   const filterImages = makeTracked('button', 'filterImages', ['filter-btn']);
   filterImages.dataset.filter = 'images';
+  const filterSvg = makeTracked('button', 'filterSvg', ['filter-btn']);
+  filterSvg.dataset.filter = 'svg';
   const filterAudio = makeTracked('button', 'filterAudio', ['filter-btn']);
   filterAudio.dataset.filter = 'audio';
   const filterSubtitles = makeTracked('button', 'filterSubtitles', ['filter-btn']);
@@ -223,7 +235,9 @@ function createFakePopupDocument() {
     documentElement: { lang: '' },
     getElementById: (id) => ids.get(id) || null,
     querySelectorAll: (sel) => (
-      sel === '.filter-btn' ? [filterAll, filterVideos, filterImages, filterAudio, filterSubtitles] : []
+      sel === '.filter-btn'
+        ? [filterAll, filterVideos, filterImages, filterSvg, filterAudio, filterSubtitles]
+        : []
     ),
     createElement: (tag) => createFakeNode(tag),
     createElementNS: (_ns, tag) => createFakeNode(tag)
@@ -745,4 +759,102 @@ test('popup controller handles keyboard shortcuts, clear confirmation, and empty
   assert.equal(emptyState.children.length, 2);
   assert.equal(emptyState.children[0].textContent, 'popup_status_empty');
   assert.equal(emptyState.children[1].textContent, 'popup_status_empty_hint');
+});
+
+test('popup controller manages SVG filter, gallery grid persistence, and image conversion', async () => {
+  const doc = createFakePopupDocument();
+  const savedUiStates = [];
+  const downloadPayloads = [];
+  const items = [
+    {
+      url: 'https://cdn.example.com/photo.webp',
+      type: 'image',
+      ext: 'webp',
+      isStream: false,
+      source: 'dom',
+      suggestedFilename: 'photo.webp'
+    },
+    {
+      url: 'data:image/svg+xml;charset=utf-8,%3Csvg%3E%3Crect%2F%3E%3C%2Fsvg%3E',
+      type: 'image',
+      ext: 'svg',
+      width: 32,
+      height: 32,
+      isStream: false,
+      source: 'dom',
+      svgMarkup: '<svg><rect/></svg>',
+      suggestedFilename: 'logo.svg'
+    }
+  ];
+
+  const chromeApi = {
+    tabs: {
+      query: async () => [{ id: 12, url: 'https://example.com' }]
+    },
+    runtime: {
+      onMessage: { addListener: () => {} },
+      sendMessage: async (msg) => {
+        if (msg.type === MESSAGE_TYPES.GET_MEDIA_FOR_TAB) {
+          return { ok: true, items, hasBlobVideo: false };
+        }
+        if (msg.type === MESSAGE_TYPES.DOWNLOAD_MEDIA) {
+          downloadPayloads.push(msg.payload);
+          return { ok: true };
+        }
+        return { ok: true };
+      }
+    },
+    storage: {
+      local: {
+        get: async () => ({
+          [STORAGE_KEYS.POPUP_UI_STATE]: {
+            filter: 'all',
+            sortBy: SORT_MODES.DEFAULT,
+            viewMode: POPUP_VIEW_MODES.GRID
+          }
+        }),
+        set: async (obj) => {
+          savedUiStates.push(obj[STORAGE_KEYS.POPUP_UI_STATE]);
+        }
+      },
+      sync: {
+        get: async () => ({})
+      }
+    }
+  };
+
+  const controller = createPopupController({
+    documentRef: doc,
+    windowRef: { addEventListener: () => {} },
+    chromeApi,
+    loadSettingsFn: async () => DEFAULT_SETTINGS,
+    translateFn: (k) => k,
+    getUiLanguageFn: () => 'en',
+    applyTranslationsFn: () => {}
+  });
+
+  await controller.init();
+  assert.equal(controller.els.countSvg.textContent, '1');
+  assert.equal(controller.els.mediaList.classList.contains('is-grid'), true);
+  assert.equal(controller.els.imageConvertSelect.classList.contains('hidden'), false);
+
+  // Toggling viewMode switches back to list and persists viewMode
+  await controller.els.viewModeBtn.dispatchEvent({ type: 'click' });
+  assert.equal(controller.state.viewMode, POPUP_VIEW_MODES.LIST);
+  assert.equal(controller.els.mediaList.classList.contains('is-grid'), false);
+  assert.equal(savedUiStates.at(-1).viewMode, POPUP_VIEW_MODES.LIST);
+
+  // Switching to SVG filter hides non-SVG images
+  await doc.getElementById('filterSvg').dispatchEvent({ type: 'click' });
+  assert.equal(controller.state.filter, 'svg');
+  assert.equal(controller.state.cardsByUrl.get('https://cdn.example.com/photo.webp').card.classList.contains('hidden'), true);
+  assert.equal(controller.state.cardsByUrl.get('data:image/svg+xml;charset=utf-8,%3Csvg%3E%3Crect%2F%3E%3C%2Fsvg%3E').card.classList.contains('hidden'), false);
+
+  // Clicking PNG convert chip dispatches convertTo='png' with .png filename
+  const svgEntry = controller.state.cardsByUrl.get('data:image/svg+xml;charset=utf-8,%3Csvg%3E%3Crect%2F%3E%3C%2Fsvg%3E');
+  await svgEntry.convertPngBtn.dispatchEvent({ type: 'click' });
+  assert.equal(downloadPayloads.length, 1);
+  assert.equal(downloadPayloads[0].convertTo, IMAGE_CONVERT_FORMATS.PNG);
+  assert.equal(downloadPayloads[0].filename, 'logo.png');
+  assert.ok(downloadPayloads[0].requestId);
 });

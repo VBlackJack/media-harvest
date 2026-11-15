@@ -742,5 +742,99 @@
   "popup_action_clear_selection": {
     "message": "Clear selection",
     "description": "Button to clear all selected checkboxes across the popup."
+  },
+  "popup_badge_aes128": {
+    "message": "AES-128",
+    "description": "Badge shown when an HLS stream uses browser-decryptable AES-128 encryption."
+  },
+  "popup_action_extract_audio": {
+    "message": "Audio",
+    "description": "Button to extract and download only the audio track from a video or stream."
+  },
+  "popup_action_extract_audio_title": {
+    "message": "Extract audio track only (M4A or MP3 via companion)",
+    "description": "Tooltip for the audio extraction action button."
+  },
+  "popup_error_no_separate_audio": {
+    "message": "This stream has no separate audio track; install companion to extract MP3.",
+    "description": "Shown when browser-only audio extraction is invoked without a separated audio stream."
+  },
+  "popup_error_invalid_key": {
+    "message": "Could not load stream decryption key.",
+    "description": "Shown when an HLS AES-128 key file cannot be fetched or is malformed."
+  },
+  "popup_filter_svg": {
+    "message": "SVG",
+    "description": "Filter tab for SVG vector graphics and icons."
+  },
+  "popup_action_view_grid": {
+    "message": "Switch to gallery grid view",
+    "description": "Tooltip to toggle gallery grid view."
+  },
+  "popup_action_view_list": {
+    "message": "Switch to detailed list view",
+    "description": "Tooltip to toggle detailed list view."
+  },
+  "popup_action_copy_svg": {
+    "message": "Copy SVG",
+    "description": "Button to copy inline SVG XML markup to clipboard."
+  },
+  "popup_action_convert_png": {
+    "message": "PNG",
+    "description": "Quick button to convert image or SVG to PNG."
+  },
+  "popup_action_convert_png_title": {
+    "message": "Convert and download as PNG",
+    "description": "Tooltip for PNG image conversion button."
+  },
+  "popup_action_convert_jpg": {
+    "message": "JPG",
+    "description": "Quick button to convert image or SVG to JPG."
+  },
+  "popup_action_convert_jpg_title": {
+    "message": "Convert and download as JPG",
+    "description": "Tooltip for JPG image conversion button."
+  },
+  "popup_image_format_label": {
+    "message": "Batch image format",
+    "description": "Accessible label for the batch image format converter selector."
+  },
+  "popup_image_format_original": {
+    "message": "Format: Original",
+    "description": "Option to keep original image format on batch download."
+  },
+  "popup_image_format_png": {
+    "message": "Images -> PNG",
+    "description": "Option to convert WebP/AVIF/SVG images to PNG on batch download."
+  },
+  "popup_image_format_jpg": {
+    "message": "Images -> JPG",
+    "description": "Option to convert WebP/AVIF/SVG images to JPG on batch download."
+  },
+  "popup_error_image_convert": {
+    "message": "Could not convert image in browser.",
+    "description": "Shown when offscreen image rasterization or conversion fails."
+  },
+  "popup_action_record_live": {
+    "message": "Record live",
+    "description": "Button to start DVR segment recording for a live HLS broadcast."
+  },
+  "popup_action_stop_record": {
+    "message": "Stop & Save",
+    "description": "Button to stop an active live HLS recording and save the recorded MP4 file."
+  },
+  "popup_status_live_recording": {
+    "message": "Recording live: $COUNT$ seg ($BYTES$)",
+    "description": "Progress text while capturing segments from a live HLS broadcast.",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "12"
+      },
+      "bytes": {
+        "content": "$2",
+        "example": "8.4 MB"
+      }
+    }
   }
 }

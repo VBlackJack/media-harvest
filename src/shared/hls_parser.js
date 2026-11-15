@@ -14,7 +14,13 @@
  * limitations under the License.
  */
 
-import { DEFAULT_FILENAMES, HLS_PLAYLIST_TYPES, HLS_TAGS } from '../config/constants.js';
+import {
+  DEFAULT_FILENAMES,
+  HLS_ENCRYPTION_METHODS,
+  HLS_PLAYLIST_TYPES,
+  HLS_TAGS
+} from '../config/constants.js';
+import { isBase64DataUri } from './hls_crypto.js';
 
 /**
  * Parses comma-separated HLS attribute lists (e.g. BANDWIDTH=800000,URI="...").
@@ -96,20 +102,54 @@ export function parseByteRangeSpec(spec, defaultOffset = 0) {
 }
 
 /**
- * Inspects an EXT-X-KEY or EXT-X-SESSION-KEY tag line for encryption method.
- * @param {string} line
- * @returns {{ encrypted: boolean, encryptionMethod: string } | null}
+ * Resolves an HLS encryption key URI allowing HTTP(S) URLs or base64 data URIs.
+ * @param {string} rawUri
+ * @param {string} baseUrl
+ * @returns {string}
  */
-function parseEncryptionTag(line) {
+function resolveKeyUri(rawUri, baseUrl) {
+  if (typeof rawUri !== 'string' || !rawUri.trim()) {
+    return '';
+  }
+  const trimmed = rawUri.trim();
+  if (isBase64DataUri(trimmed)) {
+    return trimmed;
+  }
+  return resolveHlsUrl(trimmed, baseUrl);
+}
+
+/**
+ * Inspects an EXT-X-KEY or EXT-X-SESSION-KEY tag line for encryption method and key metadata.
+ * @param {string} line
+ * @param {string} baseUrl
+ * @returns {{ active: boolean, encrypted: boolean, drmEncrypted: boolean, encryptionMethod: string, keyUrl: string, ivHex: string }}
+ */
+function parseEncryptionTag(line, baseUrl) {
   const tagLength = line.startsWith(HLS_TAGS.SESSION_KEY)
     ? HLS_TAGS.SESSION_KEY.length
     : HLS_TAGS.KEY.length;
   const attrs = parseHlsAttributes(line.slice(tagLength));
-  const method = (attrs.METHOD || 'NONE').toUpperCase();
-  if (method === 'NONE') {
-    return null;
+  const method = (attrs.METHOD || HLS_ENCRYPTION_METHODS.NONE).toUpperCase();
+  if (method === HLS_ENCRYPTION_METHODS.NONE) {
+    return {
+      active: false,
+      encrypted: false,
+      drmEncrypted: false,
+      encryptionMethod: HLS_ENCRYPTION_METHODS.NONE,
+      keyUrl: '',
+      ivHex: ''
+    };
   }
-  return { encrypted: true, encryptionMethod: method };
+  const keyUrl = attrs.URI ? resolveKeyUri(attrs.URI, baseUrl) : '';
+  const isClearAes128 = method === HLS_ENCRYPTION_METHODS.AES_128 && Boolean(keyUrl);
+  return {
+    active: true,
+    encrypted: true,
+    drmEncrypted: !isClearAes128,
+    encryptionMethod: method,
+    keyUrl,
+    ivHex: attrs.IV || ''
+  };
 }
 
 /**
@@ -188,17 +228,54 @@ export function parseHlsPlaylist(text, baseUrl) {
   let pendingStreamAttrs = null;
   let pendingSegmentDuration = 0;
   let pendingByteRangeSpec = null;
+  let currentKey = null;
   let encrypted = false;
-  let encryptionMethod = 'NONE';
+  let drmEncrypted = false;
+  let hasAes128 = false;
+  let encryptionMethod = HLS_ENCRYPTION_METHODS.NONE;
   let hasEndList = false;
   let playlistType = '';
+  let mediaSequence = 0;
+  let targetDurationSec = 0;
 
   for (const line of lines) {
+    if (line.startsWith(HLS_TAGS.MEDIA_SEQUENCE)) {
+      const seqVal = Number.parseInt(line.slice(HLS_TAGS.MEDIA_SEQUENCE.length).trim(), 10);
+      if (Number.isFinite(seqVal) && seqVal >= 0) {
+        mediaSequence = seqVal;
+      }
+      continue;
+    }
+
+    if (line.startsWith(HLS_TAGS.TARGET_DURATION)) {
+      const targetVal = Number.parseInt(line.slice(HLS_TAGS.TARGET_DURATION.length).trim(), 10);
+      if (Number.isFinite(targetVal) && targetVal > 0) {
+        targetDurationSec = targetVal;
+      }
+      continue;
+    }
+
     if (line.startsWith(HLS_TAGS.KEY) || line.startsWith(HLS_TAGS.SESSION_KEY)) {
-      const enc = parseEncryptionTag(line);
-      if (enc) {
-        encrypted = enc.encrypted;
-        encryptionMethod = enc.encryptionMethod;
+      const enc = parseEncryptionTag(line, baseUrl);
+      if (!enc.active) {
+        if (line.startsWith(HLS_TAGS.KEY)) {
+          currentKey = null;
+        }
+        continue;
+      }
+      encrypted = true;
+      encryptionMethod = enc.encryptionMethod;
+      if (enc.drmEncrypted) {
+        drmEncrypted = true;
+      } else {
+        hasAes128 = true;
+        if (line.startsWith(HLS_TAGS.KEY)) {
+          currentKey = {
+            method: enc.encryptionMethod,
+            keyUrl: enc.keyUrl,
+            ivHex: enc.ivHex
+          };
+        }
       }
       continue;
     }
@@ -277,7 +354,13 @@ export function parseHlsPlaylist(text, baseUrl) {
       pendingByteRangeSpec = null;
     }
 
-    segments.push({ url: resolvedUrl, duration: pendingSegmentDuration, byteRange });
+    segments.push({
+      url: resolvedUrl,
+      duration: pendingSegmentDuration,
+      byteRange,
+      sequenceNumber: mediaSequence + segments.length,
+      key: currentKey ? { ...currentKey } : null
+    });
     pendingSegmentDuration = 0;
   }
 
@@ -295,7 +378,11 @@ export function parseHlsPlaylist(text, baseUrl) {
     isDynamic,
     hasEndList,
     playlistType,
+    mediaSequence,
+    targetDurationSec,
     encrypted,
+    drmEncrypted,
+    decryptableAes128: Boolean(hasAes128 && !drmEncrypted),
     encryptionMethod,
     variants,
     audioTracks,

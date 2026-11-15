@@ -64,6 +64,9 @@ export function extractUrlExtension(rawUrl) {
   if (typeof rawUrl !== 'string' || !rawUrl) {
     return '';
   }
+  if (isSvgDataUrl(rawUrl)) {
+    return DEFAULT_FILENAMES.SVG_EXT;
+  }
   if (isMseUrl(rawUrl)) {
     return '';
   }
@@ -107,6 +110,27 @@ export function isHttpUrl(rawUrl) {
 }
 
 /**
+ * Checks whether a URL is a standalone SVG data URI (`data:image/svg+xml,...`).
+ * @param {string} rawUrl
+ * @returns {boolean}
+ */
+export function isSvgDataUrl(rawUrl) {
+  if (typeof rawUrl !== 'string') {
+    return false;
+  }
+  return /^data:image\/svg\+xml[;,]/i.test(rawUrl.trim());
+}
+
+/**
+ * Checks whether a URL can be downloaded via Chrome downloads (HTTP/HTTPS or SVG data URI).
+ * @param {string} rawUrl
+ * @returns {boolean}
+ */
+export function isDownloadableMediaUrl(rawUrl) {
+  return isHttpUrl(rawUrl) || isSvgDataUrl(rawUrl);
+}
+
+/**
  * Classifies a media URL and optional MIME type into a normalized descriptor.
  * Returns null for unsupported URLs or individual HLS/DASH media segments.
  * @param {string} rawUrl
@@ -114,6 +138,13 @@ export function isHttpUrl(rawUrl) {
  * @returns {{ type: string, ext: string, isStream: boolean } | null}
  */
 export function classifyMedia(rawUrl, mimeHeader = '') {
+  if (isSvgDataUrl(rawUrl)) {
+    return {
+      type: MEDIA_TYPES.IMAGE,
+      ext: DEFAULT_FILENAMES.SVG_EXT,
+      isStream: false
+    };
+  }
   if (!isHttpUrl(rawUrl)) {
     return null;
   }
@@ -278,7 +309,7 @@ export function deriveFilenameStem(rawUrl, pageTitle = '', pageUrl = '') {
     }
   }
 
-  if (isMseUrl(rawUrl)) {
+  if (isMseUrl(rawUrl) || isSvgDataUrl(rawUrl)) {
     return pageTitle || DEFAULT_FILENAMES.BASE;
   }
 
@@ -333,7 +364,8 @@ export function deduplicateMedia(items) {
       referer: item.referer || existing.referer || '',
       isMse: Boolean(item.isMse || existing.isMse),
       mseId: item.mseId || existing.mseId || '',
-      blobUrl: item.blobUrl || existing.blobUrl || ''
+      blobUrl: item.blobUrl || existing.blobUrl || '',
+      svgMarkup: item.svgMarkup || existing.svgMarkup || ''
     });
   }
 

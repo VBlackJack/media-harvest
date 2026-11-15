@@ -617,4 +617,53 @@ test('service_worker applies same-origin/CDN DNR rules, correlates multi-video b
   assert.equal(nativePorts[0].posted[0].cookiesBrowser, 'chrome');
   assert.equal(nativePorts[0].posted[0].streamProgress, true);
   assert.ok(runtimeBroadcasts.some((m) => m.type === MESSAGE_TYPES.COMPANION_PROGRESS && m.percent === 45));
+
+  // Image conversion via OFFSCREEN_CONVERT_IMAGE routes offscreen blob to chrome.downloads.download
+  const prevOffscreenResponder = offscreenResponder;
+  offscreenResponder = async (msg) => ({
+    ok: true,
+    blobUrl: 'blob:chrome-extension://id/conv-png',
+    outputExtension: msg.targetFormat || 'png'
+  });
+  try {
+    const convResp = await dispatchRuntimeMessage({
+      type: MESSAGE_TYPES.DOWNLOAD_MEDIA,
+      payload: {
+        url: 'data:image/svg+xml;charset=utf-8,%3Csvg%3E%3C%2Fsvg%3E',
+        convertTo: 'png',
+        width: 48,
+        height: 48,
+        filename: 'logo.png',
+        requestId: 'req_conv_svg_1'
+      }
+    });
+    assert.equal(convResp.ok, true);
+    assert.ok(offscreenMessages.some((m) => m.type === MESSAGE_TYPES.OFFSCREEN_CONVERT_IMAGE && m.targetFormat === 'png'));
+    assert.ok(downloads.some((d) => d.url === 'blob:chrome-extension://id/conv-png' && d.filename === 'logo.png'));
+  } finally {
+    offscreenResponder = prevOffscreenResponder;
+  }
+
+  // Live HLS DVR recording dispatches OFFSCREEN_RECORD_HLS_LIVE and STOP_LIVE_RECORD forwards stop signal
+  offscreenMessages.length = 0;
+  const liveResp = await dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.DOWNLOAD_MEDIA,
+    payload: {
+      url: 'https://cdn.example.com/live/stream.m3u8',
+      playlistUrl: 'https://cdn.example.com/live/720.m3u8',
+      isStream: true,
+      recordLive: true,
+      filename: 'live_show.mp4',
+      requestId: 'req_live_1'
+    }
+  });
+  assert.equal(liveResp.ok, true);
+  assert.ok(offscreenMessages.some((m) => m.type === MESSAGE_TYPES.OFFSCREEN_RECORD_HLS_LIVE && m.requestId === 'req_live_1'));
+
+  const stopResp = await dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.STOP_LIVE_RECORD,
+    requestId: 'req_live_1'
+  });
+  assert.equal(stopResp.ok, true);
+  assert.ok(offscreenMessages.some((m) => m.type === MESSAGE_TYPES.OFFSCREEN_STOP_LIVE_RECORD && m.requestId === 'req_live_1'));
 });

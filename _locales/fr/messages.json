@@ -742,5 +742,99 @@
   "popup_action_clear_selection": {
     "message": "Désélectionner tout",
     "description": "Bouton pour réinitialiser la sélection de cases à cocher."
+  },
+  "popup_badge_aes128": {
+    "message": "AES-128",
+    "description": "Badge indiquant un flux HLS chiffré en AES-128 déchiffrable par le navigateur."
+  },
+  "popup_action_extract_audio": {
+    "message": "Audio",
+    "description": "Bouton pour extraire et télécharger uniquement la piste audio d'une vidéo ou d'un flux."
+  },
+  "popup_action_extract_audio_title": {
+    "message": "Extraire uniquement la piste audio (M4A ou MP3 via compagnon)",
+    "description": "Info-bulle du bouton d'extraction audio."
+  },
+  "popup_error_no_separate_audio": {
+    "message": "Aucune piste audio séparée ; installez le compagnon pour extraire en MP3.",
+    "description": "Affiché lorsque l'extraction audio navigateur échoue faute de piste audio séparée."
+  },
+  "popup_error_invalid_key": {
+    "message": "Clé de déchiffrement du flux invalide ou inaccessible.",
+    "description": "Affiché lorsqu'une clé HLS AES-128 est invalide ou inaccessible."
+  },
+  "popup_filter_svg": {
+    "message": "SVG",
+    "description": "Onglet filtre pour les graphiques et icônes vectorielles SVG."
+  },
+  "popup_action_view_grid": {
+    "message": "Passer en vue galerie grille",
+    "description": "Info-bulle pour activer l'affichage en grille."
+  },
+  "popup_action_view_list": {
+    "message": "Passer en vue liste détaillée",
+    "description": "Info-bulle pour activer l'affichage en liste."
+  },
+  "popup_action_copy_svg": {
+    "message": "Copier SVG",
+    "description": "Bouton pour copier le code XML du SVG dans le presse-papiers."
+  },
+  "popup_action_convert_png": {
+    "message": "PNG",
+    "description": "Bouton rapide pour convertir une image ou SVG en PNG."
+  },
+  "popup_action_convert_png_title": {
+    "message": "Convertir et télécharger en PNG",
+    "description": "Info-bulle du bouton de conversion en PNG."
+  },
+  "popup_action_convert_jpg": {
+    "message": "JPG",
+    "description": "Bouton rapide pour convertir une image ou SVG en JPG."
+  },
+  "popup_action_convert_jpg_title": {
+    "message": "Convertir et télécharger en JPG",
+    "description": "Info-bulle du bouton de conversion en JPG."
+  },
+  "popup_image_format_label": {
+    "message": "Format de conversion en lot",
+    "description": "Libellé accessible du sélecteur de format pour les lots d'images."
+  },
+  "popup_image_format_original": {
+    "message": "Format : Original",
+    "description": "Option pour conserver le format original lors d'un lot."
+  },
+  "popup_image_format_png": {
+    "message": "Images -> PNG",
+    "description": "Option pour convertir WebP/AVIF/SVG en PNG lors du lot."
+  },
+  "popup_image_format_jpg": {
+    "message": "Images -> JPG",
+    "description": "Option pour convertir WebP/AVIF/SVG en JPG lors du lot."
+  },
+  "popup_error_image_convert": {
+    "message": "Impossible de convertir l'image dans le navigateur.",
+    "description": "Affiché lorsque la conversion d'image échoue."
+  },
+  "popup_action_record_live": {
+    "message": "Enregistrer",
+    "description": "Bouton pour démarrer l'enregistrement DVR d'un flux HLS en direct."
+  },
+  "popup_action_stop_record": {
+    "message": "Arrêter & sauver",
+    "description": "Bouton pour arrêter l'enregistrement en direct et sauvegarder le MP4."
+  },
+  "popup_status_live_recording": {
+    "message": "Enregistrement : $COUNT$ seg ($BYTES$)",
+    "description": "Progression pendant la capture des segments d'un direct HLS.",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "12"
+      },
+      "bytes": {
+        "content": "$2",
+        "example": "8.4 MB"
+      }
+    }
   }
 }

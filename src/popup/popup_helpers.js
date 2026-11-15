@@ -35,6 +35,9 @@ const ERROR_KEY_BY_CODE = Object.freeze({
   TRANSMUX_EMPTY: 'popup_error_transmux_failed',
   BUILD_ABORTED: 'popup_error_build_aborted',
   HLS_ERROR: 'popup_error_stream_failed',
+  NO_SEPARATE_AUDIO_TRACK: 'popup_error_no_separate_audio',
+  INVALID_KEY: 'popup_error_invalid_key',
+  IMAGE_CONVERT_FAILED: 'popup_error_image_convert',
   MSE_NOT_FOUND: 'popup_error_mse_failed',
   MSE_TIMEOUT: 'popup_error_mse_failed',
   MSE_EXPORT_FAILED: 'popup_error_mse_failed',
@@ -105,6 +108,9 @@ export function matchesFilter(item, filter) {
   }
   if (filter === 'images') {
     return item.type === MEDIA_TYPES.IMAGE;
+  }
+  if (filter === 'svg') {
+    return (item.ext || '').toLowerCase() === 'svg';
   }
   if (filter === 'audio') {
     return item.type === MEDIA_TYPES.AUDIO;
@@ -193,6 +199,7 @@ export function matchesSearch(item, rawQuery) {
       if (typeTarget === 'direct') return !item.isStream && !item.isMse;
       if (typeTarget === 'video') return item.type === 'video' || item.type === 'stream';
       if (typeTarget === 'image') return item.type === 'image';
+      if (typeTarget === 'svg') return ext === 'svg';
       if (typeTarget === 'audio') return item.type === 'audio';
       if (typeTarget === 'subtitles' || typeTarget === 'subtitle') return item.type === 'subtitle';
     }

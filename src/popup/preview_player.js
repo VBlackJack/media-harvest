@@ -21,6 +21,12 @@ import {
   isDashDescriptor,
   looksLikeDashXml
 } from '../shared/fetch_utils.js';
+import {
+  decodeBase64DataUri,
+  decryptAes128Segment,
+  isBase64DataUri,
+  resolveSegmentIv
+} from '../shared/hls_crypto.js';
 import { parseHlsPlaylist, selectBestVariant } from '../shared/hls_parser.js';
 import { t } from '../shared/i18n.js';
 import { isHttpUrl } from '../shared/media_classifier.js';
@@ -141,7 +147,7 @@ export async function buildStreamPreviewUrl(selectedUrl, originalItemUrl) {
   }
 
   let parsed = parseHlsPlaylist(rootText, fetchTarget);
-  if (parsed.encrypted) {
+  if (parsed.drmEncrypted || (parsed.encrypted && !parsed.decryptableAes128)) {
     throw new Error('ENCRYPTED_STREAM');
   }
   if (parsed.isDynamic) {
@@ -155,7 +161,7 @@ export async function buildStreamPreviewUrl(selectedUrl, originalItemUrl) {
     }
     const variantText = await fetchWithManagedTimeout(lowestOrFirst.url, { responseMode: 'text' });
     parsed = parseHlsPlaylist(variantText, lowestOrFirst.url);
-    if (parsed.encrypted) {
+    if (parsed.drmEncrypted || (parsed.encrypted && !parsed.decryptableAes128)) {
       throw new Error('ENCRYPTED_STREAM');
     }
     if (parsed.isDynamic) {
@@ -170,13 +176,39 @@ export async function buildStreamPreviewUrl(selectedUrl, originalItemUrl) {
   const leadingSegments = parsed.segments.slice(0, LIMITS.PREVIEW_HLS_SEGMENTS);
   const requests = parsed.initSegmentUrl
     ? [
-        { url: parsed.initSegmentUrl, byteRange: parsed.initSegmentByteRange || null },
-        ...leadingSegments.map((s) => ({ url: s.url, byteRange: s.byteRange || null }))
+        { url: parsed.initSegmentUrl, byteRange: parsed.initSegmentByteRange || null, key: null, sequenceNumber: 0 },
+        ...leadingSegments.map((s, idx) => ({
+          url: s.url,
+          byteRange: s.byteRange || null,
+          key: s.key || null,
+          sequenceNumber: Number.isFinite(s.sequenceNumber) ? s.sequenceNumber : idx
+        }))
       ]
-    : leadingSegments.map((s) => ({ url: s.url, byteRange: s.byteRange || null }));
+    : leadingSegments.map((s, idx) => ({
+      url: s.url,
+      byteRange: s.byteRange || null,
+      key: s.key || null,
+      sequenceNumber: Number.isFinite(s.sequenceNumber) ? s.sequenceNumber : idx
+    }));
 
+  const rawKeyCache = new Map();
   const buffers = await Promise.all(
-    requests.map((req) => fetchPreviewSegmentBuffer(req.url, req.byteRange))
+    requests.map(async (req) => {
+      const buf = await fetchPreviewSegmentBuffer(req.url, req.byteRange);
+      if (!req.key || !req.key.keyUrl) {
+        return buf;
+      }
+      let keyPromise = rawKeyCache.get(req.key.keyUrl);
+      if (!keyPromise) {
+        keyPromise = isBase64DataUri(req.key.keyUrl)
+          ? Promise.resolve(decodeBase64DataUri(req.key.keyUrl))
+          : fetchWithManagedTimeout(req.key.keyUrl, { responseMode: 'buffer' });
+        rawKeyCache.set(req.key.keyUrl, keyPromise);
+      }
+      const keyBytes = await keyPromise;
+      const iv = resolveSegmentIv(req.key.ivHex, req.sequenceNumber || 0);
+      return decryptAes128Segment(buf, keyBytes, iv);
+    })
   );
 
   const outputBuffers = parsed.initSegmentUrl

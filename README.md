@@ -6,10 +6,10 @@ Chrome Manifest V3 extension (`v1.0.0`) to detect, preview, and download videos,
 
 ## Features
 
-- Scans page DOM (`<video>`, `<audio>`, `<img>`, `<track>`, direct media links, open Shadow DOM roots, OpenGraph/Twitter meta tags, JSON-LD `VideoObject`/`AudioObject`/`ImageObject`, and visible CSS `background-image` URLs) across all frames (`allFrames: true`), including live video frame previews and inline `<audio>` playback.
+- Scans page DOM (`<video>`, `<audio>`, `<img>`, `<track>`, inline `<svg>` vectors with `<use>` symbol resolution, CSS `data:image/svg+xml` assets, direct media links, open Shadow DOM roots, OpenGraph/Twitter meta tags, JSON-LD `VideoObject`/`AudioObject`/`ImageObject`, and visible CSS `background-image` URLs) across all frames (`allFrames: true`), including live video frame previews and inline `<audio>` playback.
 - Captures network media responses (`.mp4`, `.webm`, `.m3u8`, `.mpd`, `.vtt`, `.srt`, `.ttml`, `.ass`, audio, images) per tab via `chrome.webRequest`, propagates `Referer`/`Origin` via temporary `declarativeNetRequest` session rules on restricted CDNs, and provides a universal MSE (`MediaSource`) fallback buffer capture up to `150` MB (`enableMseCapture`).
-- Resolves non-DRM VOD HLS master/media playlists (including `#EXT-X-BYTERANGE` and `#EXT-X-MEDIA:TYPE=SUBTITLES`) and static non-DRM DASH `.mpd` manifests, blocks live HLS/DASH streams cleanly, estimates variant sizes with configurable large-stream warnings, supports mid-flight cancellation, and assembles segments in an offscreen document within a `512` MB memory cap (zero-copy `Uint8Array` parts for dual-track fMP4 muxing and MPEG-TS/ADTS to MP4 transmuxing via vendored `mux-mp4.min.js`).
-- Supports per-card multi-select for mixed direct + stream batch downloads, persistent category filters and sort order, and a Chrome Side Panel view.
+- Resolves VOD and live HLS playlists (including `#EXT-X-BYTERANGE`, `#EXT-X-MEDIA:TYPE=SUBTITLES`, native Web Crypto `AES-128` decryption, M4A audio-only extraction, and live HLS DVR recording with `Record live` / `Stop & Save`) plus static non-DRM DASH `.mpd` manifests; estimates variant sizes with configurable large-stream warnings, supports mid-flight cancellation, and assembles segments in an offscreen document within a `512` MB memory cap (zero-copy `Uint8Array` parts for dual-track fMP4 muxing and MPEG-TS/ADTS to MP4 transmuxing via vendored `mux-mp4.min.js`).
+- Offers an image gallery grid view (`list` / `grid` toggle), an `SVG` filter tab with `Copy SVG` markup action, one-click and batch on-the-fly raster image conversion (`WebP` / `AVIF` / `SVG` -> `PNG` or `JPG`), per-card multi-select for mixed batch downloads, persistent filter/sort/view state, and a Chrome Side Panel view.
 - Injects inline download buttons directly on X/Twitter (`x.com` / `twitter.com`), modular social video players (`youtube.com`, `instagram.com`, `tiktok.com`, `reddit.com`, `facebook.com`, `bsky.app`, `vimeo.com`, `dailymotion.com`, `twitch.tv`, `linkedin.com`), and generic HTML5 `<video>` players across the web (`enableGenericVideoOverlay`), each toggleable live in Settings.
 - Includes an optional Windows Native Messaging companion (`companion/` delegating to local `yt-dlp` and `ffmpeg`) with live percentage progress and optional browser cookie passthrough (`enableCompanionCookies`) for heavy (`>512` MB) or authenticated streams.
 - Includes an Options page (`chrome.storage.sync`) plus English and French localization (`_locales/en`, `_locales/fr`).
@@ -54,8 +54,8 @@ Use **Check status** in Extension Options to verify the connection. Downloads tr
 
 ## Limitations & Safety Boundaries
 
-- **DRM / Encryption:** Encrypted HLS (`#EXT-X-KEY` / `#EXT-X-SESSION-KEY`) and DRM-protected DASH (`ContentProtection`) streams are detected and blocked with a localized error message.
-- **Live Streams:** Dynamic DASH manifests (`type="dynamic"`) and infinite live playlists cannot be assembled as finite VOD files and are refused.
+- **DRM / Encryption:** HLS `AES-128` streams (`METHOD=AES-128`) are decrypted natively in browser memory via Web Crypto, whereas DRM-protected HLS (`SAMPLE-AES` / `#EXT-X-SESSION-KEY`) and DASH (`ContentProtection`) streams are detected and blocked with a localized error message.
+- **Live Streams:** Live HLS broadcasts can be captured via DVR mode (`Record live` / `Stop & Save`, bounded by the `512` MB memory cap), while dynamic DASH manifests (`type="dynamic"`) are refused.
 - **Memory Cap:** Offscreen stream assembly is capped at `512` MB (`LIMITS.MAX_HLS_BUFFER_BYTES`) to protect browser tab stability.
 
 ## Permissions
@@ -75,7 +75,7 @@ Use **Check status** in Extension Options to verify the connection. Downloads tr
 - Change history: [CHANGELOG.md](CHANGELOG.md)
 - Directory overview:
   - `src/config/constants.js` - Media tables, limits, storage keys, settings defaults, and message types.
-  - `src/shared/` - Pure ES modules (`media_classifier.js`, `fetch_utils.js`, `hls_parser.js`, `dash_parser.js`, `fmp4_muxer.js`, `ts_transmuxer.js`, `preview_matcher.js`, `settings.js`, `i18n.js`).
+  - `src/shared/` - Pure ES modules (`media_classifier.js`, `fetch_utils.js`, `hls_parser.js`, `hls_crypto.js`, `dash_parser.js`, `fmp4_muxer.js`, `ts_transmuxer.js`, `preview_matcher.js`, `settings.js`, `i18n.js`).
   - `src/background/` - Network capture, session state, badge updates, temporary DNR rules (`dnr_manager.js`), offscreen lifecycle, cancellation, and downloads.
   - `src/offscreen/` - Offscreen document assembling HLS and DASH segments into downloadable Blob URLs.
   - `src/content/` - On-demand DOM media scanner (`srcset` and `<picture>` support) and X/Twitter inline post overlay.
@@ -91,7 +91,7 @@ Use **Check status** in Extension Options to verify the connection. Downloads tr
 
 ## Tests, CI & Distribution
 
-Zero external runtime or dev npm packages are required; syntax checking, packaging, and tests use Node.js built-in `node --check`, `node:test`, and `node:assert/strict` (`94` tests in `tests/`, also executed in CI on Node 22 via `.github/workflows/ci.yml`):
+Zero external runtime or dev npm packages are required; syntax checking, packaging, and tests use Node.js built-in `node --check`, `node:test`, and `node:assert/strict` (`105` tests in `tests/`, also executed in CI on Node 22 via `.github/workflows/ci.yml`):
 
 ```powershell
 npm run check

@@ -14,8 +14,34 @@
  * limitations under the License.
  */
 
-import { MESSAGE_TYPES } from '../config/constants.js';
+import {
+  DEFAULT_FILENAMES,
+  IMAGE_CONVERT_FORMATS,
+  MEDIA_TYPES,
+  MESSAGE_TYPES
+} from '../config/constants.js';
 import { localizeError } from './popup_helpers.js';
+
+/**
+ * Resolves the target raster conversion format for a batch image item, or empty string if unchanged.
+ * @param {object} item
+ * @param {string} requestedFormat
+ * @returns {string}
+ */
+function resolveBatchImageConvertFormat(item, requestedFormat) {
+  if (!item || item.type !== MEDIA_TYPES.IMAGE) {
+    return '';
+  }
+  const normalized = typeof requestedFormat === 'string' ? requestedFormat.toLowerCase() : '';
+  if (normalized !== IMAGE_CONVERT_FORMATS.PNG && normalized !== IMAGE_CONVERT_FORMATS.JPG) {
+    return '';
+  }
+  const ext = (item.ext || '').toLowerCase();
+  if (ext === normalized || (normalized === IMAGE_CONVERT_FORMATS.JPG && ext === 'jpeg')) {
+    return '';
+  }
+  return normalized;
+}
 
 /**
  * Runs a sequential batch of media downloads with status feedback and cancellation support.
@@ -80,7 +106,11 @@ export async function runBatchDownloads({
       const selectedAudioUrl = cardEntry && cardEntry.audioSelect && !cardEntry.audioSelect.classList.contains('hidden')
         ? cardEntry.audioSelect.value
         : '';
-      const requestId = (item.isStream || item.isMse)
+      const convertTo = resolveBatchImageConvertFormat(item, state.imageConvertFormat);
+      const filename = convertTo
+        ? `${(item.suggestedFilename || DEFAULT_FILENAMES.BASE).replace(/\.[^./\\]+$/, '')}.${convertTo}`
+        : item.suggestedFilename;
+      const requestId = (item.isStream || item.isMse || convertTo)
         ? `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
         : '';
       if (requestId) {
@@ -96,6 +126,9 @@ export async function runBatchDownloads({
             url: item.url,
             playlistUrl: selectedPlaylistUrl,
             audioUrl: selectedAudioUrl,
+            convertTo,
+            width: item.width || 0,
+            height: item.height || 0,
             isStream: Boolean(item.isStream),
             isMse: Boolean(item.isMse),
             mseId: item.mseId || '',
@@ -103,7 +136,7 @@ export async function runBatchDownloads({
             ext: item.ext || '',
             referer: item.referer || state.activeTabUrl || '',
             tabId: typeof state.activeTabId === 'number' ? state.activeTabId : -1,
-            filename: item.suggestedFilename,
+            filename,
             allowFolders,
             saveAs: false,
             requestId

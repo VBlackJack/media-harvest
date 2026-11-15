@@ -553,3 +553,298 @@ test('offscreen assembles chunked MSE WebM and muxes dual-track fMP4 streams', a
   const muxedBuf = await createdBlobs.get(mp4Resp.blobUrl).arrayBuffer();
   assert.equal(countTracksInInit(muxedBuf), 2);
 });
+
+test('offscreen decrypts AES-128 HLS segments and extracts audio-only tracks', async () => {
+  const rawKey = new Uint8Array(16).fill(0x3c);
+  const seqIv = new Uint8Array(16);
+  seqIv[15] = 10;
+  const vInit = makeFmp4Init(1);
+  const vPlain = makeMediaChunk(1, 0x44);
+  const aInit = makeFmp4Init(1);
+  const aPlain = makeMediaChunk(1, 0x55);
+
+  const encKey = await globalThis.crypto.subtle.importKey(
+    'raw',
+    rawKey,
+    { name: 'AES-CBC' },
+    false,
+    ['encrypt']
+  );
+  const vCipher = await globalThis.crypto.subtle.encrypt({ name: 'AES-CBC', iv: seqIv }, encKey, vPlain);
+
+  let keyFetchCount = 0;
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target.endsWith('master.m3u8')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => [
+          '#EXTM3U',
+          '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Main",LANGUAGE="en",URI="audio.m3u8"',
+          '#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=1280x720,AUDIO="aud"',
+          'video.m3u8'
+        ].join('\n')
+      };
+    }
+    if (target.endsWith('video.m3u8')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => [
+          '#EXTM3U',
+          '#EXT-X-MEDIA-SEQUENCE:10',
+          '#EXT-X-MAP:URI="v_init.mp4"',
+          '#EXT-X-KEY:METHOD=AES-128,URI="https://cdn.example.com/hls/key.bin"',
+          '#EXTINF:2.0,',
+          'v_seg1.m4s',
+          '#EXT-X-ENDLIST'
+        ].join('\n')
+      };
+    }
+    if (target.endsWith('audio.m3u8')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => [
+          '#EXTM3U',
+          '#EXT-X-MAP:URI="a_init.mp4"',
+          '#EXTINF:2.0,',
+          'a_seg1.m4s',
+          '#EXT-X-ENDLIST'
+        ].join('\n')
+      };
+    }
+    if (target.endsWith('key.bin')) {
+      keyFetchCount += 1;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => String(rawKey.byteLength) },
+        arrayBuffer: async () => rawKey.slice().buffer
+      };
+    }
+    if (target.endsWith('v_init.mp4')) {
+      return { ok: true, status: 200, headers: { get: () => String(vInit.byteLength) }, arrayBuffer: async () => vInit.slice().buffer };
+    }
+    if (target.endsWith('v_seg1.m4s')) {
+      return { ok: true, status: 200, headers: { get: () => String(vCipher.byteLength) }, arrayBuffer: async () => vCipher.slice(0) };
+    }
+    if (target.endsWith('a_init.mp4')) {
+      return { ok: true, status: 200, headers: { get: () => String(aInit.byteLength) }, arrayBuffer: async () => aInit.slice().buffer };
+    }
+    return { ok: true, status: 200, headers: { get: () => String(aPlain.byteLength) }, arrayBuffer: async () => aPlain.slice().buffer };
+  };
+
+  const decryptedResp = await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_HLS_BLOB,
+    requestId: 'hls-aes128-test',
+    playlistUrl: 'https://cdn.example.com/hls/master.m3u8',
+    originalUrl: 'https://cdn.example.com/hls/master.m3u8',
+    concurrency: 2
+  });
+  assert.equal(decryptedResp.ok, true);
+  assert.equal(keyFetchCount, 1);
+  assert.equal(decryptedResp.outputExtension, 'mp4');
+  const muxedAesBuf = await createdBlobs.get(decryptedResp.blobUrl).arrayBuffer();
+  assert.equal(countTracksInInit(muxedAesBuf), 2);
+
+  const audioOnlyResp = await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_HLS_BLOB,
+    requestId: 'hls-audio-only-test',
+    playlistUrl: 'https://cdn.example.com/hls/master.m3u8',
+    originalUrl: 'https://cdn.example.com/hls/master.m3u8',
+    audioOnly: true,
+    concurrency: 2
+  });
+  assert.equal(audioOnlyResp.ok, true);
+  assert.equal(audioOnlyResp.outputExtension, 'm4a');
+  assert.equal(audioOnlyResp.byteLength, aInit.byteLength + aPlain.byteLength);
+});
+
+test('offscreen converts HTTP images to JPG and upscales SVGs to PNG via canvas', async () => {
+  const prevImage = globalThis.Image;
+  const prevDocument = globalThis.document;
+
+  const drawCalls = [];
+  const fillCalls = [];
+  let loadedNaturalW = 320;
+  let loadedNaturalH = 180;
+
+  class FakeImage {
+    set src(_val) {
+      this.naturalWidth = loadedNaturalW;
+      this.naturalHeight = loadedNaturalH;
+      queueMicrotask(() => {
+        if (typeof this.onload === 'function') {
+          this.onload();
+        }
+      });
+    }
+  }
+
+  globalThis.Image = FakeImage;
+  globalThis.document = {
+    createElement: (tag) => {
+      if (tag !== 'canvas') {
+        return {};
+      }
+      const ctx = {
+        fillStyle: '',
+        fillRect: (x, y, w, h) => fillCalls.push({ x, y, w, h, fillStyle: ctx.fillStyle }),
+        drawImage: (_img, x, y, w, h) => drawCalls.push({ x, y, w, h })
+      };
+      return {
+        width: 0,
+        height: 0,
+        getContext: () => ctx,
+        toBlob: (cb, mime, quality) => {
+          cb(new Blob([new Uint8Array([1, 2, 3, 4])], { type: mime }));
+        }
+      };
+    }
+  };
+
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('.webp')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => '4' },
+        arrayBuffer: async () => new Uint8Array([82, 73, 70, 70]).buffer
+      };
+    }
+    throw new Error('Unexpected fetch URL');
+  };
+
+  try {
+    const jpgResp = await dispatchOffscreenMessage({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_CONVERT_IMAGE,
+      requestId: 'conv-jpg-1',
+      targetUrl: 'https://cdn.example.com/photo.webp',
+      targetFormat: 'jpg'
+    });
+    assert.equal(jpgResp.ok, true);
+    assert.equal(jpgResp.outputExtension, 'jpg');
+    assert.equal(jpgResp.byteLength, 4);
+    assert.equal(fillCalls.length, 1);
+    assert.equal(fillCalls[0].fillStyle, '#ffffff');
+    assert.deepEqual(drawCalls[0], { x: 0, y: 0, w: 320, h: 180 });
+
+    loadedNaturalW = 24;
+    loadedNaturalH = 24;
+    const svgPngResp = await dispatchOffscreenMessage({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_CONVERT_IMAGE,
+      requestId: 'conv-svg-png-1',
+      targetUrl: 'data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Ccircle%20r%3D%2210%22%2F%3E%3C%2Fsvg%3E',
+      targetFormat: 'png',
+      width: 24,
+      height: 24
+    });
+    assert.equal(svgPngResp.ok, true);
+    assert.equal(svgPngResp.outputExtension, 'png');
+    assert.deepEqual(drawCalls[1], { x: 0, y: 0, w: 512, h: 512 });
+  } finally {
+    globalThis.Image = prevImage;
+    globalThis.document = prevDocument;
+  }
+});
+
+test('offscreen records live HLS sliding windows without duplicates and finalizes on stop', async () => {
+  const vInit = makeFmp4Init(1);
+  const seg1 = makeMediaChunk(1, 0x11);
+  const seg2 = makeMediaChunk(1, 0x22);
+  const seg3 = makeMediaChunk(1, 0x33);
+
+  let playlistPolls = 0;
+  let seg2Fetches = 0;
+  const progressEvents = [];
+  const prevSendMessage = globalThis.chrome.runtime.sendMessage;
+  globalThis.chrome.runtime.sendMessage = async (msg) => {
+    progressEvents.push(msg);
+    if (msg && msg.type === MESSAGE_TYPES.DOWNLOAD_PROGRESS && msg.isLiveRecord && msg.done >= 3 && msg.total === 0) {
+      queueMicrotask(() => {
+        dispatchOffscreenMessage({
+          target: 'offscreen',
+          type: MESSAGE_TYPES.OFFSCREEN_STOP_LIVE_RECORD,
+          requestId: 'live-rec-1'
+        });
+      });
+    }
+    return { ok: true };
+  };
+
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target.endsWith('live.m3u8')) {
+      playlistPolls += 1;
+      const body = playlistPolls === 1
+        ? [
+            '#EXTM3U',
+            '#EXT-X-TARGETDURATION:2',
+            '#EXT-X-MEDIA-SEQUENCE:10',
+            '#EXT-X-MAP:URI="live_init.mp4"',
+            '#EXTINF:2.0,',
+            'live_seg1.m4s',
+            '#EXTINF:2.0,',
+            'live_seg2.m4s'
+          ].join('\n')
+        : [
+            '#EXTM3U',
+            '#EXT-X-TARGETDURATION:2',
+            '#EXT-X-MEDIA-SEQUENCE:11',
+            '#EXT-X-MAP:URI="live_init.mp4"',
+            '#EXTINF:2.0,',
+            'live_seg2.m4s',
+            '#EXTINF:2.0,',
+            'live_seg3.m4s'
+          ].join('\n');
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => body
+      };
+    }
+    if (target.endsWith('live_init.mp4')) {
+      return { ok: true, status: 200, headers: { get: () => String(vInit.byteLength) }, arrayBuffer: async () => vInit.slice().buffer };
+    }
+    if (target.endsWith('live_seg1.m4s')) {
+      return { ok: true, status: 200, headers: { get: () => String(seg1.byteLength) }, arrayBuffer: async () => seg1.slice().buffer };
+    }
+    if (target.endsWith('live_seg2.m4s')) {
+      seg2Fetches += 1;
+      return { ok: true, status: 200, headers: { get: () => String(seg2.byteLength) }, arrayBuffer: async () => seg2.slice().buffer };
+    }
+    return { ok: true, status: 200, headers: { get: () => String(seg3.byteLength) }, arrayBuffer: async () => seg3.slice().buffer };
+  };
+
+  try {
+    const liveResp = await dispatchOffscreenMessage({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_RECORD_HLS_LIVE,
+      requestId: 'live-rec-1',
+      playlistUrl: 'https://cdn.example.com/live/live.m3u8',
+      originalUrl: 'https://cdn.example.com/live/live.m3u8',
+      pollIntervalMs: 10
+    });
+    assert.equal(liveResp.ok, true);
+    assert.equal(liveResp.outputExtension, 'mp4');
+    assert.equal(playlistPolls, 2);
+    assert.equal(seg2Fetches, 1);
+    assert.equal(
+      liveResp.byteLength,
+      vInit.byteLength + seg1.byteLength + seg2.byteLength + seg3.byteLength
+    );
+    assert.ok(progressEvents.some((e) => e.isLiveRecord && e.done === 3));
+  } finally {
+    globalThis.chrome.runtime.sendMessage = prevSendMessage;
+  }
+});

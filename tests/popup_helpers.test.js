@@ -55,6 +55,7 @@ test('localizeError maps all known internal error codes cleanly', () => {
   assert.equal(localizeError('TRANSMUXER_UNAVAILABLE', translate), 'popup_error_transmux_failed');
   assert.equal(localizeError('TRANSMUX_EMPTY', translate), 'popup_error_transmux_failed');
   assert.equal(localizeError('BUILD_ABORTED', translate), 'popup_error_build_aborted');
+  assert.equal(localizeError('IMAGE_CONVERT_FAILED', translate), 'popup_error_image_convert');
   assert.equal(localizeError('HLS_ERROR', translate), 'popup_error_stream_failed');
   assert.equal(localizeError('DOWNLOAD_FAILED', translate), 'popup_error_generic_download');
   const expectedMaxMb = String(Math.round(LIMITS.MAX_HLS_BUFFER_BYTES / UNIT_CONVERSIONS.BYTES_PER_MB));
@@ -67,6 +68,10 @@ test('matchesFilter and getEstimatedStreamBytes handle media categories and vari
   assert.equal(matchesFilter({ type: 'video' }, 'videos'), true);
   assert.equal(matchesFilter({ type: 'image' }, 'videos'), false);
   assert.equal(matchesFilter({ type: 'image' }, 'images'), true);
+  assert.equal(matchesFilter({ type: 'image', ext: 'svg' }, 'svg'), true);
+  assert.equal(matchesFilter({ type: 'image', ext: 'png' }, 'svg'), false);
+  assert.equal(matchesSearch({ suggestedFilename: 'icon', ext: 'svg', url: 'data:image/svg+xml,' }, 'is:svg'), true);
+  assert.equal(matchesSearch({ suggestedFilename: 'photo', ext: 'jpg', url: 'https://a.com/p.jpg' }, 'is:svg'), false);
   assert.equal(matchesFilter({ type: 'audio' }, 'audio'), true);
 
   const metaByUrl = new Map([

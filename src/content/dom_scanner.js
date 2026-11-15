@@ -41,17 +41,22 @@
       directExtensions,
       subtitleExtensions = [],
       maxJsonLdNodes = 50,
-      maxCssBgElements = 250
+      maxCssBgElements = 250,
+      maxSvgItems = 80,
+      minSvgDimensionPx = 12
     } = config;
     const extSet = new Set(directExtensions);
     const subtitleExtSet = new Set(subtitleExtensions);
     const seen = new Set();
+    const seenSvgMarkup = new Set();
     const items = [];
     const videoElements = [];
     let hasBlobVideo = false;
 
     const isSafeHttpUrl = (url) => typeof url === 'string'
       && (url.startsWith('http://') || url.startsWith('https://'));
+    const isSvgDataUri = (url) => typeof url === 'string'
+      && /^data:image\/svg\+xml[;,]/i.test(url.trim());
 
     const captureVideoFrame = (video) => {
       if (!video.videoWidth || !video.videoHeight || video.readyState < 2) {
@@ -143,14 +148,15 @@
         }
         return;
       }
-      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      const allowSvgData = type === mediaTypes.IMAGE && isSvgDataUri(url);
+      if (!isSafeHttpUrl(url) && !allowSvgData) {
         return;
       }
       if (seen.has(url)) {
         return;
       }
       seen.add(url);
-      items.push({
+      const entry = {
         url,
         type,
         source: sourceTag,
@@ -159,7 +165,14 @@
         duration: meta.duration || 0,
         title: meta.title || document.title || '',
         poster: meta.poster || ''
-      });
+      };
+      if (meta.ext) {
+        entry.ext = meta.ext;
+      }
+      if (meta.svgMarkup) {
+        entry.svgMarkup = meta.svgMarkup;
+      }
+      items.push(entry);
     };
 
     const collectRoots = () => {
@@ -416,7 +429,17 @@
         cssUrlRegex.lastIndex = 0;
         let match;
         while ((match = cssUrlRegex.exec(bgImage)) !== null) {
-          const candidate = toAbsoluteUrl(match[2]);
+          const rawCandidate = match[2];
+          if (isSvgDataUri(rawCandidate)) {
+            addItem(rawCandidate.trim(), mediaTypes.IMAGE, {
+              ext: 'svg',
+              width: rect ? Math.round(rect.width) : 0,
+              height: rect ? Math.round(rect.height) : 0,
+              title: document.title || ''
+            });
+            continue;
+          }
+          const candidate = toAbsoluteUrl(rawCandidate);
           if (isSafeHttpUrl(candidate)) {
             addItem(candidate, mediaTypes.IMAGE, {
               width: rect ? Math.round(rect.width) : 0,
@@ -426,6 +449,130 @@
           }
         }
       }
+    }
+
+    const svgCandidates = queryAllRoots('svg');
+    let svgAddedCount = 0;
+    const parseViewBoxDims = (rawViewBox) => {
+      if (typeof rawViewBox !== 'string' || !rawViewBox.trim()) {
+        return { width: 0, height: 0 };
+      }
+      const parts = rawViewBox.trim().split(/[\s,]+/).map(Number);
+      if (parts.length === 4 && Number.isFinite(parts[2]) && Number.isFinite(parts[3])) {
+        return { width: Math.round(parts[2]), height: Math.round(parts[3]) };
+      }
+      return { width: 0, height: 0 };
+    };
+    const inlineUseSymbols = (svgClone) => {
+      if (typeof svgClone.querySelectorAll !== 'function' || typeof document.getElementById !== 'function') {
+        return;
+      }
+      const uses = svgClone.querySelectorAll('use') || [];
+      const inlinedIds = new Set();
+      let defsEl = null;
+      for (const useEl of uses) {
+        const rawHref = (useEl.getAttribute && (useEl.getAttribute('href') || useEl.getAttribute('xlink:href'))) || '';
+        if (!rawHref.startsWith('#')) {
+          continue;
+        }
+        const refId = rawHref.slice(1).trim();
+        if (!refId || inlinedIds.has(refId)) {
+          continue;
+        }
+        const refTarget = document.getElementById(refId);
+        if (!refTarget || typeof refTarget.cloneNode !== 'function') {
+          continue;
+        }
+        inlinedIds.add(refId);
+        if (!defsEl && typeof document.createElementNS === 'function') {
+          defsEl = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+          if (typeof svgClone.insertBefore === 'function') {
+            svgClone.insertBefore(defsEl, svgClone.firstChild || null);
+          }
+        }
+        if (defsEl && typeof defsEl.appendChild === 'function') {
+          defsEl.appendChild(refTarget.cloneNode(true));
+        }
+      }
+    };
+    const serializeSvgElement = (svgEl, targetW, targetH) => {
+      const clone = typeof svgEl.cloneNode === 'function' ? svgEl.cloneNode(true) : svgEl;
+      if (typeof clone.setAttribute === 'function') {
+        if (!clone.getAttribute('xmlns')) {
+          clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        }
+        if (!clone.getAttribute('viewBox') && targetW > 0 && targetH > 0) {
+          clone.setAttribute('viewBox', `0 0 ${targetW} ${targetH}`);
+        }
+        if (!clone.getAttribute('width') && targetW > 0) {
+          clone.setAttribute('width', String(targetW));
+        }
+        if (!clone.getAttribute('height') && targetH > 0) {
+          clone.setAttribute('height', String(targetH));
+        }
+      }
+      inlineUseSymbols(clone);
+      if (typeof clone.querySelectorAll === 'function') {
+        for (const scriptNode of (clone.querySelectorAll('script') || [])) {
+          if (typeof scriptNode.remove === 'function') {
+            scriptNode.remove();
+          }
+        }
+      }
+      let markup = '';
+      if (typeof XMLSerializer === 'function') {
+        try {
+          markup = new XMLSerializer().serializeToString(clone);
+        } catch {
+          markup = '';
+        }
+      }
+      if (!markup && typeof clone.outerHTML === 'string') {
+        markup = clone.outerHTML;
+      }
+      return markup.replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '').trim();
+    };
+
+    for (const svg of svgCandidates) {
+      if (svgAddedCount >= maxSvgItems) {
+        break;
+      }
+      if (typeof svg.closest === 'function' && (svg.closest('defs') || svg.closest('[data-media-harvest-ui]'))) {
+        continue;
+      }
+      const drawableNodes = typeof svg.querySelectorAll === 'function'
+        ? (svg.querySelectorAll('path, circle, rect, polygon, polyline, line, ellipse, text, use') || [])
+        : [];
+      if (drawableNodes.length === 0) {
+        continue;
+      }
+      const rect = typeof svg.getBoundingClientRect === 'function' ? svg.getBoundingClientRect() : null;
+      const attrW = Number.parseFloat(svg.getAttribute && svg.getAttribute('width')) || 0;
+      const attrH = Number.parseFloat(svg.getAttribute && svg.getAttribute('height')) || 0;
+      const vbDims = parseViewBoxDims(svg.getAttribute && svg.getAttribute('viewBox'));
+      const svgWidth = Math.round((rect && rect.width > 0 ? rect.width : 0) || attrW || vbDims.width || 0);
+      const svgHeight = Math.round((rect && rect.height > 0 ? rect.height : 0) || attrH || vbDims.height || 0);
+      if (svgWidth > 0 && svgHeight > 0 && (svgWidth < minSvgDimensionPx || svgHeight < minSvgDimensionPx)) {
+        continue;
+      }
+
+      const markup = serializeSvgElement(svg, svgWidth, svgHeight);
+      if (!markup || !markup.toLowerCase().includes('<svg') || seenSvgMarkup.has(markup)) {
+        continue;
+      }
+      seenSvgMarkup.add(markup);
+      const titleNode = typeof svg.querySelector === 'function' ? svg.querySelector('title') : null;
+      const ariaTitle = svg.getAttribute ? (svg.getAttribute('aria-label') || svg.getAttribute('id') || '') : '';
+      const svgTitle = (ariaTitle || (titleNode && titleNode.textContent) || '').trim() || 'svg-graphic';
+      const svgDataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(markup)}`;
+      addItem(svgDataUrl, mediaTypes.IMAGE, {
+        ext: 'svg',
+        width: svgWidth,
+        height: svgHeight,
+        title: svgTitle,
+        svgMarkup: markup
+      });
+      svgAddedCount += 1;
     }
 
     return {

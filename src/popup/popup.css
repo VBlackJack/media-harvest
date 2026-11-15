@@ -309,6 +309,67 @@ select:focus-visible {
   gap: 8px;
 }
 
+.media-list.is-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 8px;
+}
+
+.media-list.is-grid .empty-state {
+  grid-column: 1 / -1;
+}
+
+.media-list.is-grid .media-card {
+  padding: 8px;
+  gap: 6px;
+}
+
+.media-list.is-grid .media-row {
+  position: relative;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.media-list.is-grid .card-select {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  background: var(--bg);
+}
+
+.media-list.is-grid .thumb {
+  width: 100%;
+  height: 92px;
+}
+
+.media-list.is-grid .controls {
+  gap: 4px;
+}
+
+.view-mode-btn.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.thumb.thumb-svg {
+  background-color: #1e293b;
+  background-image:
+    linear-gradient(45deg, rgba(148, 163, 184, 0.14) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(148, 163, 184, 0.14) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(148, 163, 184, 0.14) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(148, 163, 184, 0.14) 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+  padding: 4px;
+}
+
+.thumb.thumb-svg img {
+  object-fit: contain;
+}
+
 .empty-state {
   padding: 28px 12px;
   display: flex;

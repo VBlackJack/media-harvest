@@ -17,11 +17,19 @@
 import {
   DEFAULT_FILENAMES,
   HLS_SUBTITLE_CONSTANTS,
+  IMAGE_CONVERT_FORMATS,
   LIMITS,
   MESSAGE_TYPES,
   QUALITY_PREFERENCES
 } from '../config/constants.js';
 import { parseDashManifest } from '../shared/dash_parser.js';
+import {
+  decodeBase64DataUri,
+  decryptAes128Segment,
+  importAes128Key,
+  isBase64DataUri,
+  resolveSegmentIv
+} from '../shared/hls_crypto.js';
 import {
   CANCEL_REASON,
   fetchWithManagedTimeout,
@@ -34,12 +42,18 @@ import {
   splitFmp4InitAndFragments
 } from '../shared/fmp4_muxer.js';
 import { parseHlsPlaylist, selectBestVariant } from '../shared/hls_parser.js';
-import { classifyMseMime, extractUrlExtension, isHttpUrl } from '../shared/media_classifier.js';
+import {
+  classifyMseMime,
+  extractUrlExtension,
+  isHttpUrl,
+  isSvgDataUrl
+} from '../shared/media_classifier.js';
 import { clampInteger } from '../shared/settings.js';
 import { transmuxTsSegmentsToMp4Parts } from '../shared/ts_transmuxer.js';
 
 const activeBlobUrls = new Set();
 const activeBuildControllers = new Map();
+const activeLiveRecorders = new Map();
 const activeMseAssemblies = new Map();
 
 /**
@@ -119,6 +133,60 @@ async function fetchSegmentBuffer(url, byteRange, cancelSignal, rangeCacheByUrl,
 }
 
 /**
+ * Checks whether an HLS playlist uses unsupported/DRM encryption rather than clear AES-128.
+ * @param {object} parsed
+ * @returns {boolean}
+ */
+function isBlockedPlaylistEncryption(parsed) {
+  return Boolean(parsed && (parsed.drmEncrypted || (parsed.encrypted && !parsed.decryptableAes128)));
+}
+
+/**
+ * Fetches or decodes and caches a 16-byte AES-128 CryptoKey by URI for a single build.
+ * @param {string} keyUrl
+ * @param {Map<string, Promise<CryptoKey>>} keyCacheByUrl
+ * @param {AbortSignal} cancelSignal
+ * @returns {Promise<CryptoKey>}
+ */
+function resolveCachedCryptoKey(keyUrl, keyCacheByUrl, cancelSignal) {
+  let cached = keyCacheByUrl.get(keyUrl);
+  if (cached) {
+    return cached;
+  }
+  const loadPromise = (async () => {
+    const rawKey = isBase64DataUri(keyUrl)
+      ? decodeBase64DataUri(keyUrl)
+      : await fetchWithManagedTimeout(keyUrl, {
+        responseMode: 'buffer',
+        cancelSignal
+      });
+    return importAes128Key(rawKey);
+  })().catch((err) => {
+    keyCacheByUrl.delete(keyUrl);
+    throw err;
+  });
+  keyCacheByUrl.set(keyUrl, loadPromise);
+  return loadPromise;
+}
+
+/**
+ * Decrypts a fetched segment buffer when an AES-128 key descriptor is attached.
+ * @param {ArrayBuffer} buffer
+ * @param {{ key?: { method: string, keyUrl: string, ivHex: string } | null, sequenceNumber?: number }} req
+ * @param {Map<string, Promise<CryptoKey>>} keyCacheByUrl
+ * @param {AbortSignal} cancelSignal
+ * @returns {Promise<ArrayBuffer>}
+ */
+async function maybeDecryptSegment(buffer, req, keyCacheByUrl, cancelSignal) {
+  if (!req || !req.key || !req.key.keyUrl) {
+    return buffer;
+  }
+  const cryptoKey = await resolveCachedCryptoKey(req.key.keyUrl, keyCacheByUrl, cancelSignal);
+  const iv = resolveSegmentIv(req.key.ivHex, req.sequenceNumber || 0);
+  return decryptAes128Segment(buffer, cryptoKey, iv);
+}
+
+/**
  * Runs async tasks over an array with a bounded concurrency pool.
  * @template T, R
  * @param {Array<T>} items
@@ -157,13 +225,14 @@ async function mapWithConcurrency(items, concurrency, cancelSignal, worker) {
  * @param {number} done
  * @param {number} total
  */
-function notifyProgress(requestId, itemUrl, done, total) {
+function notifyProgress(requestId, itemUrl, done, total, extra = {}) {
   chrome.runtime.sendMessage({
     type: MESSAGE_TYPES.DOWNLOAD_PROGRESS,
     requestId,
     url: itemUrl,
     done,
-    total
+    total,
+    ...extra
   }).catch(() => {
     // Popup may be closed during background download
   });
@@ -204,8 +273,10 @@ async function resolveStreamPlan(
   preferredVariantUrl,
   qualityPreference,
   cancelSignal,
-  preferredAudioUrl = ''
+  preferredAudioUrl = '',
+  options = {}
 ) {
+  const allowLiveHls = Boolean(options && options.allowLiveHls);
   const rootText = await fetchWithManagedTimeout(masterOrMediaUrl, {
     responseMode: 'text',
     cancelSignal
@@ -238,20 +309,28 @@ async function resolveStreamPlan(
       },
       audioPlaylist: !isWebm && chosenAudio
         ? { ...chosenAudio, initSegmentByteRange: null }
-        : null
+        : null,
+      videoPlaylistUrl: masterOrMediaUrl,
+      audioPlaylistUrl: ''
     };
   }
 
   const rootParsed = parseHlsPlaylist(rootText, masterOrMediaUrl);
-  if (rootParsed.encrypted) {
+  if (isBlockedPlaylistEncryption(rootParsed)) {
     throw new Error('ENCRYPTED_STREAM');
   }
-  if (rootParsed.isDynamic) {
+  if (rootParsed.isDynamic && !allowLiveHls) {
     throw new Error('LIVE_STREAM');
   }
 
   if (!rootParsed.isMaster) {
-    return { format: 'hls', mediaPlaylist: rootParsed, audioPlaylist: null };
+    return {
+      format: 'hls',
+      mediaPlaylist: rootParsed,
+      audioPlaylist: null,
+      videoPlaylistUrl: masterOrMediaUrl,
+      audioPlaylistUrl: ''
+    };
   }
 
   const chosenVariant = pickVariant(rootParsed.variants, preferredVariantUrl, qualityPreference);
@@ -264,14 +343,15 @@ async function resolveStreamPlan(
     cancelSignal
   });
   const videoParsed = parseHlsPlaylist(videoText, chosenVariant.url);
-  if (videoParsed.encrypted) {
+  if (isBlockedPlaylistEncryption(videoParsed)) {
     throw new Error('ENCRYPTED_STREAM');
   }
-  if (videoParsed.isDynamic) {
+  if (videoParsed.isDynamic && !allowLiveHls) {
     throw new Error('LIVE_STREAM');
   }
 
   let audioParsed = null;
+  let audioPlaylistUrl = '';
   const matchingAudio = (
     preferredAudioUrl && rootParsed.audioTracks.find((a) => a.url === preferredAudioUrl)
   ) || (chosenVariant.audioGroup
@@ -284,31 +364,43 @@ async function resolveStreamPlan(
       cancelSignal
     });
     const candidate = parseHlsPlaylist(audioText, matchingAudio.url);
-    if (!candidate.encrypted && candidate.segments.length > 0) {
+    if (!isBlockedPlaylistEncryption(candidate) && candidate.segments.length > 0) {
       audioParsed = candidate;
+      audioPlaylistUrl = matchingAudio.url;
     }
   }
 
-  return { format: 'hls', mediaPlaylist: videoParsed, audioPlaylist: audioParsed };
+  return {
+    format: 'hls',
+    mediaPlaylist: videoParsed,
+    audioPlaylist: audioParsed,
+    videoPlaylistUrl: chosenVariant.url,
+    audioPlaylistUrl
+  };
 }
 
 /**
  * Builds ordered segment request descriptors from a resolved playlist descriptor.
  * @param {object} playlist
- * @returns {Array<{ url: string, byteRange: { offset: number, length: number } | null }>}
+ * @returns {Array<{ url: string, byteRange: { offset: number, length: number } | null, key?: object | null, sequenceNumber?: number }>}
  */
 function buildSegmentRequests(playlist) {
   const requests = [];
   if (playlist.initSegmentUrl) {
     requests.push({
       url: playlist.initSegmentUrl,
-      byteRange: playlist.initSegmentByteRange || null
+      byteRange: playlist.initSegmentByteRange || null,
+      key: null,
+      sequenceNumber: 0
     });
   }
-  for (const seg of playlist.segments) {
+  for (let i = 0; i < playlist.segments.length; i += 1) {
+    const seg = playlist.segments[i];
     requests.push({
       url: seg.url,
-      byteRange: seg.byteRange || null
+      byteRange: seg.byteRange || null,
+      key: seg.key || null,
+      sequenceNumber: Number.isFinite(seg.sequenceNumber) ? seg.sequenceNumber : i
     });
   }
   return requests;
@@ -472,8 +564,42 @@ function assembleOutputParts(mediaPlaylist, audioPlaylist, videoBuffers, audioBu
 }
 
 /**
+ * Assembles audio-only buffers into a standalone audio container (.m4a or .webm).
+ * @param {object} audioPlaylist
+ * @param {Array<ArrayBuffer>} audioBuffers
+ * @returns {{ outputParts: Array<ArrayBuffer | Uint8Array>, outputExtension: string, mimeType: string }}
+ */
+function assembleAudioOnlyParts(audioPlaylist, audioBuffers) {
+  const isWebm = audioPlaylist.mimeType === 'audio/webm' || audioPlaylist.outputExtension === 'webm';
+  if (isWebm) {
+    return {
+      outputParts: audioBuffers,
+      outputExtension: 'webm',
+      mimeType: 'audio/webm'
+    };
+  }
+  if (!audioPlaylist.initSegmentUrl && !audioPlaylist.isProgressive) {
+    try {
+      const transmuxed = transmuxTsSegmentsToMp4Parts(audioBuffers);
+      return {
+        outputParts: transmuxed.parts,
+        outputExtension: DEFAULT_FILENAMES.AUDIO_M4A_EXT,
+        mimeType: 'audio/mp4'
+      };
+    } catch {
+      // Fall back to concatenated fMP4/AAC bytes when TS transmuxer cannot split audio packets
+    }
+  }
+  return {
+    outputParts: audioBuffers,
+    outputExtension: DEFAULT_FILENAMES.AUDIO_M4A_EXT,
+    mimeType: 'audio/mp4'
+  };
+}
+
+/**
  * Fetches an HLS or DASH stream, muxes segments into a Blob URL, and enforces caps/cancellation.
- * @param {{ playlistUrl: string, originalUrl: string, requestId: string, concurrency?: number, qualityPreference?: string }} payload
+ * @param {{ playlistUrl: string, originalUrl: string, requestId: string, concurrency?: number, qualityPreference?: string, audioUrl?: string, audioOnly?: boolean }} payload
  * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number }>}
  */
 async function buildStreamBlob(payload) {
@@ -490,10 +616,12 @@ async function buildStreamBlob(payload) {
   );
   const qualityPreference = payload.qualityPreference || QUALITY_PREFERENCES.BEST;
   const preferredAudioUrl = typeof payload.audioUrl === 'string' ? payload.audioUrl : '';
+  const audioOnly = Boolean(payload.audioOnly);
   const buildController = new AbortController();
   activeBuildControllers.set(requestId, buildController);
 
   const fullBodyCache = new Map();
+  const keyCacheByUrl = new Map();
   const byteTracker = { bytes: 0 };
 
   try {
@@ -504,12 +632,16 @@ async function buildStreamBlob(payload) {
       buildController.signal,
       preferredAudioUrl
     );
-    if (mediaPlaylist.segments.length === 0) {
+    if (audioOnly) {
+      if (!audioPlaylist || !Array.isArray(audioPlaylist.segments) || audioPlaylist.segments.length === 0) {
+        throw new Error('NO_SEPARATE_AUDIO_TRACK');
+      }
+    } else if (mediaPlaylist.segments.length === 0) {
       throw new Error('EMPTY_PLAYLIST');
     }
 
-    const videoRequests = buildSegmentRequests(mediaPlaylist);
-    const shouldFetchAudio = Boolean(
+    const videoRequests = audioOnly ? [] : buildSegmentRequests(mediaPlaylist);
+    const shouldFetchAudio = audioOnly || Boolean(
       audioPlaylist &&
       (
         (mediaPlaylist.initSegmentUrl && audioPlaylist.initSegmentUrl) ||
@@ -525,12 +657,18 @@ async function buildStreamBlob(payload) {
 
     const fetchTracked = async (req) => {
       try {
-        const buf = await fetchSegmentBuffer(
+        const rawBuf = await fetchSegmentBuffer(
           req.url,
           req.byteRange,
           buildController.signal,
           fullBodyCache,
           byteTracker
+        );
+        const buf = await maybeDecryptSegment(
+          rawBuf,
+          req,
+          keyCacheByUrl,
+          buildController.signal
         );
         completed += 1;
         notifyProgress(requestId, originalUrl, completed, total);
@@ -543,12 +681,14 @@ async function buildStreamBlob(payload) {
       }
     };
 
-    const videoBuffers = await mapWithConcurrency(
-      videoRequests,
-      concurrency,
-      buildController.signal,
-      fetchTracked
-    );
+    const videoBuffers = videoRequests.length > 0
+      ? await mapWithConcurrency(
+          videoRequests,
+          concurrency,
+          buildController.signal,
+          fetchTracked
+        )
+      : [];
     const audioBuffers = audioRequests.length > 0
       ? await mapWithConcurrency(audioRequests, concurrency, buildController.signal, fetchTracked)
       : [];
@@ -557,18 +697,21 @@ async function buildStreamBlob(payload) {
       throw new Error(CANCEL_REASON);
     }
 
-    const { outputParts, outputExtension, mimeType } = assembleOutputParts(
-      mediaPlaylist,
-      audioPlaylist,
-      videoBuffers,
-      audioBuffers
-    );
+    const { outputParts, outputExtension, mimeType } = audioOnly
+      ? assembleAudioOnlyParts(audioPlaylist, audioBuffers)
+      : assembleOutputParts(
+          mediaPlaylist,
+          audioPlaylist,
+          videoBuffers,
+          audioBuffers
+        );
 
     const blob = new Blob(outputParts, { type: mimeType });
     videoBuffers.length = 0;
     audioBuffers.length = 0;
     outputParts.length = 0;
     fullBodyCache.clear();
+    keyCacheByUrl.clear();
 
     const blobUrl = URL.createObjectURL(blob);
     activeBlobUrls.add(blobUrl);
@@ -580,6 +723,304 @@ async function buildStreamBlob(payload) {
     };
   } finally {
     fullBodyCache.clear();
+    keyCacheByUrl.clear();
+    activeBuildControllers.delete(requestId);
+  }
+}
+
+/**
+ * Waits for the next live HLS playlist poll unless stopped or cancelled earlier.
+ * @param {number} delayMs
+ * @param {{ stopped: boolean, wakeUp: Function | null }} recorderState
+ * @param {AbortSignal} cancelSignal
+ * @returns {Promise<void>}
+ */
+function waitForLivePollDelay(delayMs, recorderState, cancelSignal) {
+  if (recorderState.stopped || (cancelSignal && cancelSignal.aborted)) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      recorderState.wakeUp = null;
+      if (cancelSignal && typeof cancelSignal.removeEventListener === 'function') {
+        cancelSignal.removeEventListener('abort', finish);
+      }
+      resolve();
+    };
+    recorderState.wakeUp = finish;
+    if (cancelSignal && typeof cancelSignal.addEventListener === 'function') {
+      cancelSignal.addEventListener('abort', finish, { once: true });
+    }
+    timer = setTimeout(finish, delayMs);
+  });
+}
+
+/**
+ * Fetches unseen segments (and init segment once) from a polled HLS playlist into an accumulation array.
+ * @param {object} playlist
+ * @param {Set<string>} seenKeys
+ * @param {Array<ArrayBuffer>} targetBuffers
+ * @param {{ initLoaded: boolean }} initState
+ * @param {number} concurrency
+ * @param {AbortSignal} cancelSignal
+ * @param {Map<string, object>} fullBodyCache
+ * @param {Map<string, Promise<CryptoKey>>} keyCacheByUrl
+ * @param {{ bytes: number }} byteTracker
+ * @returns {Promise<number>}
+ */
+async function appendUnseenPlaylistSegments(
+  playlist,
+  seenKeys,
+  targetBuffers,
+  initState,
+  concurrency,
+  cancelSignal,
+  fullBodyCache,
+  keyCacheByUrl,
+  byteTracker
+) {
+  if (!playlist || !Array.isArray(playlist.segments)) {
+    return 0;
+  }
+  if (playlist.initSegmentUrl && !initState.initLoaded) {
+    const initBuf = await fetchSegmentBuffer(
+      playlist.initSegmentUrl,
+      playlist.initSegmentByteRange || null,
+      cancelSignal,
+      fullBodyCache,
+      byteTracker
+    );
+    targetBuffers.push(initBuf);
+    initState.initLoaded = true;
+  }
+
+  const pending = [];
+  for (let i = 0; i < playlist.segments.length; i += 1) {
+    const seg = playlist.segments[i];
+    const br = seg.byteRange ? `${seg.byteRange.offset}-${seg.byteRange.length}` : '';
+    const key = `${seg.url}#${br}`;
+    if (seenKeys.has(key)) {
+      continue;
+    }
+    pending.push({
+      key,
+      req: {
+        url: seg.url,
+        byteRange: seg.byteRange || null,
+        key: seg.key || null,
+        sequenceNumber: Number.isFinite(seg.sequenceNumber) ? seg.sequenceNumber : i
+      }
+    });
+  }
+  if (pending.length === 0) {
+    return 0;
+  }
+
+  const downloaded = await mapWithConcurrency(
+    pending,
+    concurrency,
+    cancelSignal,
+    async (entry) => {
+      const rawBuf = await fetchSegmentBuffer(
+        entry.req.url,
+        entry.req.byteRange,
+        cancelSignal,
+        fullBodyCache,
+        byteTracker
+      );
+      return maybeDecryptSegment(rawBuf, entry.req, keyCacheByUrl, cancelSignal);
+    }
+  );
+
+  for (let i = 0; i < pending.length; i += 1) {
+    seenKeys.add(pending[i].key);
+    targetBuffers.push(downloaded[i]);
+  }
+  return downloaded.length;
+}
+
+/**
+ * Records a live HLS stream (DVR mode) until stopped, ended, or reaching buffer cap, then exports MP4.
+ * @param {{ playlistUrl: string, originalUrl: string, requestId: string, concurrency?: number, qualityPreference?: string, audioUrl?: string, pollIntervalMs?: number }} payload
+ * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number }>}
+ */
+async function recordLiveHlsBlob(payload) {
+  const { playlistUrl, originalUrl, requestId } = payload;
+  if (!isHttpUrl(originalUrl) || !isHttpUrl(playlistUrl)) {
+    throw new Error('INVALID_URL');
+  }
+
+  const concurrency = clampInteger(
+    payload.concurrency,
+    LIMITS.HLS_FETCH_CONCURRENCY,
+    LIMITS.MIN_HLS_CONCURRENCY,
+    LIMITS.MAX_HLS_CONCURRENCY
+  );
+  const qualityPreference = payload.qualityPreference || QUALITY_PREFERENCES.BEST;
+  const preferredAudioUrl = typeof payload.audioUrl === 'string' ? payload.audioUrl : '';
+  const buildController = new AbortController();
+  const recorderState = { stopped: false, wakeUp: null };
+  activeBuildControllers.set(requestId, buildController);
+  activeLiveRecorders.set(requestId, recorderState);
+
+  const fullBodyCache = new Map();
+  const keyCacheByUrl = new Map();
+  const byteTracker = { bytes: 0 };
+  const videoBuffers = [];
+  const audioBuffers = [];
+  const seenVideoKeys = new Set();
+  const seenAudioKeys = new Set();
+  const videoInitState = { initLoaded: false };
+  const audioInitState = { initLoaded: false };
+  let recordedSegments = 0;
+
+  try {
+    const initialPlan = await resolveStreamPlan(
+      originalUrl,
+      playlistUrl,
+      qualityPreference,
+      buildController.signal,
+      preferredAudioUrl,
+      { allowLiveHls: true }
+    );
+    if (initialPlan.format !== 'hls') {
+      throw new Error('LIVE_STREAM');
+    }
+
+    let latestMediaPlaylist = initialPlan.mediaPlaylist;
+    let latestAudioPlaylist = initialPlan.audioPlaylist;
+    const videoPlaylistUrl = initialPlan.videoPlaylistUrl || playlistUrl;
+    const audioPlaylistUrl = initialPlan.audioPlaylistUrl || '';
+
+    notifyProgress(requestId, originalUrl, 0, 0, { isLiveRecord: true, bytes: 0 });
+
+    for (let pollIndex = 0; !recorderState.stopped; pollIndex += 1) {
+      if (buildController.signal.aborted && buildController.signal.reason === CANCEL_REASON) {
+        throw new Error(CANCEL_REASON);
+      }
+
+      if (pollIndex > 0) {
+        const videoText = await fetchWithManagedTimeout(videoPlaylistUrl, {
+          responseMode: 'text',
+          cancelSignal: buildController.signal
+        });
+        latestMediaPlaylist = parseHlsPlaylist(videoText, videoPlaylistUrl);
+        if (isBlockedPlaylistEncryption(latestMediaPlaylist)) {
+          throw new Error('ENCRYPTED_STREAM');
+        }
+        if (audioPlaylistUrl && latestAudioPlaylist) {
+          const audioText = await fetchWithManagedTimeout(audioPlaylistUrl, {
+            responseMode: 'text',
+            cancelSignal: buildController.signal
+          });
+          const parsedAudio = parseHlsPlaylist(audioText, audioPlaylistUrl);
+          if (!isBlockedPlaylistEncryption(parsedAudio) && parsedAudio.segments.length > 0) {
+            latestAudioPlaylist = parsedAudio;
+          }
+        }
+      }
+
+      try {
+        const addedVideo = await appendUnseenPlaylistSegments(
+          latestMediaPlaylist,
+          seenVideoKeys,
+          videoBuffers,
+          videoInitState,
+          concurrency,
+          buildController.signal,
+          fullBodyCache,
+          keyCacheByUrl,
+          byteTracker
+        );
+        if (latestAudioPlaylist) {
+          const trackAudioCompatible = (latestMediaPlaylist.initSegmentUrl && latestAudioPlaylist.initSegmentUrl)
+            || (!latestMediaPlaylist.initSegmentUrl && !latestMediaPlaylist.isProgressive);
+          if (trackAudioCompatible) {
+            await appendUnseenPlaylistSegments(
+              latestAudioPlaylist,
+              seenAudioKeys,
+              audioBuffers,
+              audioInitState,
+              concurrency,
+              buildController.signal,
+              fullBodyCache,
+              keyCacheByUrl,
+              byteTracker
+            );
+          }
+        }
+        recordedSegments += addedVideo;
+        notifyProgress(requestId, originalUrl, recordedSegments, 0, {
+          isLiveRecord: true,
+          bytes: byteTracker.bytes
+        });
+      } catch (err) {
+        if (err && err.message === 'STREAM_TOO_LARGE' && recordedSegments > 0) {
+          recorderState.stopped = true;
+          break;
+        }
+        throw err;
+      }
+
+      if (recorderState.stopped || !latestMediaPlaylist.isDynamic) {
+        break;
+      }
+
+      const requestedPollMs = Number(payload.pollIntervalMs);
+      const pollDelayMs = Number.isFinite(requestedPollMs) && requestedPollMs > 0
+        ? Math.min(requestedPollMs, LIMITS.LIVE_RECORD_POLL_MAX_MS)
+        : Math.min(
+            Math.max((latestMediaPlaylist.targetDurationSec || 4) * 500, LIMITS.LIVE_RECORD_POLL_MIN_MS),
+            LIMITS.LIVE_RECORD_POLL_MAX_MS
+          );
+      await waitForLivePollDelay(pollDelayMs, recorderState, buildController.signal);
+    }
+
+    if (buildController.signal.aborted && buildController.signal.reason === CANCEL_REASON) {
+      throw new Error(CANCEL_REASON);
+    }
+    if (recordedSegments === 0) {
+      throw new Error('EMPTY_PLAYLIST');
+    }
+
+    notifyProgress(requestId, originalUrl, recordedSegments, recordedSegments, {
+      isLiveRecord: true,
+      bytes: byteTracker.bytes
+    });
+
+    const { outputParts, outputExtension, mimeType } = assembleOutputParts(
+      latestMediaPlaylist,
+      latestAudioPlaylist,
+      videoBuffers,
+      audioBuffers
+    );
+
+    const blob = new Blob(outputParts, { type: mimeType });
+    videoBuffers.length = 0;
+    audioBuffers.length = 0;
+    outputParts.length = 0;
+    fullBodyCache.clear();
+    keyCacheByUrl.clear();
+
+    const blobUrl = URL.createObjectURL(blob);
+    activeBlobUrls.add(blobUrl);
+
+    return {
+      blobUrl,
+      outputExtension,
+      byteLength: blob.size
+    };
+  } finally {
+    fullBodyCache.clear();
+    keyCacheByUrl.clear();
+    activeLiveRecorders.delete(requestId);
     activeBuildControllers.delete(requestId);
   }
 }
@@ -636,6 +1077,7 @@ async function buildSubtitleBlob(payload) {
   const buildController = new AbortController();
   activeBuildControllers.set(requestId, buildController);
   const fullBodyCache = new Map();
+  const keyCacheByUrl = new Map();
   const byteTracker = { bytes: 0 };
 
   try {
@@ -649,7 +1091,7 @@ async function buildSubtitleBlob(payload) {
 
     if (isHlsSub) {
       const parsed = parseHlsPlaylist(manifestText, subtitleUrl);
-      if (parsed.encrypted) {
+      if (isBlockedPlaylistEncryption(parsed)) {
         throw new Error('ENCRYPTED_STREAM');
       }
       if (parsed.segments.length === 0) {
@@ -659,7 +1101,16 @@ async function buildSubtitleBlob(payload) {
         parsed.segments,
         concurrency,
         buildController.signal,
-        (seg) => fetchSegmentBuffer(seg.url, seg.byteRange || null, buildController.signal, fullBodyCache, byteTracker)
+        async (seg) => {
+          const rawBuf = await fetchSegmentBuffer(
+            seg.url,
+            seg.byteRange || null,
+            buildController.signal,
+            fullBodyCache,
+            byteTracker
+          );
+          return maybeDecryptSegment(rawBuf, seg, keyCacheByUrl, buildController.signal);
+        }
       );
       if (buildController.signal.aborted && buildController.signal.reason === CANCEL_REASON) {
         throw new Error(CANCEL_REASON);
@@ -683,6 +1134,7 @@ async function buildSubtitleBlob(payload) {
     };
   } finally {
     fullBodyCache.clear();
+    keyCacheByUrl.clear();
     activeBuildControllers.delete(requestId);
   }
 }
@@ -812,6 +1264,170 @@ function handleMseBlobMessage(message) {
   return { ok: false, error: 'INVALID_ACTION' };
 }
 
+/**
+ * Decodes an SVG `data:image/svg+xml` URI (base64 or UTF-8 encoded) into a UTF-8 Blob.
+ * @param {string} dataUrl
+ * @returns {Blob}
+ */
+function svgDataUrlToBlob(dataUrl) {
+  const commaIdx = dataUrl.indexOf(',');
+  if (commaIdx < 0) {
+    throw new Error('INVALID_URL');
+  }
+  const header = dataUrl.slice(0, commaIdx).toLowerCase();
+  const body = dataUrl.slice(commaIdx + 1);
+  if (header.includes(';base64')) {
+    const bytes = decodeBase64ToBytes(body);
+    return new Blob([bytes], { type: 'image/svg+xml;charset=utf-8' });
+  }
+  return new Blob([decodeURIComponent(body)], { type: 'image/svg+xml;charset=utf-8' });
+}
+
+/**
+ * Loads an image Blob onto an HTMLImageElement for offscreen canvas rasterization.
+ * @param {Blob} sourceBlob
+ * @returns {Promise<HTMLImageElement>}
+ */
+function loadImageFromBlob(sourceBlob) {
+  if (typeof Image !== 'function') {
+    return Promise.reject(new Error('IMAGE_CONVERT_FAILED'));
+  }
+  const objectUrl = URL.createObjectURL(sourceBlob);
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('IMAGE_CONVERT_FAILED'));
+    };
+    img.src = objectUrl;
+  });
+}
+
+/**
+ * Computes canvas export dimensions, upscaling small SVGs for clean raster output.
+ * @param {number} naturalWidth
+ * @param {number} naturalHeight
+ * @param {number} hintWidth
+ * @param {number} hintHeight
+ * @param {boolean} isSvg
+ * @returns {{ width: number, height: number }}
+ */
+function resolveConvertDimensions(naturalWidth, naturalHeight, hintWidth, hintHeight, isSvg) {
+  let width = Math.round(naturalWidth || hintWidth || LIMITS.DEFAULT_SVG_RASTER_SIZE_PX);
+  let height = Math.round(naturalHeight || hintHeight || LIMITS.DEFAULT_SVG_RASTER_SIZE_PX);
+  if (width <= 0) {
+    width = LIMITS.DEFAULT_SVG_RASTER_SIZE_PX;
+  }
+  if (height <= 0) {
+    height = LIMITS.DEFAULT_SVG_RASTER_SIZE_PX;
+  }
+  if (isSvg) {
+    const maxDim = Math.max(width, height);
+    if (maxDim < LIMITS.DEFAULT_SVG_RASTER_SIZE_PX) {
+      const scale = LIMITS.DEFAULT_SVG_RASTER_SIZE_PX / maxDim;
+      width = Math.max(1, Math.round(width * scale));
+      height = Math.max(1, Math.round(height * scale));
+    }
+  }
+  return { width, height };
+}
+
+/**
+ * Fetches or decodes an image (WebP, AVIF, SVG, etc.) and converts it to PNG or JPG via canvas.
+ * @param {{ targetUrl: string, targetFormat: string, width?: number, height?: number, requestId: string }} payload
+ * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number }>}
+ */
+async function convertImageBlob(payload) {
+  const targetUrl = typeof payload.targetUrl === 'string' ? payload.targetUrl : '';
+  const targetFormat = String(payload.targetFormat || '').toLowerCase();
+  const isSvg = isSvgDataUrl(targetUrl) || extractUrlExtension(targetUrl) === DEFAULT_FILENAMES.SVG_EXT;
+  if (!isHttpUrl(targetUrl) && !isSvgDataUrl(targetUrl)) {
+    throw new Error('INVALID_URL');
+  }
+  if (targetFormat !== IMAGE_CONVERT_FORMATS.PNG && targetFormat !== IMAGE_CONVERT_FORMATS.JPG) {
+    throw new Error('IMAGE_CONVERT_FAILED');
+  }
+
+  const requestId = payload.requestId || `img_${Date.now()}`;
+  const buildController = new AbortController();
+  activeBuildControllers.set(requestId, buildController);
+
+  try {
+    let sourceBlob;
+    if (isSvgDataUrl(targetUrl)) {
+      sourceBlob = svgDataUrlToBlob(targetUrl);
+    } else {
+      const buf = await fetchWithManagedTimeout(targetUrl, {
+        responseMode: 'buffer',
+        cancelSignal: buildController.signal
+      });
+      sourceBlob = new Blob([buf], { type: isSvg ? 'image/svg+xml;charset=utf-8' : undefined });
+    }
+
+    if (buildController.signal.aborted && buildController.signal.reason === CANCEL_REASON) {
+      throw new Error(CANCEL_REASON);
+    }
+
+    const img = await loadImageFromBlob(sourceBlob);
+    const { width, height } = resolveConvertDimensions(
+      img.naturalWidth || img.width || 0,
+      img.naturalHeight || img.height || 0,
+      payload.width || 0,
+      payload.height || 0,
+      isSvg
+    );
+
+    const canvas = typeof document !== 'undefined' && typeof document.createElement === 'function'
+      ? document.createElement('canvas')
+      : null;
+    if (!canvas || typeof canvas.getContext !== 'function') {
+      throw new Error('IMAGE_CONVERT_FAILED');
+    }
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('IMAGE_CONVERT_FAILED');
+    }
+
+    const mimeType = targetFormat === IMAGE_CONVERT_FORMATS.JPG ? 'image/jpeg' : 'image/png';
+    if (targetFormat === IMAGE_CONVERT_FORMATS.JPG) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+    }
+    ctx.drawImage(img, 0, 0, width, height);
+
+    const outBlob = await new Promise((resolve, reject) => {
+      const quality = targetFormat === IMAGE_CONVERT_FORMATS.JPG ? LIMITS.JPEG_EXPORT_QUALITY : undefined;
+      if (typeof canvas.toBlob === 'function') {
+        canvas.toBlob((blob) => {
+          if (blob) {
+            resolve(blob);
+          } else {
+            reject(new Error('IMAGE_CONVERT_FAILED'));
+          }
+        }, mimeType, quality);
+      } else {
+        reject(new Error('IMAGE_CONVERT_FAILED'));
+      }
+    });
+
+    const blobUrl = URL.createObjectURL(outBlob);
+    activeBlobUrls.add(blobUrl);
+    return {
+      blobUrl,
+      outputExtension: targetFormat,
+      byteLength: outBlob.size
+    };
+  } finally {
+    activeBuildControllers.delete(requestId);
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || message.target !== 'offscreen') {
     return false;
@@ -823,6 +1439,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       playlistUrl: message.playlistUrl,
       originalUrl: message.originalUrl || message.playlistUrl,
       audioUrl: message.audioUrl || '',
+      audioOnly: Boolean(message.audioOnly),
       requestId,
       concurrency: message.concurrency,
       qualityPreference: message.qualityPreference
@@ -830,6 +1447,43 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((err) => sendResponse({ ok: false, error: err.message || 'HLS_ERROR' }));
     return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.OFFSCREEN_RECORD_HLS_LIVE) {
+    const requestId = message.requestId || `live_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    recordLiveHlsBlob({
+      playlistUrl: message.playlistUrl,
+      originalUrl: message.originalUrl || message.playlistUrl,
+      audioUrl: message.audioUrl || '',
+      requestId,
+      concurrency: message.concurrency,
+      qualityPreference: message.qualityPreference,
+      pollIntervalMs: message.pollIntervalMs
+    })
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((err) => sendResponse({ ok: false, error: err.message || 'HLS_ERROR' }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.OFFSCREEN_STOP_LIVE_RECORD) {
+    if (message.requestId) {
+      const recorder = activeLiveRecorders.get(message.requestId);
+      if (recorder) {
+        recorder.stopped = true;
+        if (typeof recorder.wakeUp === 'function') {
+          recorder.wakeUp();
+        }
+      }
+    } else {
+      for (const recorder of activeLiveRecorders.values()) {
+        recorder.stopped = true;
+        if (typeof recorder.wakeUp === 'function') {
+          recorder.wakeUp();
+        }
+      }
+    }
+    sendResponse({ ok: true });
+    return false;
   }
 
   if (message.type === MESSAGE_TYPES.OFFSCREEN_BUILD_SUBTITLE_BLOB) {
@@ -847,6 +1501,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === MESSAGE_TYPES.OFFSCREEN_BUILD_MSE_BLOB) {
     sendResponse(handleMseBlobMessage(message));
     return false;
+  }
+
+  if (message.type === MESSAGE_TYPES.OFFSCREEN_CONVERT_IMAGE) {
+    const requestId = message.requestId || `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    convertImageBlob({
+      targetUrl: message.targetUrl,
+      targetFormat: message.targetFormat,
+      width: message.width,
+      height: message.height,
+      requestId
+    })
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((err) => sendResponse({ ok: false, error: err.message || 'IMAGE_CONVERT_FAILED' }));
+    return true;
   }
 
   if (message.type === MESSAGE_TYPES.OFFSCREEN_CANCEL_BUILD) {

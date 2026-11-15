@@ -78,6 +78,10 @@
       <span data-i18n="popup_filter_images"></span>
       <span class="count" id="countImages">0</span>
     </button>
+    <button class="filter-btn" data-filter="svg" type="button" aria-pressed="false">
+      <span data-i18n="popup_filter_svg"></span>
+      <span class="count" id="countSvg">0</span>
+    </button>
     <button class="filter-btn" data-filter="audio" type="button" aria-pressed="false">
       <span data-i18n="popup_filter_audio"></span>
       <span class="count" id="countAudio">0</span>
@@ -102,6 +106,14 @@
       <option value="resolution_desc" data-i18n="popup_sort_resolution"></option>
       <option value="duration_desc" data-i18n="popup_sort_duration"></option>
     </select>
+    <button id="viewModeBtn" class="icon-btn view-mode-btn" type="button" data-i18n-title="popup_action_view_grid" data-i18n-aria="popup_action_view_grid" aria-pressed="false">
+      <svg aria-hidden="true" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="3" width="7" height="7" rx="1"/>
+        <rect x="14" y="3" width="7" height="7" rx="1"/>
+        <rect x="3" y="14" width="7" height="7" rx="1"/>
+        <rect x="14" y="14" width="7" height="7" rx="1"/>
+      </svg>
+    </button>
   </div>
 
   <div id="hintBanner" class="banner banner-info hidden" role="status" aria-live="polite"></div>
@@ -111,6 +123,11 @@
     <div id="selectionBar" class="toolbar-row hidden">
       <button id="selectAllBtn" class="btn btn-secondary btn-compact" type="button"></button>
       <button id="clearSelectionBtn" class="btn btn-secondary btn-compact hidden" type="button" data-i18n="popup_action_clear_selection"></button>
+      <select id="imageConvertSelect" class="sort-select hidden" data-i18n-aria="popup_image_format_label">
+        <option value="original" data-i18n="popup_image_format_original"></option>
+        <option value="png" data-i18n="popup_image_format_png"></option>
+        <option value="jpg" data-i18n="popup_image_format_jpg"></option>
+      </select>
       <button id="downloadSelectedBtn" class="btn btn-primary btn-compact" type="button" disabled></button>
     </div>
     <button id="downloadAllBtn" class="btn btn-secondary hidden" type="button"></button>

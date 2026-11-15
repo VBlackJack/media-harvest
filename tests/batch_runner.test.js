@@ -17,7 +17,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runBatchDownloads } from '../src/popup/batch_runner.js';
-import { MESSAGE_TYPES } from '../src/config/constants.js';
+import { IMAGE_CONVERT_FORMATS, MESSAGE_TYPES } from '../src/config/constants.js';
 
 test('runBatchDownloads exits early on empty batch or active running batch', async () => {
   const state = { batchRunning: false, batchAbortRequested: false };
@@ -132,4 +132,50 @@ test('runBatchDownloads aborts mid-flight when batchAbortRequested is triggered'
   assert.equal(sentMessages.length, 1);
   assert.equal(result.aborted, true);
   assert.equal(state.batchRunning, false);
+});
+
+test('runBatchDownloads applies selected batch image conversion format only when different', async () => {
+  const sentMessages = [];
+  const state = {
+    batchRunning: false,
+    batchAbortRequested: false,
+    imageConvertFormat: IMAGE_CONVERT_FORMATS.PNG,
+    settings: { filenameTemplate: 'default' },
+    activeTabUrl: 'https://example.com/gallery',
+    activeTabId: 7,
+    cardsByUrl: new Map(),
+    localPendingRequestIds: new Set(),
+    selectedUrls: new Set()
+  };
+
+  const chromeApi = {
+    runtime: {
+      sendMessage: async (msg) => {
+        sentMessages.push(msg);
+        return { ok: true };
+      }
+    }
+  };
+
+  const batchItems = [
+    { url: 'https://cdn.example.com/hero.webp', type: 'image', ext: 'webp', width: 800, height: 600, suggestedFilename: 'hero.webp' },
+    { url: 'https://cdn.example.com/icon.png', type: 'image', ext: 'png', width: 64, height: 64, suggestedFilename: 'icon.png' }
+  ];
+
+  const result = await runBatchDownloads({
+    batchItems,
+    state,
+    chromeApi,
+    translateFn: (k) => k,
+    setStatusBanner: () => {},
+    batchDelayMs: 0
+  });
+
+  assert.equal(result.startedCount, 2);
+  assert.equal(sentMessages[0].payload.convertTo, 'png');
+  assert.equal(sentMessages[0].payload.filename, 'hero.png');
+  assert.ok(sentMessages[0].payload.requestId);
+  assert.equal(sentMessages[1].payload.convertTo, '');
+  assert.equal(sentMessages[1].payload.filename, 'icon.png');
+  assert.equal(sentMessages[1].payload.requestId, '');
 });

@@ -6,10 +6,10 @@ Extension Chrome Manifest V3 (`v1.0.0`) pour détecter, prévisualiser et télé
 
 ## Fonctionnalités
 
-- Analyse le DOM de la page (`<video>`, `<audio>`, `<img>`, `<track>`, liens directs, Shadow DOM ouvert, balises OpenGraph/Twitter, JSON-LD `VideoObject`/`AudioObject`/`ImageObject` et CSS `background-image` visibles) sur tous les cadres (`allFrames: true`), avec aperçu vidéo et lecture `<audio>` intégrée.
+- Analyse le DOM de la page (`<video>`, `<audio>`, `<img>`, `<track>`, vecteurs `<svg>` en ligne avec résolution de symboles `<use>`, ressources CSS `data:image/svg+xml`, liens directs, Shadow DOM ouvert, balises OpenGraph/Twitter, JSON-LD `VideoObject`/`AudioObject`/`ImageObject` et CSS `background-image` visibles) sur tous les cadres (`allFrames: true`), avec aperçu vidéo et lecture `<audio>` intégrée.
 - Capture les réponses réseau média (`.mp4`, `.webm`, `.m3u8`, `.mpd`, `.vtt`, `.srt`, `.ttml`, `.ass`, audio, images) par onglet via `chrome.webRequest`, propage `Referer`/`Origin` via des règles temporaires `declarativeNetRequest` pour les CDN protégés et capture en secours les flux MSE (`MediaSource`) jusqu'à `150` Mo (`enableMseCapture`).
-- Parse les playlists HLS VOD sans DRM (y compris `#EXT-X-BYTERANGE` et `#EXT-X-MEDIA:TYPE=SUBTITLES`) et les manifestes DASH `.mpd` statiques sans DRM, refuse les flux direct HLS/DASH, estime la taille des variantes avec alerte de flux volumineux configurable, permet l'annulation en cours de téléchargement et assemble les segments en document offscreen dans une limite mémoire de `512` Mo (fragments `Uint8Array` sans copie contiguë pour muxage fMP4 vidéo+audio et transmuxage MPEG-TS/ADTS vers MP4 via `mux-mp4.min.js`).
-- Prend en charge la sélection multiple mixte (fichiers directs + flux), la persistance du filtre et du tri, et l'ouverture en panneau latéral Chrome.
+- Parse les playlists HLS VOD et direct (y compris `#EXT-X-BYTERANGE`, `#EXT-X-MEDIA:TYPE=SUBTITLES`, déchiffrement natif Web Crypto `AES-128`, extraction audio M4A et enregistrement DVR du direct avec `Enregistrer` / `Arrêter & sauver`) ainsi que les manifestes DASH `.mpd` statiques sans DRM ; estime la taille des variantes avec alerte de flux volumineux configurable, permet l'annulation en cours de téléchargement et assemble les segments en document offscreen dans une limite mémoire de `512` Mo (fragments `Uint8Array` sans copie contiguë pour muxage fMP4 vidéo+audio et transmuxage MPEG-TS/ADTS vers MP4 via `mux-mp4.min.js`).
+- Propose une vue galerie grille (`list` / `grid`), un onglet `SVG` avec copie du XML (`Copier SVG`), conversion raster à la volée (`WebP` / `AVIF` / `SVG` -> `PNG` ou `JPG`) à la carte ou en lot, sélection multiple mixte, persistance du filtre/tri/affichage et panneau latéral Chrome.
 - Ajoute des boutons de téléchargement intégrés directement sur X/Twitter (`x.com` / `twitter.com`), les lecteurs vidéo sociaux (`youtube.com`, `instagram.com`, `tiktok.com`, `reddit.com`, `facebook.com`, `bsky.app`, `vimeo.com`, `dailymotion.com`, `twitch.tv`, `linkedin.com`) et tout lecteur HTML5 générique (`enableGenericVideoOverlay`), activables en direct dans les paramètres.
 - Inclut un compagnon Windows optionnel Native Messaging (`companion/` pilotant `yt-dlp` et `ffmpeg`) avec progression en direct et transmission optionnelle des cookies Chrome (`enableCompanionCookies`) pour les vidéos lourdes (`>512` Mo) ou flux complexes.
 - Inclut une page d'options (`chrome.storage.sync`) et une interface localisée en français et en anglais (`_locales/fr`, `_locales/en`).
@@ -54,8 +54,8 @@ Le bouton **Tester la connexion** dans les Options vérifie que l'hôte répond.
 
 ## Limites et garde-fous
 
-- **DRM / Chiffrement :** Les flux HLS chiffrés (`#EXT-X-KEY` / `#EXT-X-SESSION-KEY`) et DASH protégés (`ContentProtection`) sont détectés et refusés explicitement.
-- **Flux directs (Live) :** Les manifestes DASH dynamiques (`type="dynamic"`) et les playlists directes infinies ne peuvent pas être assemblés en fichier VOD fini et sont refusés.
+- **DRM / Chiffrement :** Les flux HLS chiffrés en `AES-128` (`METHOD=AES-128`) sont déchiffrés nativement en mémoire via Web Crypto, tandis que les flux DRM (`SAMPLE-AES` / `#EXT-X-SESSION-KEY` et DASH `ContentProtection`) sont détectés et refusés explicitement.
+- **Flux directs (Live) :** Les diffusions HLS en direct peuvent être capturées en mode DVR (`Enregistrer` / `Arrêter & sauver` dans la limite de `512` Mo), alors que les manifestes DASH dynamiques (`type="dynamic"`) restent refusés.
 - **Plafond mémoire :** L'assemblage en mémoire dans le document offscreen est plafonné à `512` Mo (`LIMITS.MAX_HLS_BUFFER_BYTES`) afin de préserver la stabilité du navigateur.
 
 ## Permissions
@@ -75,7 +75,7 @@ Le bouton **Tester la connexion** dans les Options vérifie que l'hôte répond.
 - Journal des modifications (EN) : [CHANGELOG.md](CHANGELOG.md)
 - Vue des répertoires :
   - `src/config/constants.js` - Constantes partagées, extensions/MIME, seuils, clés de stockage, réglages par défaut et types de messages.
-  - `src/shared/` - Modules ES purs (`media_classifier.js`, `fetch_utils.js`, `hls_parser.js`, `dash_parser.js`, `fmp4_muxer.js`, `ts_transmuxer.js`, `preview_matcher.js`, `settings.js`, `i18n.js`).
+  - `src/shared/` - Modules ES purs (`media_classifier.js`, `fetch_utils.js`, `hls_parser.js`, `hls_crypto.js`, `dash_parser.js`, `fmp4_muxer.js`, `ts_transmuxer.js`, `preview_matcher.js`, `settings.js`, `i18n.js`).
   - `src/background/` - Capture réseau, état de session, badge, règles DNR temporaires (`dnr_manager.js`), cycle de vie offscreen, annulation et téléchargements.
   - `src/offscreen/` - Document offscreen assemblant les segments HLS et DASH en URL Blob téléchargeable.
   - `src/content/` - Scanner DOM à la demande (support `srcset` et `<picture>`) et bouton intégré aux posts X/Twitter.
@@ -91,7 +91,7 @@ Le bouton **Tester la connexion** dans les Options vérifie que l'hôte répond.
 
 ## Tests, intégration continue et distribution
 
-Aucune dépendance npm externe n'est nécessaire : la vérification syntaxique, l'empaquetage et la suite de tests reposent uniquement sur `node --check`, `node:test` et `node:assert/strict` (`94` tests dans `tests/`, exécutés aussi en CI sous Node 22 via `.github/workflows/ci.yml`) :
+Aucune dépendance npm externe n'est nécessaire : la vérification syntaxique, l'empaquetage et la suite de tests reposent uniquement sur `node --check`, `node:test` et `node:assert/strict` (`105` tests dans `tests/`, exécutés aussi en CI sous Node 22 via `.github/workflows/ci.yml`) :
 
 ```powershell
 npm run check

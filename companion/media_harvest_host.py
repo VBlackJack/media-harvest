@@ -31,6 +31,7 @@ MAX_MESSAGE_BYTES = 1024 * 1024
 DOWNLOAD_TIMEOUT_SECONDS = 600
 DOWNLOAD_SUBFOLDER = 'MediaHarvest'
 ALLOWED_COOKIE_BROWSERS = frozenset({'chrome', 'edge', 'firefox'})
+ALLOWED_AUDIO_FORMATS = frozenset({'mp3', 'm4a', 'opus', 'wav'})
 PROGRESS_PERCENT_RE = re.compile(r'\[download\]\s+(\d+(?:\.\d+)?)%')
 
 
@@ -73,7 +74,15 @@ def build_ytdlp_command(ytdlp_bin, ffmpeg_bin, payload, output_dir):
     output_template = str(Path(output_dir) / template_name)
 
     quality = payload.get('quality', 'best')
-    format_spec = 'worst' if quality == 'lowest' else 'bestvideo*+bestaudio/best'
+    audio_only = bool(payload.get('audioOnly'))
+    audio_format = str(payload.get('audioFormat', 'mp3') or 'mp3').strip().lower()
+    if audio_format not in ALLOWED_AUDIO_FORMATS:
+        audio_format = 'mp3'
+
+    if audio_only:
+        format_spec = 'bestaudio/best'
+    else:
+        format_spec = 'worst' if quality == 'lowest' else 'bestvideo*+bestaudio/best'
 
     args = [
         ytdlp_bin,
@@ -85,6 +94,8 @@ def build_ytdlp_command(ytdlp_bin, ffmpeg_bin, payload, output_dir):
         '-o',
         output_template,
     ]
+    if audio_only:
+        args.extend(['--extract-audio', '--audio-format', audio_format])
     if ffmpeg_bin:
         args.extend(['--ffmpeg-location', str(Path(ffmpeg_bin).parent)])
 

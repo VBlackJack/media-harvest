@@ -22,8 +22,10 @@ import {
   deduplicateMedia,
   deriveFilenameStem,
   extractUrlExtension,
+  isDownloadableMediaUrl,
   isHttpUrl,
   isMseUrl,
+  isSvgDataUrl,
   normalizeMimeType,
   sanitizeFilename
 } from '../src/shared/media_classifier.js';
@@ -227,4 +229,39 @@ test('isMseUrl, classifyMseMime, and deduplicateMedia preserve MSE and referer m
   assert.equal(merged[0].referer, 'https://example.com/embed');
   assert.equal(merged[0].isMse, true);
   assert.equal(merged[0].mseId, 'mse_9');
+});
+
+test('isSvgDataUrl, isDownloadableMediaUrl, and deduplicateMedia handle SVG data URIs', () => {
+  const svgUrl = 'data:image/svg+xml;charset=utf-8,%3Csvg%3E%3C%2Fsvg%3E';
+  assert.equal(isSvgDataUrl(svgUrl), true);
+  assert.equal(isSvgDataUrl('data:image/png;base64,AAAA'), false);
+  assert.equal(isDownloadableMediaUrl(svgUrl), true);
+  assert.equal(isDownloadableMediaUrl('https://cdn.example.com/a.webp'), true);
+  assert.equal(isDownloadableMediaUrl('ftp://cdn.example.com/a.webp'), false);
+  assert.deepEqual(classifyMedia(svgUrl, ''), {
+    type: MEDIA_TYPES.IMAGE,
+    ext: 'svg',
+    isStream: false
+  });
+  assert.equal(deriveFilenameStem(svgUrl, 'Brand Logo', 'https://example.com'), 'Brand Logo');
+
+  const mergedSvg = deduplicateMedia([
+    {
+      url: svgUrl,
+      type: MEDIA_TYPES.IMAGE,
+      ext: 'svg',
+      isStream: false,
+      source: MEDIA_SOURCES.DOM
+    },
+    {
+      url: svgUrl,
+      type: MEDIA_TYPES.IMAGE,
+      ext: 'svg',
+      isStream: false,
+      source: MEDIA_SOURCES.DOM,
+      svgMarkup: '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>'
+    }
+  ]);
+  assert.equal(mergedSvg.length, 1);
+  assert.ok(mergedSvg[0].svgMarkup.includes('<svg'));
 });

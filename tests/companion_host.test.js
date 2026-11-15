@@ -70,6 +70,22 @@ cmd_unsafe = mod.build_ytdlp_command('C:\\\\tools\\\\yt-dlp.exe', '', {
 }, 'C:\\\\Downloads\\\\MediaHarvest')
 assert '--cookies-from-browser' not in cmd_unsafe
 
+cmd_audio = mod.build_ytdlp_command('C:\\\\tools\\\\yt-dlp.exe', '', {
+    'url': 'https://example.com/v',
+    'audioOnly': True,
+    'audioFormat': 'mp3'
+}, 'C:\\\\Downloads\\\\MediaHarvest')
+assert '--extract-audio' in cmd_audio
+assert '--audio-format' in cmd_audio and 'mp3' in cmd_audio
+assert 'bestaudio/best' in cmd_audio
+
+cmd_audio_invalid = mod.build_ytdlp_command('C:\\\\tools\\\\yt-dlp.exe', '', {
+    'url': 'https://example.com/v',
+    'audioOnly': True,
+    'audioFormat': 'exe'
+}, 'C:\\\\Downloads\\\\MediaHarvest')
+assert 'mp3' in cmd_audio_invalid and 'exe' not in cmd_audio_invalid
+
 buf = io.BytesIO()
 mod.write_native_message({'ok': True, 'hostVersion': mod.HOST_VERSION}, buf)
 buf.seek(0)

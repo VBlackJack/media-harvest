@@ -460,4 +460,141 @@ test('createMediaCard supports HLS subtitles, live stream blocking, audio previe
   assert.equal(copyableCard.copyBtn.classList.contains('is-copied'), true);
   assert.equal(statusReported, 'popup_action_copied');
   assert.equal(copyableCard.nameEl.title, 'clip.mp4\nhttps://cdn.example.com/clip.mp4');
+
+  // AES-128 badge and browser audio extraction action on stream card
+  const audioExtractCalls = [];
+  const aesStreamEntry = createMediaCard(
+    {
+      url: 'https://cdn.example.com/aes/master.m3u8',
+      type: 'stream',
+      ext: 'm3u8',
+      isStream: true,
+      source: 'network',
+      suggestedFilename: 'aes_video.mp4'
+    },
+    {
+      documentRef: doc,
+      translateFn: (k) => k,
+      hlsMetaByUrl: metaMap,
+      getSettings: () => DEFAULT_SETTINGS,
+      isCompanionAvailable: () => false,
+      onExtractAudio: (entry, chosenUrl, chosenAudioUrl, useCompanion) => {
+        audioExtractCalls.push({ url: chosenUrl, audioUrl: chosenAudioUrl, useCompanion });
+      }
+    }
+  );
+  assert.ok(aesStreamEntry.audioExtractBtn);
+  assert.equal(aesStreamEntry.audioExtractBtn.classList.contains('hidden'), true);
+
+  const aesMeta = {
+    encrypted: false,
+    decryptableAes128: true,
+    isDynamic: false,
+    variants: [{ resolution: '1280x720', bandwidth: 1500000, estimatedBytes: 3000000, url: 'https://cdn.example.com/aes/720.m3u8' }],
+    audioTracks: [{ groupId: 'aud', name: 'English', language: 'en', url: 'https://cdn.example.com/aes/aud.m3u8' }]
+  };
+  metaMap.set(aesStreamEntry.item.url, aesMeta);
+  applyStreamMetadata(
+    aesStreamEntry,
+    aesMeta,
+    {
+      documentRef: doc,
+      translateFn: (k) => k,
+      hlsMetaByUrl: metaMap,
+      getSettings: () => DEFAULT_SETTINGS,
+      isCompanionAvailable: () => false
+    }
+  );
+  assert.ok(aesStreamEntry.badgesEl.children.some((c) => c.textContent === 'popup_badge_aes128'));
+  assert.equal(aesStreamEntry.audioExtractBtn.classList.contains('hidden'), false);
+  await aesStreamEntry.audioExtractBtn.dispatchEvent({ type: 'click' });
+  assert.equal(audioExtractCalls.length, 1);
+  assert.equal(audioExtractCalls[0].useCompanion, false);
+
+  // SVG card shows SVG checkerboard thumbnail, Copy SVG action, and PNG/JPG convert chips
+  let copiedSvgMarkup = '';
+  const convertCalls = [];
+  const rawSvgMarkup = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2 2h20v20H2z"/></svg>';
+  const svgCard = createMediaCard(
+    {
+      url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(rawSvgMarkup)}`,
+      type: 'image',
+      ext: 'svg',
+      width: 24,
+      height: 24,
+      isStream: false,
+      source: 'dom',
+      svgMarkup: rawSvgMarkup,
+      suggestedFilename: 'logo.svg'
+    },
+    {
+      documentRef: doc,
+      translateFn: (k) => k,
+      hlsMetaByUrl: metaMap,
+      getSettings: () => DEFAULT_SETTINGS,
+      writeClipboardFn: async (text) => { copiedSvgMarkup = text; },
+      onConvertImage: (entry, fmt) => convertCalls.push({ url: entry.item.url, fmt })
+    }
+  );
+  assert.equal(svgCard.thumbEl.classList.contains('thumb-svg'), true);
+  assert.ok(!svgCard.copyBtn);
+  assert.ok(svgCard.copySvgBtn);
+  await svgCard.copySvgBtn.dispatchEvent({ type: 'click' });
+  assert.equal(copiedSvgMarkup, rawSvgMarkup);
+  assert.equal(svgCard.copySvgBtn.classList.contains('is-copied'), true);
+  assert.ok(svgCard.convertPngBtn);
+  assert.ok(svgCard.convertJpgBtn);
+  await svgCard.convertPngBtn.dispatchEvent({ type: 'click' });
+  await svgCard.convertJpgBtn.dispatchEvent({ type: 'click' });
+  assert.deepEqual(convertCalls.map((c) => c.fmt), ['png', 'jpg']);
+
+  // Live HLS stream enables Record live + Stop & Save instead of blocking like live DASH
+  const liveDownloads = [];
+  const stopLiveCalls = [];
+  const liveHlsCard = createMediaCard(
+    {
+      url: 'https://cdn.example.com/live/master.m3u8',
+      type: 'stream',
+      ext: 'm3u8',
+      isStream: true,
+      source: 'network',
+      suggestedFilename: 'live_stream.mp4'
+    },
+    {
+      documentRef: doc,
+      translateFn: (k) => k,
+      hlsMetaByUrl: metaMap,
+      getSettings: () => DEFAULT_SETTINGS,
+      onDownload: (entry, chosenUrl, chosenAudioUrl, opts) => liveDownloads.push({ entry, chosenUrl, opts }),
+      onStopRecord: (reqId) => stopLiveCalls.push(reqId)
+    }
+  );
+  const liveHlsMeta = {
+    encrypted: false,
+    isDynamic: true,
+    streamFormat: 'hls',
+    variants: [{ url: 'https://cdn.example.com/live/720.m3u8', resolution: '1280x720', bandwidth: 2000000 }],
+    audioTracks: []
+  };
+  metaMap.set(liveHlsCard.item.url, liveHlsMeta);
+  applyStreamMetadata(liveHlsCard, liveHlsMeta, {
+    documentRef: doc,
+    translateFn: (k) => k,
+    hlsMetaByUrl: metaMap,
+    getSettings: () => DEFAULT_SETTINGS
+  });
+  assert.equal(liveHlsCard.item.isBlocked, false);
+  assert.equal(liveHlsCard.item.canRecordLive, true);
+  assert.equal(liveHlsCard.downloadBtn.disabled, false);
+  assert.equal(liveHlsCard.downloadBtn.textContent, 'popup_action_record_live');
+  assert.equal(liveHlsCard.selectCheckbox.disabled, true);
+  await liveHlsCard.downloadBtn.dispatchEvent({ type: 'click' });
+  assert.equal(liveDownloads.length, 1);
+  assert.equal(liveDownloads[0].opts.recordLive, true);
+
+  assert.ok(liveHlsCard.stopRecordBtn);
+  liveHlsCard.activeRequestId = 'live_req_99';
+  await liveHlsCard.stopRecordBtn.dispatchEvent({ type: 'click' });
+  assert.deepEqual(stopLiveCalls, ['live_req_99']);
+  assert.equal(liveHlsCard.stopRecordBtn.disabled, true);
 });

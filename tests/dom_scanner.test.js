@@ -271,3 +271,72 @@ test('dom_scanner traverses open Shadow DOM, meta tags, JSON-LD, and CSS backgro
     mockElementsBySelector = { img: [], video: [], audio: [], 'a[href]': [] };
   }
 });
+
+test('dom_scanner extracts inline <svg> with <use> symbol resolution and CSS svg data URIs', () => {
+  const clonedDefs = {
+    children: [],
+    appendChild(node) { this.children.push(node); }
+  };
+  const symbolDefNode = {
+    tagName: 'SYMBOL',
+    cloneNode: () => ({ tagName: 'SYMBOL', outerHTML: '<symbol id="brand-mark"><path d="M1 1"/></symbol>' })
+  };
+  const svgAttrs = { viewBox: '0 0 48 48', 'aria-label': 'Brand Icon', onclick: 'evil()' };
+  const svgUseEl = withAttrs({ href: '#brand-mark' });
+  const scriptEl = { removed: false, remove() { this.removed = true; } };
+  const inlineSvgEl = {
+    getAttribute: (name) => (Object.hasOwn(svgAttrs, name) ? svgAttrs[name] : null),
+    setAttribute: (name, val) => { svgAttrs[name] = String(val); },
+    querySelectorAll: (sel) => {
+      if (sel.includes('path')) {
+        return [svgUseEl];
+      }
+      if (sel === 'use') {
+        return [svgUseEl];
+      }
+      if (sel === 'script') {
+        return [scriptEl];
+      }
+      return [];
+    },
+    querySelector: () => null,
+    getBoundingClientRect: () => ({ width: 48, height: 48 }),
+    insertBefore: () => {},
+    cloneNode: () => ({
+      ...inlineSvgEl,
+      outerHTML: '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" onclick="evil()"><defs><symbol id="brand-mark"><path d="M1 1"/></symbol></defs><use href="#brand-mark"/></svg>'
+    })
+  };
+  const bgSvgEl = {
+    getBoundingClientRect: () => ({ width: 120, height: 120 }),
+    __bg: 'url("data:image/svg+xml;charset=utf-8,%3Csvg%3E%3Crect%20width%3D%2210%22%2F%3E%3C%2Fsvg%3E")'
+  };
+
+  const prevGetById = globalThis.document.getElementById;
+  const prevCreateNs = globalThis.document.createElementNS;
+  const prevGetComputedStyle = globalThis.window.getComputedStyle;
+  globalThis.document.getElementById = (id) => (id === 'brand-mark' ? symbolDefNode : null);
+  globalThis.document.createElementNS = () => clonedDefs;
+  globalThis.window.getComputedStyle = (el) => ({ backgroundImage: el.__bg || 'none' });
+
+  mockElementsBySelector.svg = [inlineSvgEl];
+  mockElementsBySelector['div, section, article, figure, span, a'] = [bgSvgEl];
+
+  try {
+    const result = globalThis.window.__mediaHarvestScan(DEFAULT_CFG);
+    const svgItems = result.items.filter((i) => i.ext === 'svg');
+    assert.equal(svgItems.length, 2);
+    const inlineItem = svgItems.find((i) => i.title === 'Brand Icon');
+    assert.ok(inlineItem);
+    assert.ok(inlineItem.url.startsWith('data:image/svg+xml;charset=utf-8,'));
+    assert.equal(inlineItem.svgMarkup.includes('onclick='), false);
+    assert.equal(scriptEl.removed, true);
+    assert.equal(clonedDefs.children.length, 1);
+    assert.ok(svgItems.some((i) => i.url.includes('%3Crect')));
+  } finally {
+    globalThis.document.getElementById = prevGetById;
+    globalThis.document.createElementNS = prevCreateNs;
+    globalThis.window.getComputedStyle = prevGetComputedStyle;
+    mockElementsBySelector = { img: [], video: [], audio: [], 'a[href]': [] };
+  }
+});

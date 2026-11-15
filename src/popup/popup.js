@@ -17,9 +17,11 @@
 import {
   DEFAULT_FILENAMES,
   DEFAULT_SETTINGS,
+  IMAGE_CONVERT_FORMATS,
   LIMITS,
   MEDIA_TYPES,
   MESSAGE_TYPES,
+  POPUP_VIEW_MODES,
   SORT_MODES,
   STORAGE_KEYS
 } from '../config/constants.js';
@@ -29,11 +31,13 @@ import {
   applyStreamMetadata,
   createMediaCard,
   markInspectionFailed,
+  refreshAudioExtractButton,
   renderBadges,
   updateCardEntry,
   updateStreamLimitWarning
 } from './media_card.js';
 import {
+  formatBytes,
   localizeError,
   matchesFilter,
   matchesSearch,
@@ -58,6 +62,8 @@ export function collectPopupElements(doc) {
     statusBanner: doc.getElementById('statusBanner'),
     searchInput: doc.getElementById('searchInput'),
     sortSelect: doc.getElementById('sortSelect'),
+    viewModeBtn: doc.getElementById('viewModeBtn'),
+    imageConvertSelect: doc.getElementById('imageConvertSelect'),
     selectionBar: doc.getElementById('selectionBar'),
     selectAllBtn: doc.getElementById('selectAllBtn'),
     clearSelectionBtn: doc.getElementById('clearSelectionBtn'),
@@ -77,6 +83,7 @@ export function collectPopupElements(doc) {
     countAll: doc.getElementById('countAll'),
     countVideos: doc.getElementById('countVideos'),
     countImages: doc.getElementById('countImages'),
+    countSvg: doc.getElementById('countSvg'),
     countAudio: doc.getElementById('countAudio'),
     countSubtitles: doc.getElementById('countSubtitles'),
     filterBtns: Array.from(doc.querySelectorAll('.filter-btn'))
@@ -107,6 +114,8 @@ export function createPopupController(deps = {}) {
     filter: 'all',
     searchQuery: '',
     sortBy: SORT_MODES.DEFAULT,
+    viewMode: POPUP_VIEW_MODES.LIST,
+    imageConvertFormat: IMAGE_CONVERT_FORMATS.ORIGINAL,
     items: [],
     hasBlobVideo: false,
     settings: { ...DEFAULT_SETTINGS },
@@ -166,11 +175,12 @@ export function createPopupController(deps = {}) {
     }
   }
 
-  const VALID_FILTERS = new Set(['all', 'videos', 'images', 'audio', 'subtitles']);
+  const VALID_FILTERS = new Set(['all', 'videos', 'images', 'svg', 'audio', 'subtitles']);
   const VALID_SORTS = new Set(Object.values(SORT_MODES));
+  const VALID_VIEW_MODES = new Set(Object.values(POPUP_VIEW_MODES));
 
   /**
-   * Restores persisted filter category and sort order from local extension storage.
+   * Restores persisted filter category, sort order, and view mode from local extension storage.
    */
   async function restorePopupUiState() {
     if (!chromeApi.storage || !chromeApi.storage.local) {
@@ -188,7 +198,11 @@ export function createPopupController(deps = {}) {
       if (typeof saved.sortBy === 'string' && VALID_SORTS.has(saved.sortBy)) {
         state.sortBy = saved.sortBy;
       }
+      if (typeof saved.viewMode === 'string' && VALID_VIEW_MODES.has(saved.viewMode)) {
+        state.viewMode = saved.viewMode;
+      }
       applyActiveFilterUi();
+      applyViewModeUi();
       if (els.sortSelect) {
         els.sortSelect.value = state.sortBy;
       }
@@ -198,7 +212,7 @@ export function createPopupController(deps = {}) {
   }
 
   /**
-   * Saves the active filter category and sort order to local extension storage.
+   * Saves the active filter category, sort order, and view mode to local extension storage.
    */
   function persistPopupUiState() {
     if (!chromeApi.storage || !chromeApi.storage.local) {
@@ -208,7 +222,8 @@ export function createPopupController(deps = {}) {
       const result = chromeApi.storage.local.set({
         [STORAGE_KEYS.POPUP_UI_STATE]: {
           filter: state.filter,
-          sortBy: state.sortBy
+          sortBy: state.sortBy,
+          viewMode: state.viewMode
         }
       });
       if (result && typeof result.catch === 'function') {
@@ -231,6 +246,23 @@ export function createPopupController(deps = {}) {
   }
 
   /**
+   * Synchronizes media list layout (list or gallery grid) and toggle button labels.
+   */
+  function applyViewModeUi() {
+    const isGrid = state.viewMode === POPUP_VIEW_MODES.GRID;
+    if (els.mediaList && els.mediaList.classList) {
+      els.mediaList.classList.toggle('is-grid', isGrid);
+    }
+    if (els.viewModeBtn) {
+      els.viewModeBtn.classList.toggle('is-active', isGrid);
+      els.viewModeBtn.setAttribute('aria-pressed', String(isGrid));
+      const key = isGrid ? 'popup_action_view_list' : 'popup_action_view_grid';
+      els.viewModeBtn.title = translateFn(key);
+      els.viewModeBtn.setAttribute('aria-label', translateFn(key));
+    }
+  }
+
+  /**
    * Returns true if an item can be targeted by checkbox selection and batch download.
    * @param {object} item
    * @returns {boolean}
@@ -244,6 +276,11 @@ export function createPopupController(deps = {}) {
    * @param {Array<object>} visible
    */
   function updateSelectionControls(visible) {
+    if (els.imageConvertSelect) {
+      const hasImages = visible.some((item) => item.type === MEDIA_TYPES.IMAGE);
+      els.imageConvertSelect.classList.toggle('hidden', !hasImages);
+      els.imageConvertSelect.disabled = Boolean(state.batchRunning);
+    }
     if (!els.selectionBar || !els.selectAllBtn || !els.downloadSelectedBtn) {
       return;
     }
@@ -313,6 +350,11 @@ export function createPopupController(deps = {}) {
     els.countImages.textContent = String(
       state.items.filter((i) => i.type === MEDIA_TYPES.IMAGE).length
     );
+    if (els.countSvg) {
+      els.countSvg.textContent = String(
+        state.items.filter((i) => (i.ext || '').toLowerCase() === DEFAULT_FILENAMES.SVG_EXT).length
+      );
+    }
     els.countAudio.textContent = String(
       state.items.filter((i) => i.type === MEDIA_TYPES.AUDIO).length
     );
@@ -338,11 +380,16 @@ export function createPopupController(deps = {}) {
    * Formats segment download or muxing progress text.
    * @param {number} done
    * @param {number} total
+   * @param {{ isLiveRecord?: boolean, bytes?: number }} [opts={}]
    * @returns {string}
    */
-  function formatProgressText(done, total) {
+  function formatProgressText(done, total, opts = {}) {
     if (total > 0 && done >= total) {
       return translateFn('popup_status_hls_muxing');
+    }
+    if (opts.isLiveRecord) {
+      const sizeLabel = formatBytes(opts.bytes || 0) || '0 KB';
+      return translateFn('popup_status_live_recording', [String(done || 0), sizeLabel]);
     }
     if (total > 0) {
       return translateFn('popup_status_hls_segments', [String(done), String(total)]);
@@ -353,7 +400,7 @@ export function createPopupController(deps = {}) {
   /**
    * Attaches an active background stream build state onto a rendered media card.
    * @param {object} entry
-   * @param {{ requestId: string, done?: number, total?: number }} build
+   * @param {{ requestId: string, done?: number, total?: number, isLiveRecord?: boolean, bytes?: number }} build
    */
   function applyActiveBuildState(entry, build) {
     if (!entry || !build || !build.requestId) {
@@ -366,8 +413,16 @@ export function createPopupController(deps = {}) {
       entry.cancelBtn.disabled = false;
       entry.cancelBtn.classList.remove('hidden');
     }
+    if (entry.stopRecordBtn) {
+      const showStop = Boolean(build.isLiveRecord) && !(build.total > 0 && (build.done || 0) >= build.total);
+      entry.stopRecordBtn.disabled = !showStop;
+      entry.stopRecordBtn.classList.toggle('hidden', !showStop);
+    }
     entry.progressEl.className = 'progress-line';
-    entry.progressEl.textContent = formatProgressText(build.done || 0, build.total || 0);
+    entry.progressEl.textContent = formatProgressText(build.done || 0, build.total || 0, {
+      isLiveRecord: Boolean(build.isLiveRecord),
+      bytes: build.bytes || 0
+    });
     entry.progressEl.classList.remove('hidden');
   }
 
@@ -391,22 +446,34 @@ export function createPopupController(deps = {}) {
    * @param {object} entry
    * @param {string | undefined} selectedPlaylistUrl
    * @param {string} [selectedAudioUrl='']
+   * @param {{ audioOnly?: boolean, convertTo?: string, filenameOverride?: string, recordLive?: boolean }} [options={}]
    */
-  async function triggerDownload(entry, selectedPlaylistUrl, selectedAudioUrl = '') {
-    const { item, downloadBtn, cancelBtn, progressEl } = entry;
-    const isOffscreenBuild = Boolean(item.isStream || item.isMse);
+  async function triggerDownload(entry, selectedPlaylistUrl, selectedAudioUrl = '', options = {}) {
+    const { item, downloadBtn, cancelBtn, stopRecordBtn, progressEl } = entry;
+    const convertTo = typeof options.convertTo === 'string' ? options.convertTo : '';
+    const recordLive = Boolean(options.recordLive || (item.canRecordLive && !options.audioOnly && !convertTo));
+    const isOffscreenBuild = Boolean(item.isStream || item.isMse || convertTo);
     const requestId = `dl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     entry.activeRequestId = requestId;
     entry.showingCapWarning = false;
     state.localPendingRequestIds.add(requestId);
     setStatusBanner('');
     downloadBtn.disabled = true;
+    if (entry.audioExtractBtn) {
+      entry.audioExtractBtn.disabled = true;
+    }
+    if (recordLive && stopRecordBtn) {
+      stopRecordBtn.disabled = false;
+      stopRecordBtn.classList.remove('hidden');
+    }
     if (isOffscreenBuild && cancelBtn) {
       cancelBtn.disabled = false;
       cancelBtn.classList.remove('hidden');
     }
     progressEl.className = 'progress-line';
-    progressEl.textContent = isOffscreenBuild ? translateFn('popup_status_hls_preparing') : '';
+    progressEl.textContent = isOffscreenBuild
+      ? (recordLive ? formatProgressText(0, 0, { isLiveRecord: true, bytes: 0 }) : translateFn('popup_status_hls_preparing'))
+      : '';
     progressEl.classList.toggle('hidden', !isOffscreenBuild);
 
     let failed = false;
@@ -417,6 +484,11 @@ export function createPopupController(deps = {}) {
           url: item.url,
           playlistUrl: selectedPlaylistUrl || item.url,
           audioUrl: selectedAudioUrl || '',
+          audioOnly: Boolean(options.audioOnly),
+          recordLive,
+          convertTo,
+          width: item.width || 0,
+          height: item.height || 0,
           isStream: Boolean(item.isStream),
           isMse: Boolean(item.isMse),
           mseId: item.mseId || '',
@@ -424,7 +496,7 @@ export function createPopupController(deps = {}) {
           ext: item.ext || '',
           referer: item.referer || state.activeTabUrl || '',
           tabId: typeof state.activeTabId === 'number' ? state.activeTabId : -1,
-          filename: item.suggestedFilename,
+          filename: options.filenameOverride || item.suggestedFilename,
           allowFolders: isFolderFilenameTemplate(state.settings.filenameTemplate),
           saveAs: Boolean(state.settings.promptSaveAs),
           requestId
@@ -455,11 +527,18 @@ export function createPopupController(deps = {}) {
       if (entry.activeRequestId === requestId) {
         entry.activeRequestId = '';
       }
+      if (stopRecordBtn) {
+        stopRecordBtn.classList.add('hidden');
+        stopRecordBtn.disabled = false;
+      }
       if (cancelBtn) {
         cancelBtn.classList.add('hidden');
         cancelBtn.disabled = false;
       }
       downloadBtn.disabled = false;
+      if (entry.audioExtractBtn) {
+        entry.audioExtractBtn.disabled = false;
+      }
       if (!failed) {
         updateStreamLimitWarning(entry, cardContext);
       }
@@ -524,8 +603,9 @@ export function createPopupController(deps = {}) {
    * Sends a target URL or page URL to the local Native Messaging companion (yt-dlp/ffmpeg).
    * @param {object | null} entry
    * @param {string} targetUrl
+   * @param {{ audioOnly?: boolean, audioFormat?: string }} [options={}]
    */
-  async function triggerCompanionDownload(entry, targetUrl) {
+  async function triggerCompanionDownload(entry, targetUrl, options = {}) {
     const resolvedUrl = targetUrl || state.activeTabUrl;
     if (!resolvedUrl) {
       return;
@@ -533,18 +613,27 @@ export function createPopupController(deps = {}) {
     if (entry && entry.companionBtn) {
       entry.companionBtn.disabled = true;
     }
+    if (entry && entry.audioExtractBtn) {
+      entry.audioExtractBtn.disabled = true;
+    }
     if (els.companionPageBtn && !entry) {
       els.companionPageBtn.disabled = true;
     }
     setStatusBanner(translateFn('popup_status_companion_started'));
     try {
+      const baseFilename = entry && entry.item ? entry.item.suggestedFilename : '';
+      const targetFilename = options.audioOnly && baseFilename
+        ? `${baseFilename.replace(/\.[^./\\]+$/, '')}_audio`
+        : baseFilename;
       const response = await chromeApi.runtime.sendMessage({
         type: MESSAGE_TYPES.DOWNLOAD_WITH_COMPANION,
         payload: {
           url: resolvedUrl,
           referer: state.activeTabUrl || '',
-          filename: entry && entry.item ? entry.item.suggestedFilename : '',
-          quality: state.settings.defaultQuality
+          filename: targetFilename,
+          quality: state.settings.defaultQuality,
+          audioOnly: Boolean(options.audioOnly),
+          audioFormat: typeof options.audioFormat === 'string' ? options.audioFormat : 'mp3'
         }
       });
       if (!response || !response.ok) {
@@ -557,10 +646,47 @@ export function createPopupController(deps = {}) {
       if (entry && entry.companionBtn) {
         entry.companionBtn.disabled = false;
       }
+      if (entry && entry.audioExtractBtn) {
+        entry.audioExtractBtn.disabled = false;
+      }
       if (els.companionPageBtn && !entry) {
         els.companionPageBtn.disabled = false;
       }
     }
+  }
+
+  /**
+   * Extracts audio only from a video or stream card via browser offscreen track or companion MP3.
+   * @param {object} entry
+   * @param {string} selectedPlaylistUrl
+   * @param {string} selectedAudioUrl
+   * @param {boolean} useCompanion
+   */
+  async function triggerAudioExtraction(entry, selectedPlaylistUrl, selectedAudioUrl, useCompanion) {
+    const baseStem = (entry.item.suggestedFilename || DEFAULT_FILENAMES.BASE).replace(/\.[^./\\]+$/, '');
+    if (useCompanion) {
+      return triggerCompanionDownload(entry, selectedPlaylistUrl || entry.item.url, {
+        audioOnly: true,
+        audioFormat: DEFAULT_FILENAMES.AUDIO_MP3_EXT
+      });
+    }
+    return triggerDownload(entry, selectedPlaylistUrl, selectedAudioUrl, {
+      audioOnly: true,
+      filenameOverride: `${baseStem}_audio.${DEFAULT_FILENAMES.AUDIO_M4A_EXT}`
+    });
+  }
+
+  /**
+   * Triggers on-the-fly image or SVG raster conversion and download via the offscreen canvas worker.
+   * @param {object} entry
+   * @param {string} targetFormat
+   */
+  async function triggerImageConversion(entry, targetFormat) {
+    const baseStem = (entry.item.suggestedFilename || DEFAULT_FILENAMES.BASE).replace(/\.[^./\\]+$/, '');
+    return triggerDownload(entry, entry.item.url, '', {
+      convertTo: targetFormat,
+      filenameOverride: `${baseStem}.${targetFormat}`
+    });
   }
 
   /**
@@ -583,6 +709,7 @@ export function createPopupController(deps = {}) {
       if (entry.companionBtn) {
         entry.companionBtn.classList.toggle('hidden', !state.companionAvailable);
       }
+      refreshAudioExtractButton(entry, cardContext);
     }
   }
 
@@ -593,6 +720,8 @@ export function createPopupController(deps = {}) {
     getSettings: () => state.settings,
     isCompanionAvailable: () => state.companionAvailable,
     onCompanionDownload: (entry, targetUrl) => triggerCompanionDownload(entry, targetUrl),
+    onExtractAudio: triggerAudioExtraction,
+    onConvertImage: triggerImageConversion,
     isSelected: (url) => state.selectedUrls.has(url),
     onSelectionChange: (entry, checked) => {
       if (checked && isItemSelectable(entry.item)) {
@@ -608,6 +737,12 @@ export function createPopupController(deps = {}) {
     onCancel: (requestId) => {
       chromeApi.runtime.sendMessage({
         type: MESSAGE_TYPES.CANCEL_DOWNLOAD,
+        requestId
+      }).catch(() => {});
+    },
+    onStopRecord: (requestId) => {
+      chromeApi.runtime.sendMessage({
+        type: MESSAGE_TYPES.STOP_LIVE_RECORD,
         requestId
       }).catch(() => {});
     },
@@ -1003,12 +1138,18 @@ export function createPopupController(deps = {}) {
     }
 
     if (message.type === MESSAGE_TYPES.DOWNLOAD_PROGRESS) {
+      const progressOpts = {
+        isLiveRecord: Boolean(message.isLiveRecord),
+        bytes: Number.isFinite(message.bytes) ? message.bytes : 0
+      };
       if (message.url && message.requestId) {
         state.activeBuildsByUrl.set(message.url, {
           requestId: message.requestId,
           url: message.url,
           done: message.done || 0,
-          total: message.total || 0
+          total: message.total || 0,
+          isLiveRecord: progressOpts.isLiveRecord,
+          bytes: progressOpts.bytes
         });
       }
       const entry = findCardEntryForBuild(message.requestId, message.url);
@@ -1019,12 +1160,14 @@ export function createPopupController(deps = {}) {
         applyActiveBuildState(entry, {
           requestId: message.requestId,
           done: message.done,
-          total: message.total
+          total: message.total,
+          isLiveRecord: progressOpts.isLiveRecord,
+          bytes: progressOpts.bytes
         });
         return;
       }
       entry.progressEl.className = 'progress-line';
-      entry.progressEl.textContent = formatProgressText(message.done || 0, message.total || 0);
+      entry.progressEl.textContent = formatProgressText(message.done || 0, message.total || 0, progressOpts);
       entry.progressEl.classList.remove('hidden');
       return;
     }
@@ -1042,6 +1185,10 @@ export function createPopupController(deps = {}) {
       }
       if (entry.activeRequestId === message.requestId) {
         entry.activeRequestId = '';
+      }
+      if (entry.stopRecordBtn) {
+        entry.stopRecordBtn.classList.add('hidden');
+        entry.stopRecordBtn.disabled = false;
       }
       if (entry.cancelBtn) {
         entry.cancelBtn.classList.add('hidden');
@@ -1167,6 +1314,27 @@ export function createPopupController(deps = {}) {
         hideBatchConfirm();
         persistPopupUiState();
         renderList();
+      });
+    }
+
+    if (els.viewModeBtn) {
+      els.viewModeBtn.addEventListener('click', () => {
+        state.viewMode = state.viewMode === POPUP_VIEW_MODES.GRID
+          ? POPUP_VIEW_MODES.LIST
+          : POPUP_VIEW_MODES.GRID;
+        applyViewModeUi();
+        persistPopupUiState();
+      });
+    }
+
+    if (els.imageConvertSelect) {
+      els.imageConvertSelect.addEventListener('change', () => {
+        const val = els.imageConvertSelect.value;
+        state.imageConvertFormat = (
+          val === IMAGE_CONVERT_FORMATS.PNG || val === IMAGE_CONVERT_FORMATS.JPG
+        )
+          ? val
+          : IMAGE_CONVERT_FORMATS.ORIGINAL;
       });
     }
 
@@ -1345,6 +1513,7 @@ export function createPopupController(deps = {}) {
       // Keep default settings if sync storage read fails
     }
     await restorePopupUiState();
+    applyViewModeUi();
     refreshCompanionAvailability();
     await loadActiveTabMedia();
   }

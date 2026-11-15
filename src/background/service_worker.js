@@ -18,6 +18,7 @@ import {
   AUDIO_EXTENSIONS,
   BADGE_CONFIG,
   DEFAULT_FILENAMES,
+  IMAGE_CONVERT_FORMATS,
   IMAGE_EXTENSIONS,
   LIMITS,
   MEDIA_SOURCES,
@@ -42,8 +43,10 @@ import {
   classifyMseMime,
   deduplicateMedia,
   deriveFilenameStem,
+  isDownloadableMediaUrl,
   isHttpUrl,
   isMseUrl,
+  isSvgDataUrl,
   sanitizeFilename
 } from '../shared/media_classifier.js';
 import { attachVideoPreviews, extractMediaId } from '../shared/preview_matcher.js';
@@ -519,7 +522,9 @@ async function scanTabDom(tabId, tabUrl, settings) {
       sourceTag: MEDIA_SOURCES.DOM,
       directExtensions: [...VIDEO_EXTENSIONS, ...IMAGE_EXTENSIONS, ...AUDIO_EXTENSIONS],
       subtitleExtensions: SUBTITLE_EXTENSIONS,
-      maxJsonLdNodes: LIMITS.MAX_JSON_LD_NODES
+      maxJsonLdNodes: LIMITS.MAX_JSON_LD_NODES,
+      maxSvgItems: LIMITS.MAX_SVG_ITEMS,
+      minSvgDimensionPx: LIMITS.MIN_SVG_DIMENSION_PX
     };
 
     const runScan = (cfg) => (
@@ -671,12 +676,16 @@ async function inspectHlsStream(url, referer = '') {
     }
 
     const parsed = parseHlsPlaylist(text, url);
+    const rootBlockedEncrypted = Boolean(
+      parsed.drmEncrypted || (parsed.encrypted && !parsed.decryptableAes128)
+    );
 
     let durationSec = parsed.totalDurationSec;
     let sampleDynamic = false;
-    let sampleEncrypted = false;
+    let sampleBlockedEncrypted = false;
+    let sampleDecryptableAes128 = false;
     let sampleOutputExtension = parsed.outputExtension;
-    if (parsed.isMaster && parsed.variants.length > 0 && !parsed.encrypted) {
+    if (parsed.isMaster && parsed.variants.length > 0 && !rootBlockedEncrypted) {
       try {
         const sampleText = await fetchWithManagedTimeout(parsed.variants[0].url, {
           responseMode: 'text'
@@ -684,7 +693,10 @@ async function inspectHlsStream(url, referer = '') {
         const sampleParsed = parseHlsPlaylist(sampleText, parsed.variants[0].url);
         durationSec = sampleParsed.totalDurationSec;
         sampleDynamic = Boolean(sampleParsed.isDynamic);
-        sampleEncrypted = Boolean(sampleParsed.encrypted);
+        sampleBlockedEncrypted = Boolean(
+          sampleParsed.drmEncrypted || (sampleParsed.encrypted && !sampleParsed.decryptableAes128)
+        );
+        sampleDecryptableAes128 = Boolean(sampleParsed.decryptableAes128);
         sampleOutputExtension = sampleParsed.outputExtension;
       } catch {
         // Duration and sample metadata estimation is best-effort
@@ -699,7 +711,8 @@ async function inspectHlsStream(url, referer = '') {
 
     return {
       ...parsed,
-      encrypted: parsed.encrypted || sampleEncrypted,
+      encrypted: rootBlockedEncrypted || sampleBlockedEncrypted,
+      decryptableAes128: Boolean(parsed.decryptableAes128 || sampleDecryptableAes128),
       isDynamic: parsed.isDynamic || sampleDynamic,
       outputExtension: sampleOutputExtension,
       streamFormat: 'hls',
@@ -794,6 +807,21 @@ async function cancelDownloadBuild(requestId) {
 }
 
 /**
+ * Signals an active live HLS DVR recorder in the offscreen worker to stop and finalize its MP4 file.
+ * @param {string} [requestId]
+ * @returns {Promise<void>}
+ */
+async function stopLiveRecording(requestId) {
+  await chrome.runtime.sendMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_STOP_LIVE_RECORD,
+    requestId
+  }).catch(() => {
+    // Offscreen document may not exist or already finished recording
+  });
+}
+
+/**
  * Starts a direct browser download for a non-stream media URL.
  * @param {object} payload
  * @param {string} rawStem
@@ -811,17 +839,23 @@ async function startDirectDownload(payload, rawStem, requestId) {
   const providedExt = dotIdx > 0 && dotIdx < leafName.length - 1 ? leafName.slice(dotIdx + 1) : '';
   const allowFolders = Boolean(payload.allowFolders) || isFolderFilenameTemplate(settings.filenameTemplate);
   const directFilename = sanitizeFilename(rawStem, providedExt || fallbackExt, { allowFolders });
-  const ruleId = await addTemporaryRefererRule(payload.url, payload.referer || '');
+  const ruleId = isSvgDataUrl(payload.url)
+    ? null
+    : await addTemporaryRefererRule(payload.url, payload.referer || '');
   try {
     const downloadId = await chrome.downloads.download({
       url: payload.url,
       filename: directFilename,
       saveAs: Boolean(payload.saveAs)
     });
-    await attachDownloadDnrRule(downloadId, ruleId);
+    if (ruleId !== null) {
+      await attachDownloadDnrRule(downloadId, ruleId);
+    }
     return { downloadId, requestId };
   } catch (err) {
-    await removeTemporaryRefererRule(ruleId);
+    if (ruleId !== null) {
+      await removeTemporaryRefererRule(ruleId);
+    }
     throw err;
   }
 }
@@ -980,20 +1014,24 @@ async function startStreamDownload(payload, rawStem, requestId) {
     requestId,
     targetUrl: payload.url,
     rawStem,
-    fallbackExt: DEFAULT_FILENAMES.HLS_TS_EXT,
+    fallbackExt: payload.audioOnly ? DEFAULT_FILENAMES.AUDIO_M4A_EXT : DEFAULT_FILENAMES.HLS_TS_EXT,
     saveAs: Boolean(payload.saveAs),
     allowFolders: Boolean(payload.allowFolders),
     tabId: typeof payload.tabId === 'number' ? payload.tabId : -1,
     referer: typeof payload.referer === 'string' ? payload.referer : '',
     buildOffscreenMessage: (settings) => ({
       target: 'offscreen',
-      type: MESSAGE_TYPES.OFFSCREEN_BUILD_HLS_BLOB,
+      type: payload.recordLive
+        ? MESSAGE_TYPES.OFFSCREEN_RECORD_HLS_LIVE
+        : MESSAGE_TYPES.OFFSCREEN_BUILD_HLS_BLOB,
       requestId,
       playlistUrl: targetPlaylist,
       originalUrl: payload.url,
       audioUrl: typeof payload.audioUrl === 'string' ? payload.audioUrl : '',
+      audioOnly: Boolean(payload.audioOnly),
       concurrency: settings.hlsFetchConcurrency,
-      qualityPreference: settings.defaultQuality
+      qualityPreference: settings.defaultQuality,
+      pollIntervalMs: typeof payload.pollIntervalMs === 'number' ? payload.pollIntervalMs : undefined
     })
   });
 }
@@ -1213,6 +1251,8 @@ async function downloadWithCompanion(payload) {
     referer: typeof payload.referer === 'string' ? payload.referer : '',
     filename: typeof payload.filename === 'string' ? payload.filename : '',
     quality: typeof payload.quality === 'string' ? payload.quality : 'best',
+    audioOnly: Boolean(payload.audioOnly),
+    audioFormat: typeof payload.audioFormat === 'string' ? payload.audioFormat : 'mp3',
     cookiesBrowser: settings && settings.enableCompanionCookies ? 'chrome' : ''
   };
 
@@ -1287,8 +1327,38 @@ async function downloadWithCompanion(payload) {
 }
 
 /**
- * Starts a download either directly, via MSE export, or via HLS/DASH offscreen assembly.
- * @param {{ url: string, playlistUrl?: string, isStream?: boolean, isMse?: boolean, filename?: string, saveAs?: boolean, requestId?: string }} payload
+ * Converts an image or SVG via offscreen canvas to PNG or JPG and initiates download.
+ * @param {object} payload
+ * @param {string} rawStem
+ * @param {string} requestId
+ * @returns {Promise<{ downloadId: number, requestId: string }>}
+ */
+async function startImageConversionDownload(payload, rawStem, requestId) {
+  const targetFormat = String(payload.convertTo || '').toLowerCase();
+  return executeOffscreenBlobDownload({
+    requestId,
+    targetUrl: payload.url,
+    rawStem,
+    fallbackExt: targetFormat || IMAGE_CONVERT_FORMATS.PNG,
+    saveAs: Boolean(payload.saveAs),
+    allowFolders: Boolean(payload.allowFolders),
+    tabId: typeof payload.tabId === 'number' ? payload.tabId : -1,
+    referer: typeof payload.referer === 'string' ? payload.referer : '',
+    buildOffscreenMessage: () => ({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_CONVERT_IMAGE,
+      requestId,
+      targetUrl: payload.url,
+      targetFormat,
+      width: Number.isFinite(payload.width) ? payload.width : 0,
+      height: Number.isFinite(payload.height) ? payload.height : 0
+    })
+  });
+}
+
+/**
+ * Starts a download either directly, via image conversion, via MSE export, or via HLS/DASH offscreen assembly.
+ * @param {{ url: string, playlistUrl?: string, isStream?: boolean, isMse?: boolean, convertTo?: string, filename?: string, saveAs?: boolean, requestId?: string }} payload
  * @returns {Promise<{ downloadId: number, requestId: string }>}
  */
 async function handleDownloadMedia(payload) {
@@ -1296,7 +1366,7 @@ async function handleDownloadMedia(payload) {
     throw new Error('INVALID_URL');
   }
   const mseTarget = Boolean(payload.isMse || isMseUrl(payload.url));
-  if (!mseTarget && !isHttpUrl(payload.url)) {
+  if (!mseTarget && !isDownloadableMediaUrl(payload.url)) {
     throw new Error('INVALID_URL');
   }
 
@@ -1307,6 +1377,10 @@ async function handleDownloadMedia(payload) {
 
   if (mseTarget) {
     return startMseDownload(payload, rawStem, requestId);
+  }
+  const convertFormat = typeof payload.convertTo === 'string' ? payload.convertTo.toLowerCase() : '';
+  if (convertFormat === IMAGE_CONVERT_FORMATS.PNG || convertFormat === IMAGE_CONVERT_FORMATS.JPG) {
+    return startImageConversionDownload(payload, rawStem, requestId);
   }
   if (!payload.isStream) {
     return startDirectDownload(payload, rawStem, requestId);
@@ -1324,12 +1398,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (buildState) {
       buildState.done = message.done || 0;
       buildState.total = message.total || 0;
+      buildState.isLiveRecord = Boolean(message.isLiveRecord);
+      buildState.bytes = Number.isFinite(message.bytes) ? message.bytes : 0;
       if (buildState.tabId >= 0 && chrome.tabs && typeof chrome.tabs.sendMessage === 'function') {
         chrome.tabs.sendMessage(buildState.tabId, {
           type: MESSAGE_TYPES.DOWNLOAD_PROGRESS,
           requestId: message.requestId,
           done: buildState.done,
-          total: buildState.total
+          total: buildState.total,
+          isLiveRecord: buildState.isLiveRecord,
+          bytes: buildState.bytes
         }).catch(() => {});
       }
     }
@@ -1341,7 +1419,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       requestId,
       url: build.url,
       done: build.done,
-      total: build.total
+      total: build.total,
+      isLiveRecord: Boolean(build.isLiveRecord),
+      bytes: Number.isFinite(build.bytes) ? build.bytes : 0
     }));
     sendResponse({ ok: true, builds });
     return false;
@@ -1409,6 +1489,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === MESSAGE_TYPES.CANCEL_DOWNLOAD) {
     cancelDownloadBuild(message.requestId)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.STOP_LIVE_RECORD) {
+    stopLiveRecording(message.requestId)
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;

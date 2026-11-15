@@ -188,7 +188,7 @@ test('buildStreamPreviewUrl rejects dynamic live DASH streams and encrypted HLS 
       ok: true,
       status: 200,
       headers: new Headers(),
-      text: async () => '#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="https://example.com/key"\n#EXTINF:2.0,\nseg.ts'
+      text: async () => '#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI="skd://example.com/key"\n#EXTINF:2.0,\nseg.ts'
     };
   };
 
