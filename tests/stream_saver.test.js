@@ -18,6 +18,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { STORAGE_KEYS } from '../src/config/constants.js';
 import {
+  buildIsoBox,
+  countTracksInInit,
+  parseIsoBoxes,
+  splitFmp4InitAndFragments
+} from '../src/shared/fmp4_muxer.js';
+import {
   createStreamSaverController,
   streamPlaylistToWritable,
   streamProgressiveResponseToWritable
@@ -325,4 +331,94 @@ test('streamPlaylistToWritable transmuxes MPEG-TS HLS segments incrementally int
   assert.deepEqual(Array.from(writable.chunks[0]), [0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70]);
   assert.deepEqual(Array.from(writable.chunks[1]), [0x6d, 0x64, 0xaa]);
   assert.deepEqual(Array.from(writable.chunks[2]), [0x6d, 0x64, 0xbb]);
+});
+
+function makeSaverFmp4Init(trackId) {
+  const ftyp = buildIsoBox('ftyp', [new Uint8Array([0x69, 0x73, 0x6f, 0x6d])]);
+  const mvhd = new Uint8Array(100);
+  new DataView(mvhd.buffer).setUint32(96, trackId + 1, false);
+  const tkhd = new Uint8Array(84);
+  new DataView(tkhd.buffer).setUint32(12, trackId, false);
+  const trex = new Uint8Array(24);
+  new DataView(trex.buffer).setUint32(4, trackId, false);
+  const moov = buildIsoBox('moov', [
+    buildIsoBox('mvhd', [mvhd]),
+    buildIsoBox('trak', [buildIsoBox('tkhd', [tkhd])]),
+    buildIsoBox('mvex', [buildIsoBox('trex', [trex])])
+  ]);
+  const out = new Uint8Array(ftyp.byteLength + moov.byteLength);
+  out.set(ftyp, 0);
+  out.set(moov, ftyp.byteLength);
+  return out;
+}
+
+function makeSaverFmp4Frag(trackId, fillByte) {
+  const tfhd = new Uint8Array(12);
+  new DataView(tfhd.buffer).setUint32(4, trackId, false);
+  const moof = buildIsoBox('moof', [buildIsoBox('traf', [buildIsoBox('tfhd', [tfhd])])]);
+  const mdat = buildIsoBox('mdat', [new Uint8Array([fillByte, fillByte])]);
+  const out = new Uint8Array(moof.byteLength + mdat.byteLength);
+  out.set(moof, 0);
+  out.set(mdat, moof.byteLength);
+  return out;
+}
+
+test('streamPlaylistToWritable streams dual-track fMP4 HLS master with separate audio into valid merged MP4', async () => {
+  const writable = createMemoryWritable();
+  const masterM3u8 = [
+    '#EXTM3U',
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Main",DEFAULT=YES,URI="audio.m3u8"',
+    '#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1920x1080,AUDIO="aud"',
+    'video.m3u8'
+  ].join('\n');
+  const videoM3u8 = ['#EXTM3U', '#EXT-X-MAP:URI="v_init.mp4"', '#EXTINF:2.0,', 'v1.m4s', '#EXT-X-ENDLIST'].join('\n');
+  const audioM3u8 = ['#EXTM3U', '#EXT-X-MAP:URI="a_init.mp4"', '#EXTINF:2.0,', 'a1.m4s', '#EXT-X-ENDLIST'].join('\n');
+
+  const vInit = makeSaverFmp4Init(1);
+  const aInit = makeSaverFmp4Init(1);
+  const vFrag = makeSaverFmp4Frag(1, 0xaa);
+  const aFrag = makeSaverFmp4Frag(1, 0xbb);
+
+  const mockResponses = new Map([
+    ['https://cdn.example.com/dual/master.m3u8', { text: masterM3u8 }],
+    ['https://cdn.example.com/dual/video.m3u8', { text: videoM3u8 }],
+    ['https://cdn.example.com/dual/audio.m3u8', { text: audioM3u8 }],
+    ['https://cdn.example.com/dual/v_init.mp4', { buf: vInit.buffer }],
+    ['https://cdn.example.com/dual/a_init.mp4', { buf: aInit.buffer }],
+    ['https://cdn.example.com/dual/v1.m4s', { buf: vFrag.buffer }],
+    ['https://cdn.example.com/dual/a1.m4s', { buf: aFrag.buffer }]
+  ]);
+
+  const written = await streamPlaylistToWritable(
+    {
+      url: 'https://cdn.example.com/dual/master.m3u8',
+      playlistUrl: 'https://cdn.example.com/dual/video.m3u8',
+      isStream: true,
+      concurrency: 2
+    },
+    writable,
+    {
+      fetchFn: async (url) => {
+        const entry = mockResponses.get(url);
+        return entry
+          ? { ok: true, status: 200, text: async () => entry.text, arrayBuffer: async () => entry.buf }
+          : { ok: false, status: 404 };
+      }
+    }
+  );
+
+  assert.ok(written > 0);
+  const merged = Buffer.concat(writable.chunks.map((c) => Buffer.from(c)));
+  const split = splitFmp4InitAndFragments(merged);
+  assert.equal(countTracksInInit(split.initSegment), 2);
+  assert.equal(split.fragments.length, 2);
+
+  // Audio fragment must be rewritten to track_ID = 2
+  const audioFragBoxes = parseIsoBoxes(split.fragments[1]);
+  const aTraf = parseIsoBoxes(split.fragments[1], audioFragBoxes[0].start + 8, audioFragBoxes[0].end)[0];
+  const aTfhd = parseIsoBoxes(split.fragments[1], aTraf.start + 8, aTraf.end)[0];
+  assert.equal(
+    new DataView(aTfhd.data.buffer, aTfhd.data.byteOffset, aTfhd.data.byteLength).getUint32(12, false),
+    2
+  );
 });

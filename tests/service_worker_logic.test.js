@@ -776,3 +776,76 @@ test('service_worker applies same-origin/CDN DNR rules, correlates multi-video b
   assert.ok(downloads.some((d) => d.filename === 'Live_Broadcast.webm'));
   delete globalThis.chrome.tabCapture;
 });
+
+test('service_worker DOWNLOAD_SITE_VIDEO prefers matching muxed stream or companion audio over split video-only URLs', async () => {
+  offscreenMessages.length = 0;
+
+  // Case 1: Reddit DASH_720.mp4 video-only directVideoUrl with matching HLSPlaylist.m3u8 in tab network media
+  sessionStore.set(`${STORAGE_KEYS.TAB_MEDIA_PREFIX}101`, [
+    {
+      url: 'https://v.redd.it/xyz123/DASH_720.mp4?source=fallback',
+      type: 'video',
+      ext: 'mp4',
+      isStream: false
+    },
+    {
+      url: 'https://v.redd.it/xyz123/HLSPlaylist.m3u8?a=1',
+      type: 'stream',
+      ext: 'mp4',
+      isStream: true
+    }
+  ]);
+
+  const respStream = await dispatchRuntimeMessage(
+    {
+      type: MESSAGE_TYPES.DOWNLOAD_SITE_VIDEO,
+      payload: {
+        requestId: 'site_reddit_stream',
+        siteId: 'reddit',
+        pageUrl: 'https://www.reddit.com/r/videos/comments/xyz123/',
+        directVideoUrl: 'https://v.redd.it/xyz123/DASH_720.mp4?source=fallback'
+      }
+    },
+    { tab: { id: 101, url: 'https://www.reddit.com/r/videos/comments/xyz123/' } }
+  );
+  assert.equal(respStream.ok, true);
+  const streamBuildMsg = offscreenMessages.find((m) => m.requestId === 'site_reddit_stream');
+  assert.ok(streamBuildMsg);
+  assert.equal(streamBuildMsg.playlistUrl, 'https://v.redd.it/xyz123/HLSPlaylist.m3u8?a=1');
+
+  // Case 2: Split DASH_720.mp4 + DASH_AUDIO_128.mp4 without manifest pairs progressiveMux cleanly
+  offscreenMessages.length = 0;
+  sessionStore.set(`${STORAGE_KEYS.TAB_MEDIA_PREFIX}102`, [
+    {
+      url: 'https://v.redd.it/abc456/DASH_720.mp4',
+      type: 'video',
+      ext: 'mp4',
+      isStream: false
+    },
+    {
+      url: 'https://v.redd.it/abc456/DASH_AUDIO_128.mp4',
+      type: 'audio',
+      ext: 'mp4',
+      isStream: false
+    }
+  ]);
+
+  const respPaired = await dispatchRuntimeMessage(
+    {
+      type: MESSAGE_TYPES.DOWNLOAD_SITE_VIDEO,
+      payload: {
+        requestId: 'site_reddit_paired',
+        siteId: 'reddit',
+        pageUrl: 'https://www.reddit.com/r/videos/comments/abc456/',
+        directVideoUrl: 'https://v.redd.it/abc456/DASH_720.mp4'
+      }
+    },
+    { tab: { id: 102, url: 'https://www.reddit.com/r/videos/comments/abc456/' } }
+  );
+  assert.equal(respPaired.ok, true);
+  const pairedBuildMsg = offscreenMessages.find((m) => m.requestId === 'site_reddit_paired');
+  assert.ok(pairedBuildMsg);
+  assert.equal(pairedBuildMsg.progressiveMux, true);
+  assert.equal(pairedBuildMsg.originalUrl, 'https://v.redd.it/abc456/DASH_720.mp4');
+  assert.equal(pairedBuildMsg.audioUrl, 'https://v.redd.it/abc456/DASH_AUDIO_128.mp4');
+});

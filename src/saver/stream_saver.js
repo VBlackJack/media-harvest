@@ -30,6 +30,7 @@ import {
   isBase64DataUri,
   resolveSegmentIv
 } from '../shared/hls_crypto.js';
+import { mergeFmp4InitSegments, normalizeFmp4Fragment } from '../shared/fmp4_muxer.js';
 import { parseHlsPlaylist, selectBestVariant } from '../shared/hls_parser.js';
 import { applyTranslations, getUiLanguage, t } from '../shared/i18n.js';
 import { isHttpUrl } from '../shared/media_classifier.js';
@@ -119,6 +120,112 @@ export async function streamProgressiveResponseToWritable(targetUrl, writable, o
   return totalWritten;
 }
 
+function buildPlaylistSegmentRequests(playlist) {
+  const reqs = [];
+  for (let i = 0; i < (playlist.segments || []).length; i += 1) {
+    const seg = playlist.segments[i];
+    reqs.push({
+      url: seg.url,
+      byteRange: seg.byteRange || '',
+      key: seg.key || null,
+      sequenceNumber: Number.isFinite(seg.sequenceNumber) ? seg.sequenceNumber : i
+    });
+  }
+  return reqs;
+}
+
+/**
+ * Streams dual-track segmented fMP4 (video + separate audio init + segment pairs) directly to disk.
+ * Merges `[ftyp?, combinedMoov]` upfront and rewrites audio fragment track IDs on the fly.
+ * @param {object} mediaPlaylist
+ * @param {object} audioPlaylist
+ * @param {FileSystemWritableFileStream} writable
+ * @param {object} ctx
+ * @returns {Promise<number>}
+ */
+async function streamDualFmp4ToWritable(mediaPlaylist, audioPlaylist, writable, ctx) {
+  const { concurrency, signal, fetchFn, keyCache, onProgress } = ctx;
+  const videoSegReqs = buildPlaylistSegmentRequests(mediaPlaylist);
+  const audioSegReqs = buildPlaylistSegmentRequests(audioPlaylist);
+  if (videoSegReqs.length === 0) {
+    throw new Error('EMPTY_PLAYLIST');
+  }
+
+  const totalUnits = 2 + videoSegReqs.length + audioSegReqs.length;
+  const [videoInitBuf, audioInitBuf] = await Promise.all([
+    fetchAndDecryptSegment(
+      { url: mediaPlaylist.initSegmentUrl, byteRange: mediaPlaylist.initSegmentByteRange || '', key: null, sequenceNumber: 0 },
+      signal,
+      fetchFn,
+      keyCache
+    ),
+    fetchAndDecryptSegment(
+      { url: audioPlaylist.initSegmentUrl, byteRange: audioPlaylist.initSegmentByteRange || '', key: null, sequenceNumber: 0 },
+      signal,
+      fetchFn,
+      keyCache
+    )
+  ]);
+
+  const { initParts, audioTrackId } = mergeFmp4InitSegments(videoInitBuf, audioInitBuf);
+  let totalBytesWritten = 0;
+  for (const part of initParts) {
+    await writable.write(part);
+    totalBytesWritten += part.byteLength;
+  }
+  let completedCount = 2;
+  onProgress(completedCount, totalUnits, totalBytesWritten, true);
+
+  const pairCount = Math.max(videoSegReqs.length, audioSegReqs.length);
+  const stepWindow = Math.max(1, Math.floor(concurrency / 2));
+
+  for (let start = 0; start < pairCount; start += stepWindow) {
+    if (signal && signal.aborted) {
+      throw new Error('DOWNLOAD_CANCELLED');
+    }
+    const end = Math.min(start + stepWindow, pairCount);
+    const pairIndices = [];
+    for (let idx = start; idx < end; idx += 1) {
+      pairIndices.push(idx);
+    }
+
+    const pairBuffers = await Promise.all(
+      pairIndices.map(async (idx) => {
+        const vPromise = idx < videoSegReqs.length
+          ? fetchAndDecryptSegment(videoSegReqs[idx], signal, fetchFn, keyCache)
+          : Promise.resolve(null);
+        const aPromise = idx < audioSegReqs.length
+          ? fetchAndDecryptSegment(audioSegReqs[idx], signal, fetchFn, keyCache)
+          : Promise.resolve(null);
+        return Promise.all([vPromise, aPromise]);
+      })
+    );
+
+    for (let i = 0; i < pairBuffers.length; i += 1) {
+      if (signal && signal.aborted) {
+        throw new Error('DOWNLOAD_CANCELLED');
+      }
+      const [vBuf, aBuf] = pairBuffers[i];
+      if (vBuf) {
+        const normalizedVideo = normalizeFmp4Fragment(new Uint8Array(vBuf), 0);
+        await writable.write(normalizedVideo);
+        totalBytesWritten += normalizedVideo.byteLength;
+        completedCount += 1;
+      }
+      if (aBuf) {
+        const rewrittenAudio = normalizeFmp4Fragment(new Uint8Array(aBuf), audioTrackId);
+        await writable.write(rewrittenAudio);
+        totalBytesWritten += rewrittenAudio.byteLength;
+        completedCount += 1;
+      }
+      pairBuffers[i] = null;
+      onProgress(completedCount, totalUnits, totalBytesWritten, true);
+    }
+  }
+
+  return totalBytesWritten;
+}
+
 /**
  * Streams an HLS or DASH manifest directly to disk chunk-by-chunk without exceeding RAM caps.
  * Processes segment batches in bounded sliding windows and immediately flushes ordered chunks.
@@ -132,16 +239,18 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
   const signal = options.signal;
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
 
-  const playlistUrl = job.playlistUrl || job.url;
-  if (!isHttpUrl(playlistUrl)) {
+  const rootUrl = job.url || job.playlistUrl;
+  const preferredVariantUrl = job.playlistUrl || job.url;
+  const preferredAudioUrl = typeof job.audioUrl === 'string' ? job.audioUrl : '';
+  if (!isHttpUrl(rootUrl)) {
     throw new Error('INVALID_URL');
   }
 
   if (!job.isStream) {
-    return streamProgressiveResponseToWritable(playlistUrl, writable, options);
+    return streamProgressiveResponseToWritable(preferredVariantUrl, writable, options);
   }
 
-  const rootRes = await fetchFn(playlistUrl, { signal });
+  const rootRes = await fetchFn(rootUrl, { signal });
   if (!rootRes.ok) {
     throw new Error(`HTTP_${rootRes.status}`);
   }
@@ -149,16 +258,21 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
   const qualityPref = job.qualityPreference || QUALITY_PREFERENCES.BEST;
 
   let mediaPlaylist;
+  let audioPlaylist = null;
   const pickVariant = (variants) => {
     if (!Array.isArray(variants) || variants.length === 0) {
       return null;
+    }
+    const explicit = variants.find((v) => v.url === preferredVariantUrl);
+    if (explicit) {
+      return explicit;
     }
     return qualityPref === QUALITY_PREFERENCES.LOWEST
       ? variants[variants.length - 1]
       : selectBestVariant(variants);
   };
-  if (isDashDescriptor(playlistUrl) || looksLikeDashXml(rootText)) {
-    const dash = parseDashManifest(rootText, playlistUrl);
+  if (isDashDescriptor(rootUrl) || looksLikeDashXml(rootText)) {
+    const dash = parseDashManifest(rootText, rootUrl);
     if (dash.encrypted || dash.drmEncrypted) {
       throw new Error('DRM_PROTECTED');
     }
@@ -167,8 +281,21 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
       throw new Error('EMPTY_PLAYLIST');
     }
     mediaPlaylist = chosen;
+    const isWebm = chosen.mimeType === 'video/webm';
+    const compatibleAudio = (dash.audioTracks || []).filter((track) => {
+      if (!track || !Array.isArray(track.segments) || track.segments.length === 0) {
+        return false;
+      }
+      const trackIsWebm = (track.mimeType || '').toLowerCase() === 'audio/webm';
+      return isWebm ? trackIsWebm : !trackIsWebm;
+    });
+    audioPlaylist = (
+      (preferredAudioUrl && compatibleAudio.find((a) => a.url === preferredAudioUrl)) ||
+      compatibleAudio[0] ||
+      null
+    );
   } else {
-    const parsed = parseHlsPlaylist(rootText, playlistUrl);
+    const parsed = parseHlsPlaylist(rootText, rootUrl);
     if (parsed.isMaster) {
       const chosen = pickVariant(parsed.variants);
       if (!chosen) {
@@ -179,6 +306,30 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
         throw new Error(`HTTP_${subRes.status}`);
       }
       mediaPlaylist = parseHlsPlaylist(await subRes.text(), chosen.url);
+      const groupTracks = chosen.audioGroup
+        ? (parsed.audioTracks || []).filter((a) => a.groupId === chosen.audioGroup && a.url)
+        : [];
+      const matchedAudio = (
+        (preferredAudioUrl && (parsed.audioTracks || []).find((a) => a.url === preferredAudioUrl)) ||
+        groupTracks.find((a) => a.isDefault) ||
+        groupTracks[0] ||
+        (parsed.audioTracks || []).find((a) => a.url && a.isDefault) ||
+        (parsed.audioTracks || []).find((a) => a.url) ||
+        null
+      );
+      if (matchedAudio && matchedAudio.url && matchedAudio.url !== chosen.url) {
+        const audioRes = await fetchFn(matchedAudio.url, { signal });
+        if (audioRes.ok) {
+          const candidateAudio = parseHlsPlaylist(await audioRes.text(), matchedAudio.url);
+          if (
+            !candidateAudio.drmEncrypted &&
+            (!candidateAudio.encrypted || candidateAudio.decryptableAes128) &&
+            candidateAudio.segments.length > 0
+          ) {
+            audioPlaylist = candidateAudio;
+          }
+        }
+      }
     } else {
       mediaPlaylist = parsed;
     }
@@ -192,6 +343,29 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
     return streamProgressiveResponseToWritable(mediaPlaylist.progressiveUrl, writable, options);
   }
 
+  const concurrency = clampInteger(
+    job.concurrency,
+    LIMITS.HLS_FETCH_CONCURRENCY,
+    LIMITS.MIN_HLS_CONCURRENCY,
+    LIMITS.MAX_HLS_CONCURRENCY
+  );
+  const keyCache = new Map();
+
+  if (
+    mediaPlaylist.initSegmentUrl &&
+    audioPlaylist &&
+    audioPlaylist.initSegmentUrl &&
+    mediaPlaylist.mimeType !== 'video/webm'
+  ) {
+    return streamDualFmp4ToWritable(mediaPlaylist, audioPlaylist, writable, {
+      concurrency,
+      signal,
+      fetchFn,
+      keyCache,
+      onProgress
+    });
+  }
+
   const requests = [];
   if (mediaPlaylist.initSegmentUrl) {
     requests.push({
@@ -201,26 +375,10 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
       sequenceNumber: 0
     });
   }
-  for (let i = 0; i < (mediaPlaylist.segments || []).length; i += 1) {
-    const seg = mediaPlaylist.segments[i];
-    requests.push({
-      url: seg.url,
-      byteRange: seg.byteRange || '',
-      key: seg.key || null,
-      sequenceNumber: seg.sequenceNumber
-    });
-  }
+  requests.push(...buildPlaylistSegmentRequests(mediaPlaylist));
   if (requests.length === 0) {
     throw new Error('EMPTY_PLAYLIST');
   }
-
-  const concurrency = clampInteger(
-    job.concurrency,
-    LIMITS.HLS_FETCH_CONCURRENCY,
-    LIMITS.MIN_HLS_CONCURRENCY,
-    LIMITS.MAX_HLS_CONCURRENCY
-  );
-  const keyCache = new Map();
   const TransmuxerCtor = options.TransmuxerCtor
     || (globalThis.muxjs && globalThis.muxjs.Transmuxer);
   const shouldTransmuxTs = Boolean(

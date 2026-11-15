@@ -42,9 +42,15 @@ import {
 import {
   countTracksInInit,
   extractAudioOnlyFromFmp4Parts,
+  hasAudioTrackInInit,
   mergeFmp4VideoAndAudioParts,
   splitFmp4InitAndFragments
 } from '../shared/fmp4_muxer.js';
+import {
+  looksLikeAdtsAudio,
+  transmuxAdtsSegmentsToFmp4Parts
+} from '../shared/adts_transmuxer.js';
+import { mergeWebmVideoAndAudioParts } from '../shared/webm_muxer.js';
 import { parseHlsPlaylist, selectBestVariant } from '../shared/hls_parser.js';
 import {
   classifyMseMime,
@@ -256,6 +262,35 @@ function notifyProgress(requestId, itemUrl, done, total, extra = {}) {
 }
 
 /**
+ * Selects a container-compatible DASH audio track matching user selection or preference.
+ * @param {Array<object>} audioTracks
+ * @param {boolean} isWebm
+ * @param {string} preferredAudioUrl
+ * @param {string} [selectedAudioId='']
+ * @returns {object | null}
+ */
+function resolveDashAudioTrack(audioTracks, isWebm, preferredAudioUrl, selectedAudioId = '') {
+  if (!Array.isArray(audioTracks) || audioTracks.length === 0) {
+    return null;
+  }
+  const compatible = audioTracks.filter((track) => {
+    if (!track || !Array.isArray(track.segments) || track.segments.length === 0) {
+      return false;
+    }
+    const trackIsWebm = (track.mimeType || '').toLowerCase() === 'audio/webm';
+    return isWebm ? trackIsWebm : !trackIsWebm;
+  });
+  if (compatible.length === 0) {
+    return null;
+  }
+  return (
+    (selectedAudioId && compatible.find((a) => a.id === selectedAudioId)) ||
+    (preferredAudioUrl && compatible.find((a) => a.url === preferredAudioUrl)) ||
+    compatible[0]
+  );
+}
+
+/**
  * Selects a variant respecting explicit user choice or default quality preference.
  * @param {Array<object>} variants
  * @param {string} preferredVariantUrl
@@ -314,11 +349,8 @@ async function resolveStreamPlan(
     if (!chosenVariant || chosenVariant.segments.length === 0) {
       throw new Error('EMPTY_PLAYLIST');
     }
-    const chosenAudio = (
-      preferredAudioUrl
-      && dashParsed.audioTracks.find((a) => a.url === preferredAudioUrl && a.segments.length > 0)
-    ) || dashParsed.audioTracks.find((a) => a.segments.length > 0) || null;
     const isWebm = chosenVariant.mimeType === 'video/webm';
+    const chosenAudio = resolveDashAudioTrack(dashParsed.audioTracks, isWebm, preferredAudioUrl);
     return {
       format: 'dash',
       mediaPlaylist: {
@@ -327,8 +359,8 @@ async function resolveStreamPlan(
         initSegmentByteRange: null,
         outputExtension: isWebm ? 'webm' : DEFAULT_FILENAMES.HLS_FMP4_EXT
       },
-      audioPlaylist: !isWebm && chosenAudio
-        ? { ...chosenAudio, initSegmentByteRange: null }
+      audioPlaylist: chosenAudio
+        ? { ...chosenAudio, initSegmentByteRange: null, outputExtension: isWebm ? 'webm' : DEFAULT_FILENAMES.AUDIO_M4A_EXT }
         : null,
       videoPlaylistUrl: masterOrMediaUrl.split('#')[0],
       audioPlaylistUrl: '',
@@ -374,11 +406,17 @@ async function resolveStreamPlan(
 
   let audioParsed = null;
   let audioPlaylistUrl = '';
+  const groupAudioTracks = chosenVariant.audioGroup
+    ? rootParsed.audioTracks.filter((a) => a.groupId === chosenVariant.audioGroup && a.url)
+    : [];
   const matchingAudio = (
     preferredAudioUrl && rootParsed.audioTracks.find((a) => a.url === preferredAudioUrl)
-  ) || (chosenVariant.audioGroup
-    ? rootParsed.audioTracks.find((a) => a.groupId === chosenVariant.audioGroup) || null
-    : null);
+  )
+    || groupAudioTracks.find((a) => a.isDefault)
+    || groupAudioTracks[0]
+    || rootParsed.audioTracks.find((a) => a.url && a.isDefault)
+    || rootParsed.audioTracks.find((a) => a.url)
+    || null;
 
   if (matchingAudio && matchingAudio.url && matchingAudio.url !== chosenVariant.url) {
     const audioText = await fetchWithManagedTimeout(matchingAudio.url, {
@@ -448,27 +486,115 @@ function tryAssembleFmp4Parts(videoBuffers, audioBuffers) {
 }
 
 /**
- * Attempts to split and mux progressive single-file fMP4 video and audio streams.
- * @param {Array<ArrayBuffer>} videoBuffers
- * @param {Array<ArrayBuffer>} audioBuffers
+ * Checks whether a buffer begins with an ISO BMFF ftyp or moov box.
+ * @param {ArrayBuffer | Uint8Array | undefined} input
+ * @returns {boolean}
+ */
+function looksLikeIsoBmffBuffer(input) {
+  if (!input) {
+    return false;
+  }
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  if (bytes.byteLength < 8) {
+    return false;
+  }
+  const boxType = String.fromCharCode(bytes[4], bytes[5], bytes[6], bytes[7]);
+  return boxType === 'ftyp' || boxType === 'styp' || boxType === 'moov';
+}
+
+/**
+ * Checks whether a buffer begins with WebM EBML header bytes.
+ * @param {ArrayBuffer | Uint8Array | undefined} input
+ * @returns {boolean}
+ */
+function looksLikeWebmBuffer(input) {
+  if (!input) {
+    return false;
+  }
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  return bytes.byteLength >= 4 &&
+    bytes[0] === 0x1a &&
+    bytes[1] === 0x45 &&
+    bytes[2] === 0xdf &&
+    bytes[3] === 0xa3;
+}
+
+/**
+ * Normalizes separate audio segment buffers (fMP4 init+frags, progressive fMP4, MPEG-TS, or ADTS AAC)
+ * into single-track fMP4 `{ initSegment, dataChunks }` ready for muxing.
+ * @param {Array<ArrayBuffer | Uint8Array>} audioBuffers
+ * @param {boolean} hasInitAudio
+ * @param {Array<number>} [audioDiscontinuityIndices=[]]
+ * @returns {{ initSegment: Uint8Array, dataChunks: Array<Uint8Array> } | null}
+ */
+function resolveAudioTransmuxedParts(audioBuffers, hasInitAudio, audioDiscontinuityIndices = []) {
+  if (!Array.isArray(audioBuffers) || audioBuffers.length === 0) {
+    return null;
+  }
+  if (hasInitAudio && audioBuffers.length > 1) {
+    return {
+      initSegment: audioBuffers[0] instanceof Uint8Array ? audioBuffers[0] : new Uint8Array(audioBuffers[0]),
+      dataChunks: audioBuffers.slice(1)
+    };
+  }
+  if (looksLikeIsoBmffBuffer(audioBuffers[0])) {
+    const mergedBuf = audioBuffers.length === 1
+      ? audioBuffers[0]
+      : concatUint8Arrays(audioBuffers.map((b) => (b instanceof Uint8Array ? b : new Uint8Array(b))));
+    const split = splitFmp4InitAndFragments(mergedBuf);
+    if (split.fragments.length > 0) {
+      return { initSegment: split.initSegment, dataChunks: split.fragments };
+    }
+  }
+  if (looksLikeAdtsAudio(audioBuffers[0])) {
+    const adtsParts = transmuxAdtsSegmentsToFmp4Parts(audioBuffers);
+    return { initSegment: adtsParts.initSegment, dataChunks: adtsParts.dataChunks };
+  }
+  try {
+    const tsParts = transmuxTsSegmentsToMp4Parts(audioBuffers, undefined, {
+      discontinuityIndices: audioDiscontinuityIndices
+    });
+    if (tsParts.initSegment && tsParts.dataChunks.length > 0) {
+      return tsParts;
+    }
+  } catch {
+    if (looksLikeAdtsAudio(audioBuffers[0])) {
+      const adtsParts = transmuxAdtsSegmentsToFmp4Parts(audioBuffers);
+      return { initSegment: adtsParts.initSegment, dataChunks: adtsParts.dataChunks };
+    }
+  }
+  return null;
+}
+
+/**
+ * Attempts to split and mux progressive single-file fMP4 video and audio (fMP4 or ADTS) streams.
+ * @param {Array<ArrayBuffer | Uint8Array>} videoBuffers
+ * @param {Array<ArrayBuffer | Uint8Array>} audioBuffers
  * @returns {{ outputParts: Array<ArrayBuffer | Uint8Array>, outputExtension: string, mimeType: string } | null}
  */
 function tryAssembleProgressiveParts(videoBuffers, audioBuffers) {
   try {
     const videoSplit = splitFmp4InitAndFragments(videoBuffers[0]);
-    const audioSplit = splitFmp4InitAndFragments(audioBuffers[0]);
     if (
-      countTracksInInit(videoSplit.initSegment) === 1 &&
-      countTracksInInit(audioSplit.initSegment) === 1 &&
-      videoSplit.fragments.length > 0 &&
-      audioSplit.fragments.length > 0
+      hasAudioTrackInInit(videoSplit.initSegment) ||
+      countTracksInInit(videoSplit.initSegment) === 0 ||
+      videoSplit.fragments.length === 0
+    ) {
+      return null;
+    }
+    const audioResolved = resolveAudioTransmuxedParts(audioBuffers, false);
+    if (
+      audioResolved &&
+      audioResolved.initSegment &&
+      countTracksInInit(audioResolved.initSegment) >= 1 &&
+      audioResolved.dataChunks.length > 0
     ) {
       return {
         outputParts: mergeFmp4VideoAndAudioParts(
           videoSplit.initSegment,
           videoSplit.fragments,
-          audioSplit.initSegment,
-          audioSplit.fragments
+          audioResolved.initSegment,
+          audioResolved.dataChunks
         ),
         outputExtension: DEFAULT_FILENAMES.HLS_FMP4_EXT,
         mimeType: 'video/mp4'
@@ -505,23 +631,35 @@ function collectDiscontinuityIndices(playlist) {
  * @param {boolean} hasAudioBuffers
  * @param {boolean} hasInitAudio
  * @param {Array<number>} [discontinuityIndices=[]]
+ * @param {Array<number>} [audioDiscontinuityIndices=[]]
  * @returns {{ outputParts: Array<ArrayBuffer | Uint8Array>, outputExtension: string, mimeType: string } | null}
  */
-function tryAssembleTsParts(videoBuffers, audioBuffers, hasAudioBuffers, hasInitAudio, discontinuityIndices = []) {
+function tryAssembleTsParts(
+  videoBuffers,
+  audioBuffers,
+  hasAudioBuffers,
+  hasInitAudio,
+  discontinuityIndices = [],
+  audioDiscontinuityIndices = []
+) {
   try {
     const videoTransmuxed = transmuxTsSegmentsToMp4Parts(videoBuffers, undefined, { discontinuityIndices });
     if (
       hasAudioBuffers &&
       videoTransmuxed.initSegment &&
-      countTracksInInit(videoTransmuxed.initSegment) === 1
+      !hasAudioTrackInInit(videoTransmuxed.initSegment) &&
+      countTracksInInit(videoTransmuxed.initSegment) >= 1
     ) {
       try {
-        const audioTransmuxed = hasInitAudio
-          ? { initSegment: audioBuffers[0], dataChunks: audioBuffers.slice(1) }
-          : transmuxTsSegmentsToMp4Parts(audioBuffers, undefined, { discontinuityIndices });
+        const audioTransmuxed = resolveAudioTransmuxedParts(
+          audioBuffers,
+          hasInitAudio,
+          audioDiscontinuityIndices
+        );
         if (
+          audioTransmuxed &&
           audioTransmuxed.initSegment &&
-          countTracksInInit(audioTransmuxed.initSegment) === 1 &&
+          countTracksInInit(audioTransmuxed.initSegment) >= 1 &&
           audioTransmuxed.dataChunks.length > 0
         ) {
           return {
@@ -559,7 +697,27 @@ function tryAssembleTsParts(videoBuffers, audioBuffers, hasAudioBuffers, hasInit
  * @returns {{ outputParts: Array<ArrayBuffer | Uint8Array>, outputExtension: string, mimeType: string }}
  */
 function assembleOutputParts(mediaPlaylist, audioPlaylist, videoBuffers, audioBuffers) {
-  if (mediaPlaylist.outputExtension === 'webm') {
+  const hasInitVideo = Boolean(mediaPlaylist.initSegmentUrl && videoBuffers.length > 1);
+  const hasInitAudio = Boolean(audioPlaylist && audioPlaylist.initSegmentUrl && audioBuffers.length > 1);
+  const hasAudioBuffers = Boolean(audioPlaylist && audioBuffers.length > 0);
+  const videoIsWebm = mediaPlaylist.outputExtension === 'webm' || mediaPlaylist.mimeType === 'video/webm';
+
+  if (videoIsWebm) {
+    const audioLooksWebm = hasAudioBuffers && (
+      (audioPlaylist && (audioPlaylist.mimeType === 'audio/webm' || audioPlaylist.outputExtension === 'webm')) ||
+      looksLikeWebmBuffer(audioBuffers[0])
+    );
+    if (audioLooksWebm) {
+      try {
+        return {
+          outputParts: mergeWebmVideoAndAudioParts(videoBuffers, audioBuffers),
+          outputExtension: 'webm',
+          mimeType: 'video/webm'
+        };
+      } catch {
+        // Fall back to video-only WebM if dual-track EBML headers are malformed
+      }
+    }
     return {
       outputParts: videoBuffers,
       outputExtension: 'webm',
@@ -567,20 +725,42 @@ function assembleOutputParts(mediaPlaylist, audioPlaylist, videoBuffers, audioBu
     };
   }
 
-  const hasInitVideo = Boolean(mediaPlaylist.initSegmentUrl && videoBuffers.length > 1);
-  const hasInitAudio = Boolean(audioPlaylist && audioPlaylist.initSegmentUrl && audioBuffers.length > 1);
-  const hasAudioBuffers = Boolean(audioPlaylist && audioBuffers.length > 0);
-
-  if (hasInitVideo && hasInitAudio) {
-    return tryAssembleFmp4Parts(videoBuffers, audioBuffers);
+  if (hasInitVideo && hasAudioBuffers) {
+    if (hasInitAudio) {
+      return tryAssembleFmp4Parts(videoBuffers, audioBuffers);
+    }
+    try {
+      const audioTransmuxed = resolveAudioTransmuxedParts(
+        audioBuffers,
+        false,
+        collectDiscontinuityIndices(audioPlaylist)
+      );
+      if (
+        audioTransmuxed &&
+        audioTransmuxed.initSegment &&
+        countTracksInInit(audioTransmuxed.initSegment) >= 1 &&
+        audioTransmuxed.dataChunks.length > 0
+      ) {
+        return {
+          outputParts: mergeFmp4VideoAndAudioParts(
+            videoBuffers[0],
+            videoBuffers.slice(1),
+            audioTransmuxed.initSegment,
+            audioTransmuxed.dataChunks
+          ),
+          outputExtension: DEFAULT_FILENAMES.HLS_FMP4_EXT,
+          mimeType: 'video/mp4'
+        };
+      }
+    } catch {
+      // Fall through to video-only fMP4 when separate audio cannot be converted
+    }
   }
 
   if (
     mediaPlaylist.isProgressive &&
-    audioPlaylist &&
-    audioPlaylist.isProgressive &&
-    videoBuffers.length === 1 &&
-    audioBuffers.length === 1
+    hasAudioBuffers &&
+    videoBuffers.length === 1
   ) {
     const progressiveResult = tryAssembleProgressiveParts(videoBuffers, audioBuffers);
     if (progressiveResult) {
@@ -594,7 +774,8 @@ function assembleOutputParts(mediaPlaylist, audioPlaylist, videoBuffers, audioBu
       audioBuffers,
       hasAudioBuffers,
       hasInitAudio,
-      collectDiscontinuityIndices(mediaPlaylist)
+      collectDiscontinuityIndices(mediaPlaylist),
+      collectDiscontinuityIndices(audioPlaylist)
     );
     if (tsResult) {
       return tsResult;
@@ -627,7 +808,9 @@ function assembleAudioOnlyParts(audioPlaylist, audioBuffers) {
   }
   if (!audioPlaylist.initSegmentUrl && !audioPlaylist.isProgressive) {
     try {
-      const transmuxed = transmuxTsSegmentsToMp4Parts(audioBuffers);
+      const transmuxed = looksLikeAdtsAudio(audioBuffers[0])
+        ? transmuxAdtsSegmentsToFmp4Parts(audioBuffers)
+        : transmuxTsSegmentsToMp4Parts(audioBuffers);
       return {
         outputParts: transmuxed.parts,
         outputExtension: DEFAULT_FILENAMES.AUDIO_M4A_EXT,
@@ -704,13 +887,30 @@ async function buildStreamBlob(payload) {
   const byteTracker = { bytes: 0 };
 
   try {
-    const { mediaPlaylist, audioPlaylist } = await resolveStreamPlan(
-      originalUrl,
-      playlistUrl,
-      qualityPreference,
-      buildController.signal,
-      preferredAudioUrl
-    );
+    const { mediaPlaylist, audioPlaylist } = payload.progressiveMux && isHttpUrl(preferredAudioUrl)
+      ? {
+          mediaPlaylist: {
+            isProgressive: true,
+            initSegmentUrl: null,
+            initSegmentByteRange: null,
+            outputExtension: DEFAULT_FILENAMES.HLS_FMP4_EXT,
+            segments: [{ url: originalUrl, duration: 0, byteRange: null, sequenceNumber: 0, discontinuity: false, key: null }]
+          },
+          audioPlaylist: {
+            isProgressive: true,
+            initSegmentUrl: null,
+            initSegmentByteRange: null,
+            outputExtension: DEFAULT_FILENAMES.AUDIO_M4A_EXT,
+            segments: [{ url: preferredAudioUrl, duration: 0, byteRange: null, sequenceNumber: 0, discontinuity: false, key: null }]
+          }
+        }
+      : await resolveStreamPlan(
+          originalUrl,
+          playlistUrl,
+          qualityPreference,
+          buildController.signal,
+          preferredAudioUrl
+        );
     const hasSeparateAudio = Boolean(
       audioPlaylist && Array.isArray(audioPlaylist.segments) && audioPlaylist.segments.length > 0
     );
@@ -720,14 +920,7 @@ async function buildStreamBlob(payload) {
 
     const extractFromMuxed = audioOnly && !hasSeparateAudio;
     const videoRequests = audioOnly && hasSeparateAudio ? [] : buildSegmentRequests(mediaPlaylist);
-    const shouldFetchAudio = (audioOnly && hasSeparateAudio) || Boolean(
-      hasSeparateAudio &&
-      (
-        (mediaPlaylist.initSegmentUrl && audioPlaylist.initSegmentUrl) ||
-        (!mediaPlaylist.initSegmentUrl && !mediaPlaylist.isProgressive) ||
-        (mediaPlaylist.isProgressive && audioPlaylist.isProgressive)
-      )
-    );
+    const shouldFetchAudio = Boolean(hasSeparateAudio);
     const audioRequests = shouldFetchAudio ? buildSegmentRequests(audioPlaylist) : [];
 
     let completed = 0;
@@ -1028,12 +1221,15 @@ async function recordLiveHlsBlob(payload) {
             initSegmentByteRange: null,
             outputExtension: isWebm ? 'webm' : DEFAULT_FILENAMES.HLS_FMP4_EXT
           };
-          const matchedAudio = !isWebm && (
-            (initialPlan.selectedAudioId && dashParsed.audioTracks.find((a) => a.id === initialPlan.selectedAudioId && a.segments.length > 0))
-            || (preferredAudioUrl && dashParsed.audioTracks.find((a) => a.url === preferredAudioUrl && a.segments.length > 0))
-            || dashParsed.audioTracks.find((a) => a.segments.length > 0)
+          const matchedAudio = resolveDashAudioTrack(
+            dashParsed.audioTracks,
+            isWebm,
+            preferredAudioUrl,
+            initialPlan.selectedAudioId
           );
-          latestAudioPlaylist = matchedAudio ? { ...matchedAudio, initSegmentByteRange: null } : null;
+          latestAudioPlaylist = matchedAudio
+            ? { ...matchedAudio, initSegmentByteRange: null, outputExtension: isWebm ? 'webm' : DEFAULT_FILENAMES.AUDIO_M4A_EXT }
+            : null;
         } else {
           const videoText = await fetchWithManagedTimeout(videoPlaylistUrl, {
             responseMode: 'text',
@@ -1071,21 +1267,17 @@ async function recordLiveHlsBlob(payload) {
           byteTracker
         );
         if (latestAudioPlaylist) {
-          const trackAudioCompatible = (latestMediaPlaylist.initSegmentUrl && latestAudioPlaylist.initSegmentUrl)
-            || (!latestMediaPlaylist.initSegmentUrl && !latestMediaPlaylist.isProgressive);
-          if (trackAudioCompatible) {
-            await appendUnseenPlaylistSegments(
-              latestAudioPlaylist,
-              seenAudioKeys,
-              audioBuffers,
-              audioInitState,
-              concurrency,
-              buildController.signal,
-              fullBodyCache,
-              keyCacheByUrl,
-              byteTracker
-            );
-          }
+          await appendUnseenPlaylistSegments(
+            latestAudioPlaylist,
+            seenAudioKeys,
+            audioBuffers,
+            audioInitState,
+            concurrency,
+            buildController.signal,
+            fullBodyCache,
+            keyCacheByUrl,
+            byteTracker
+          );
         }
         recordedSegments += addedVideo;
         notifyProgress(requestId, originalUrl, recordedSegments, 0, {
@@ -1351,7 +1543,10 @@ function handleMseBlobMessage(message) {
     const hasVideo = session.videoChunks.length > 0;
     const hasAudio = session.audioChunks.length > 0;
     const wantAudioOnly = Boolean(message.audioOnly);
-    const isWebm = videoMime.toLowerCase().includes('webm') || audioMime.toLowerCase().includes('webm');
+    const videoIsWebm = videoMime.toLowerCase().includes('webm')
+      || (hasVideo && looksLikeWebmBuffer(session.videoChunks[0]));
+    const audioIsWebm = audioMime.toLowerCase().includes('webm')
+      || (hasAudio && looksLikeWebmBuffer(session.audioChunks[0]));
 
     let outputParts = null;
     let outputExtension = DEFAULT_FILENAMES.HLS_FMP4_EXT;
@@ -1361,9 +1556,9 @@ function handleMseBlobMessage(message) {
       if (hasAudio) {
         outputParts = session.audioChunks;
         const info = classifyMseMime(audioMime);
-        outputExtension = info.ext;
-        mimeType = isWebm ? 'audio/webm' : 'audio/mp4';
-      } else if (hasVideo && !isWebm) {
+        outputExtension = audioIsWebm ? DEFAULT_FILENAMES.WEBM_EXT : (info.ext || DEFAULT_FILENAMES.AUDIO_M4A_EXT);
+        mimeType = audioIsWebm ? 'audio/webm' : 'audio/mp4';
+      } else if (hasVideo && !videoIsWebm) {
         const videoBuf = concatUint8Arrays(session.videoChunks);
         const split = splitFmp4InitAndFragments(videoBuf);
         outputParts = extractAudioOnlyFromFmp4Parts(split.initSegment, split.fragments);
@@ -1372,7 +1567,17 @@ function handleMseBlobMessage(message) {
       } else {
         return { ok: false, error: 'NO_AUDIO_TRACK' };
       }
-    } else if (hasVideo && hasAudio && !isWebm) {
+    } else if (hasVideo && hasAudio && videoIsWebm && audioIsWebm) {
+      try {
+        outputParts = mergeWebmVideoAndAudioParts(session.videoChunks, session.audioChunks);
+        outputExtension = DEFAULT_FILENAMES.WEBM_EXT;
+        mimeType = 'video/webm';
+      } catch {
+        outputParts = session.videoChunks;
+        outputExtension = DEFAULT_FILENAMES.WEBM_EXT;
+        mimeType = 'video/webm';
+      }
+    } else if (hasVideo && hasAudio && !videoIsWebm && !audioIsWebm) {
       const videoBuf = concatUint8Arrays(session.videoChunks);
       const audioBuf = concatUint8Arrays(session.audioChunks);
       const muxed = tryAssembleProgressiveParts([videoBuf], [audioBuf]);
@@ -1386,13 +1591,13 @@ function handleMseBlobMessage(message) {
     } else if (hasVideo) {
       outputParts = session.videoChunks;
       const info = classifyMseMime(videoMime);
-      outputExtension = info.ext;
-      mimeType = isWebm ? 'video/webm' : 'video/mp4';
+      outputExtension = videoIsWebm ? DEFAULT_FILENAMES.WEBM_EXT : info.ext;
+      mimeType = videoIsWebm ? 'video/webm' : 'video/mp4';
     } else {
       outputParts = session.audioChunks;
       const info = classifyMseMime(audioMime);
-      outputExtension = info.ext;
-      mimeType = isWebm ? 'audio/webm' : 'audio/mp4';
+      outputExtension = audioIsWebm ? DEFAULT_FILENAMES.WEBM_EXT : info.ext;
+      mimeType = audioIsWebm ? 'audio/webm' : 'audio/mp4';
     }
 
     const blob = new Blob(outputParts, { type: mimeType });
@@ -2299,6 +2504,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       audioUrl: message.audioUrl || '',
       audioOnly: Boolean(message.audioOnly),
       audioFormat: message.audioFormat || AUDIO_EXPORT_FORMATS.M4A,
+      progressiveMux: Boolean(message.progressiveMux),
       requestId,
       concurrency: message.concurrency,
       qualityPreference: message.qualityPreference

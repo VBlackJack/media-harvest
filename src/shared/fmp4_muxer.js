@@ -20,6 +20,10 @@ const TKHD_V0_TRACK_ID_OFFSET = 20;
 const TKHD_V1_TRACK_ID_OFFSET = 28;
 const TREX_TRACK_ID_OFFSET = 12;
 const TFHD_TRACK_ID_OFFSET = 12;
+const TFHD_BASE_DATA_OFFSET_FLAG = 0x000001;
+const TFHD_DEFAULT_BASE_IS_MOOF_FLAG = 0x020000;
+const TFHD_FLAGS_OFFSET = 9;
+const TFHD_BASE_DATA_OFFSET_POS = 16;
 const MVHD_V0_NEXT_TRACK_OFFSET = 104;
 const MVHD_V1_NEXT_TRACK_OFFSET = 116;
 
@@ -150,6 +154,147 @@ function cloneTrexWithTrackId(trexBytes, newTrackId) {
 }
 
 /**
+ * Strips tfhd base-data-offset-present (0x000001) into default-base-is-moof (0x020000) when present,
+ * updating track_ID when newTrackId > 0 and keeping moof/traf/trun offsets consistent.
+ * Returns input bytes zero-copy when no modification is needed.
+ * @param {Uint8Array} chunkBytes
+ * @param {number} newTrackId
+ * @returns {Uint8Array}
+ */
+export function normalizeFmp4Fragment(chunkBytes, newTrackId = 0) {
+  const topBoxes = parseIsoBoxes(chunkBytes);
+  let needsBaseOffsetStrip = false;
+  let hasMoof = false;
+
+  for (const box of topBoxes) {
+    if (box.type !== 'moof') {
+      continue;
+    }
+    hasMoof = true;
+    const moofChildren = parseIsoBoxes(chunkBytes, box.start + BOX_HEADER_SIZE, box.end);
+    for (const traf of moofChildren) {
+      if (traf.type !== 'traf') {
+        continue;
+      }
+      const trafChildren = parseIsoBoxes(chunkBytes, traf.start + BOX_HEADER_SIZE, traf.end);
+      const tfhd = trafChildren.find((child) => child.type === 'tfhd');
+      if (tfhd && tfhd.data.byteLength >= TFHD_BASE_DATA_OFFSET_POS + 8) {
+        const flags =
+          (tfhd.data[TFHD_FLAGS_OFFSET] << 16) |
+          (tfhd.data[TFHD_FLAGS_OFFSET + 1] << 8) |
+          tfhd.data[TFHD_FLAGS_OFFSET + 2];
+        if ((flags & TFHD_BASE_DATA_OFFSET_FLAG) !== 0) {
+          needsBaseOffsetStrip = true;
+        }
+      }
+    }
+  }
+
+  if (!hasMoof || (!needsBaseOffsetStrip && newTrackId <= 0)) {
+    return chunkBytes;
+  }
+
+  if (!needsBaseOffsetStrip) {
+    return rewriteFragmentTrackId(chunkBytes, newTrackId);
+  }
+
+  const rebuiltTopParts = [];
+  for (const box of topBoxes) {
+    if (box.type !== 'moof') {
+      rebuiltTopParts.push(box.data);
+      continue;
+    }
+    const oldMoofSize = box.data.byteLength;
+    const moofChildren = parseIsoBoxes(chunkBytes, box.start + BOX_HEADER_SIZE, box.end);
+    const trafAdjustments = [];
+    let moofDelta = 0;
+
+    for (const child of moofChildren) {
+      if (child.type !== 'traf') {
+        trafAdjustments.push({ kind: 'raw', data: child.data });
+        continue;
+      }
+      const trafChildren = parseIsoBoxes(chunkBytes, child.start + BOX_HEADER_SIZE, child.end);
+      let trafDelta = 0;
+      const rebuiltTrafChildren = [];
+
+      for (const tc of trafChildren) {
+        if (tc.type !== 'tfhd') {
+          rebuiltTrafChildren.push(tc.data);
+          continue;
+        }
+        const flags =
+          (tc.data[TFHD_FLAGS_OFFSET] << 16) |
+          (tc.data[TFHD_FLAGS_OFFSET + 1] << 8) |
+          tc.data[TFHD_FLAGS_OFFSET + 2];
+        if ((flags & TFHD_BASE_DATA_OFFSET_FLAG) !== 0 && tc.data.byteLength >= TFHD_BASE_DATA_OFFSET_POS + 8) {
+          const stripped = new Uint8Array(tc.data.byteLength - 8);
+          stripped.set(tc.data.subarray(0, TFHD_BASE_DATA_OFFSET_POS), 0);
+          stripped.set(tc.data.subarray(TFHD_BASE_DATA_OFFSET_POS + 8), TFHD_BASE_DATA_OFFSET_POS);
+          new DataView(stripped.buffer).setUint32(0, stripped.byteLength, false);
+          const nextFlags = (flags & ~TFHD_BASE_DATA_OFFSET_FLAG) | TFHD_DEFAULT_BASE_IS_MOOF_FLAG;
+          stripped[TFHD_FLAGS_OFFSET] = (nextFlags >> 16) & 0xff;
+          stripped[TFHD_FLAGS_OFFSET + 1] = (nextFlags >> 8) & 0xff;
+          stripped[TFHD_FLAGS_OFFSET + 2] = nextFlags & 0xff;
+          if (newTrackId > 0) {
+            new DataView(stripped.buffer).setUint32(TFHD_TRACK_ID_OFFSET, newTrackId, false);
+          }
+          rebuiltTrafChildren.push(stripped);
+          trafDelta -= 8;
+        } else if (newTrackId > 0 && TFHD_TRACK_ID_OFFSET + 4 <= tc.data.byteLength) {
+          const clonedTfhd = new Uint8Array(tc.data);
+          new DataView(clonedTfhd.buffer).setUint32(TFHD_TRACK_ID_OFFSET, newTrackId, false);
+          rebuiltTrafChildren.push(clonedTfhd);
+        } else {
+          rebuiltTrafChildren.push(tc.data);
+        }
+      }
+      moofDelta += trafDelta;
+      trafAdjustments.push({ kind: 'traf', children: rebuiltTrafChildren });
+    }
+
+    const newMoofSize = oldMoofSize + moofDelta;
+    const finalizedMoofChildren = trafAdjustments.map((entry) => {
+      if (entry.kind === 'raw') {
+        return entry.data;
+      }
+      const adjustedChildren = entry.children.map((tcData) => {
+        if (readBoxType(tcData, 4) !== 'trun' || tcData.byteLength < TRUN_DATA_OFFSET_POS + 4) {
+          return tcData;
+        }
+        const flags = (tcData[9] << 16) | (tcData[10] << 8) | tcData[11];
+        if ((flags & TRUN_DATA_OFFSET_FLAG) === 0) {
+          return tcData;
+        }
+        const clonedTrun = new Uint8Array(tcData);
+        const view = new DataView(clonedTrun.buffer);
+        const currentOffset = view.getInt32(TRUN_DATA_OFFSET_POS, false);
+        const nextOffset = currentOffset >= oldMoofSize
+          ? currentOffset + moofDelta
+          : newMoofSize + 8;
+        view.setInt32(TRUN_DATA_OFFSET_POS, nextOffset, false);
+        return clonedTrun;
+      });
+      return buildIsoBox('traf', adjustedChildren);
+    });
+
+    rebuiltTopParts.push(buildIsoBox('moof', finalizedMoofChildren));
+  }
+
+  let total = 0;
+  for (const part of rebuiltTopParts) {
+    total += part.byteLength;
+  }
+  const out = new Uint8Array(total);
+  let cursor = 0;
+  for (const part of rebuiltTopParts) {
+    out.set(part, cursor);
+    cursor += part.byteLength;
+  }
+  return out;
+}
+
+/**
  * Clones a media chunk (moof + mdat) and rewrites every traf/tfhd track_ID in place.
  * Preserves moof byte size so trun data_offset values remain exact.
  * @param {Uint8Array} chunkBytes
@@ -223,6 +368,22 @@ export function countTracksInInit(initInput) {
 }
 
 /**
+ * Checks whether an fMP4 init segment already declares an audio ('soun') track.
+ * @param {ArrayBuffer | Uint8Array} initInput
+ * @returns {boolean}
+ */
+export function hasAudioTrackInInit(initInput) {
+  const bytes = toUint8(initInput);
+  const top = parseIsoBoxes(bytes);
+  const moov = top.find((b) => b.type === 'moov');
+  if (!moov) {
+    return false;
+  }
+  return parseIsoBoxes(bytes, moov.start + BOX_HEADER_SIZE, moov.end)
+    .some((b) => b.type === 'trak' && readHandlerTypeFromTrak(b.data) === 'soun');
+}
+
+/**
  * Splits a combined fMP4 buffer (e.g. from mux.js) into its init box bytes and moof+mdat fragment views.
  * @param {ArrayBuffer | Uint8Array} input
  * @returns {{ initSegment: Uint8Array, fragments: Array<Uint8Array> }}
@@ -247,20 +408,13 @@ export function splitFmp4InitAndFragments(input) {
 }
 
 /**
- * Merges separate fMP4 video and audio init/media chunks into an ordered array of Uint8Array parts,
- * avoiding a single large contiguous buffer copy for Blob creation.
+ * Merges separate fMP4 video and audio initialization segments into `[ftyp?, mergedMoov]`
+ * and returns the assigned `audioTrackId` for subsequent fragment rewriting.
  * @param {ArrayBuffer | Uint8Array} videoInitInput
- * @param {Array<ArrayBuffer | Uint8Array>} videoChunkInputs
  * @param {ArrayBuffer | Uint8Array} audioInitInput
- * @param {Array<ArrayBuffer | Uint8Array>} audioChunkInputs
- * @returns {Array<Uint8Array>}
+ * @returns {{ initParts: Array<Uint8Array>, audioTrackId: number }}
  */
-export function mergeFmp4VideoAndAudioParts(
-  videoInitInput,
-  videoChunkInputs,
-  audioInitInput,
-  audioChunkInputs
-) {
+export function mergeFmp4InitSegments(videoInitInput, audioInitInput) {
   const videoInit = toUint8(videoInitInput);
   const audioInit = toUint8(audioInitInput);
 
@@ -282,9 +436,13 @@ export function mergeFmp4VideoAndAudioParts(
     .reduce((max, trak) => Math.max(max, readTrackIdFromTrak(trak.data)), 0);
   const audioTrackId = maxVideoTrackId + 1;
 
-  const audioTraks = audioMoovChildren
-    .filter((b) => b.type === 'trak')
-    .map((trak) => cloneTrakWithTrackId(trak.data, audioTrackId));
+  const allAudioTraks = audioMoovChildren.filter((b) => b.type === 'trak');
+  const sounAudioTraks = allAudioTraks.filter((b) => readHandlerTypeFromTrak(b.data) === 'soun');
+  const selectedAudioTraks = sounAudioTraks.length > 0 ? sounAudioTraks : allAudioTraks;
+  const sourceAudioTrackIds = new Set(
+    selectedAudioTraks.map((trak) => readTrackIdFromTrak(trak.data)).filter((id) => id > 0)
+  );
+  const audioTraks = selectedAudioTraks.map((trak) => cloneTrakWithTrackId(trak.data, audioTrackId));
   if (audioTraks.length === 0) {
     throw new Error('MISSING_AUDIO_TRACK');
   }
@@ -301,7 +459,13 @@ export function mergeFmp4VideoAndAudioParts(
   if (audioMvex) {
     for (const child of parseIsoBoxes(audioInit, audioMvex.start + BOX_HEADER_SIZE, audioMvex.end)) {
       if (child.type === 'trex') {
-        combinedMvexChildren.push(cloneTrexWithTrackId(child.data, audioTrackId));
+        const trexTrackId = TREX_TRACK_ID_OFFSET + 4 <= child.data.byteLength
+          ? new DataView(child.data.buffer, child.data.byteOffset, child.data.byteLength)
+            .getUint32(TREX_TRACK_ID_OFFSET, false)
+          : 0;
+        if (sourceAudioTrackIds.size === 0 || sourceAudioTrackIds.has(trexTrackId)) {
+          combinedMvexChildren.push(cloneTrexWithTrackId(child.data, audioTrackId));
+        }
       }
     }
   }
@@ -322,19 +486,39 @@ export function mergeFmp4VideoAndAudioParts(
   }
 
   const mergedMoov = buildIsoBox('moov', mergedMoovChildren);
-  const outputParts = [];
+  const initParts = [];
   if (ftypBox) {
-    outputParts.push(ftypBox.data);
+    initParts.push(ftypBox.data);
   }
-  outputParts.push(mergedMoov);
+  initParts.push(mergedMoov);
+  return { initParts, audioTrackId };
+}
+
+/**
+ * Merges separate fMP4 video and audio init/media chunks into an ordered array of Uint8Array parts,
+ * avoiding a single large contiguous buffer copy for Blob creation.
+ * @param {ArrayBuffer | Uint8Array} videoInitInput
+ * @param {Array<ArrayBuffer | Uint8Array>} videoChunkInputs
+ * @param {ArrayBuffer | Uint8Array} audioInitInput
+ * @param {Array<ArrayBuffer | Uint8Array>} audioChunkInputs
+ * @returns {Array<Uint8Array>}
+ */
+export function mergeFmp4VideoAndAudioParts(
+  videoInitInput,
+  videoChunkInputs,
+  audioInitInput,
+  audioChunkInputs
+) {
+  const { initParts, audioTrackId } = mergeFmp4InitSegments(videoInitInput, audioInitInput);
+  const outputParts = [...initParts];
 
   const maxPairs = Math.max(videoChunkInputs.length, audioChunkInputs.length);
   for (let i = 0; i < maxPairs; i += 1) {
     if (i < videoChunkInputs.length) {
-      outputParts.push(toUint8(videoChunkInputs[i]));
+      outputParts.push(normalizeFmp4Fragment(toUint8(videoChunkInputs[i]), 0));
     }
     if (i < audioChunkInputs.length) {
-      outputParts.push(rewriteFragmentTrackId(toUint8(audioChunkInputs[i]), audioTrackId));
+      outputParts.push(normalizeFmp4Fragment(toUint8(audioChunkInputs[i]), audioTrackId));
     }
   }
 

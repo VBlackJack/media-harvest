@@ -217,6 +217,24 @@ test('createMediaCard hydrates multi-track DASH audio selection, WebM video-only
       audioUrl: 'https://cdn.example.com/vod/manifest.mpd#dash-audio-fr'
     }
   ]);
+
+  // Compatible audio/webm on WebM DASH variant must NOT show video-only warning badge
+  const muxableWebmMeta = {
+    ...meta,
+    audioTracks: [
+      { url: 'https://cdn.example.com/vod/manifest.mpd#dash-audio-opus', groupId: 'dash-audio', language: 'en', name: 'English', mimeType: 'audio/webm' }
+    ]
+  };
+  hlsMetaByUrl.set(item.url, muxableWebmMeta);
+  entry.qualitySelect.selectedIndex = 0;
+  applyStreamMetadata(entry, muxableWebmMeta, {
+    documentRef: doc,
+    translateFn,
+    hlsMetaByUrl,
+    getSettings: () => DEFAULT_SETTINGS
+  });
+  const muxedWebmBadges = entry.badgesEl.children.map((b) => b.textContent);
+  assert.equal(muxedWebmBadges.includes('popup_badge_video_only'), false);
 });
 
 test('markInspectionFailed exposes retry button that re-enqueues hydration', async () => {

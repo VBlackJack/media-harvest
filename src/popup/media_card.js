@@ -205,13 +205,19 @@ export function renderBadges(badgesEl, item, entry = null, context = {}) {
       badgesEl.appendChild(createBadge(translate('popup_badge_large_stream'), 'warning', doc));
     }
     const chosenVariant = getSelectedVariant(meta, entry);
+    const hasCompatibleWebmAudio = Boolean(
+      meta &&
+      Array.isArray(meta.audioTracks) &&
+      meta.audioTracks.some((track) => (track.mimeType || '').toLowerCase() === 'audio/webm')
+    );
     if (
       isDash &&
       chosenVariant &&
       chosenVariant.mimeType === 'video/webm' &&
       meta &&
       Array.isArray(meta.audioTracks) &&
-      meta.audioTracks.length > 0
+      meta.audioTracks.length > 0 &&
+      !hasCompatibleWebmAudio
     ) {
       badgesEl.appendChild(createBadge(translate('popup_badge_video_only'), 'warning', doc));
     }

@@ -1096,6 +1096,7 @@ async function startStreamDownload(payload, rawStem, requestId) {
       originalUrl: payload.url,
       audioUrl: typeof payload.audioUrl === 'string' ? payload.audioUrl : '',
       audioOnly: Boolean(payload.audioOnly),
+      progressiveMux: Boolean(payload.progressiveMux),
       audioFormat: settings.audioExportFormat || AUDIO_EXPORT_FORMATS.M4A,
       concurrency: settings.hlsFetchConcurrency,
       qualityPreference: settings.defaultQuality,
@@ -1195,6 +1196,69 @@ async function handleDownloadHlsSubtitle(payload) {
   });
 }
 
+function getUrlDirectoryPrefix(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    const lastSlash = parsed.pathname.lastIndexOf('/');
+    const dir = lastSlash >= 0 ? parsed.pathname.slice(0, lastSlash + 1) : '/';
+    return `${parsed.origin}${dir}`;
+  } catch {
+    return '';
+  }
+}
+
+function isLikelyVideoOnlyDirectUrl(rawUrl) {
+  if (typeof rawUrl !== 'string' || !rawUrl) {
+    return false;
+  }
+  return /\/DASH_\d+\.(?:mp4|m4s)/i.test(rawUrl)
+    || /(?:[?&]mime=video|\/video(?:only|-only)\b)/i.test(rawUrl);
+}
+
+function findMatchingStreamForDirectUrl(directUrl, streams) {
+  if (!directUrl || !Array.isArray(streams) || streams.length === 0) {
+    return null;
+  }
+  const directDir = getUrlDirectoryPrefix(directUrl);
+  if (directDir) {
+    const dirMatch = streams.find((s) => getUrlDirectoryPrefix(s.url) === directDir);
+    if (dirMatch) {
+      return dirMatch;
+    }
+  }
+  const directMediaId = extractMediaId(directUrl);
+  if (directMediaId) {
+    const idMatch = streams.find((s) => extractMediaId(s.url) === directMediaId);
+    if (idMatch) {
+      return idMatch;
+    }
+  }
+  if (isLikelyVideoOnlyDirectUrl(directUrl) && streams.length === 1) {
+    return streams[0];
+  }
+  return null;
+}
+
+function findCompanionAudioUrl(videoUrl, networkItems) {
+  if (!videoUrl || !Array.isArray(networkItems)) {
+    return '';
+  }
+  const videoDir = getUrlDirectoryPrefix(videoUrl);
+  if (!videoDir) {
+    return '';
+  }
+  const match = networkItems.find((item) => {
+    if (!item || !item.url || item.url === videoUrl || item.isStream) {
+      return false;
+    }
+    if (getUrlDirectoryPrefix(item.url) !== videoDir) {
+      return false;
+    }
+    return item.type === MEDIA_TYPES.AUDIO || /\/DASH_AUDIO/i.test(item.url);
+  });
+  return match ? match.url : '';
+}
+
 /**
  * Resolves and downloads the best available video stream or capture for a site overlay click.
  * @param {number} tabId
@@ -1236,9 +1300,18 @@ async function handleSiteVideoDownload(tabId, payload, fallbackPageUrl = '') {
     ? mseItems.find((item) => item.blobUrl && item.blobUrl === payload.blobUrl) || null
     : null;
 
+  const matchedDirectStream = exactDirect
+    ? findMatchingStreamForDirectUrl(exactDirect.url, streams)
+    : null;
   const preferMatchedMse = Boolean(matchedMse && (streams.length === 0 || mseItems.length > 1));
-  const chosen = exactDirect
+  const preferStreamOverDirect = Boolean(
+    matchedDirectStream && (isLikelyVideoOnlyDirectUrl(exactDirect.url) || exactDirect.isStream)
+  );
+  const chosen = (preferStreamOverDirect ? matchedDirectStream : null)
+    || (exactDirect && !isLikelyVideoOnlyDirectUrl(exactDirect.url) ? exactDirect : null)
     || (preferMatchedMse ? matchedMse : null)
+    || matchedDirectStream
+    || exactDirect
     || streams[0]
     || matchedMse
     || directNetworkVideos[0]
@@ -1248,6 +1321,10 @@ async function handleSiteVideoDownload(tabId, payload, fallbackPageUrl = '') {
   if (!chosen) {
     throw new Error('PLAY_FIRST');
   }
+
+  const companionAudioUrl = !chosen.isStream && !chosen.isMse
+    ? findCompanionAudioUrl(chosen.url, networkItems)
+    : '';
 
   const baseStem = (payload.title && payload.title.trim())
     || deriveFilenameStem(chosen.url, chosen.title || '', pageUrl);
@@ -1260,6 +1337,7 @@ async function handleSiteVideoDownload(tabId, payload, fallbackPageUrl = '') {
   return handleDownloadMedia({
     url: chosen.url,
     playlistUrl: chosen.url,
+    audioUrl: companionAudioUrl,
     isStream: Boolean(chosen.isStream),
     isMse: Boolean(chosen.isMse || isMseUrl(chosen.url)),
     mseId: chosen.mseId || '',
@@ -1664,6 +1742,9 @@ async function handleDownloadMedia(payload) {
   if (!payload.isStream) {
     if (payload.audioOnly) {
       return startDirectAudioWavDownload(payload, rawStem, requestId);
+    }
+    if (payload.audioUrl && isHttpUrl(payload.audioUrl)) {
+      return startStreamDownload({ ...payload, isStream: true, progressiveMux: true }, rawStem, requestId);
     }
     if (payload.svgSymbolId) {
       return startSvgSymbolDownload(payload, rawStem, requestId);

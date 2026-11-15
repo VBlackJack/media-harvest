@@ -17,7 +17,8 @@
 import test, { after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { MESSAGE_TYPES } from '../src/config/constants.js';
-import { buildIsoBox, countTracksInInit } from '../src/shared/fmp4_muxer.js';
+import { buildIsoBox, countTracksInInit, hasAudioTrackInInit } from '../src/shared/fmp4_muxer.js';
+import { buildEbmlElement, countTracksInWebmInit } from '../src/shared/webm_muxer.js';
 
 const prevChrome = globalThis.chrome;
 const prevFetch = globalThis.fetch;
@@ -1354,4 +1355,192 @@ test('offscreen handles OFFSCREEN_EXTRACT_SVG_SYMBOL and OFFSCREEN_DECODE_WAV na
     globalThis.fetch = prevFetch;
     globalThis.AudioContext = prevAudioCtx;
   }
+});
+
+function toExactArrayBuffer(bytes) {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+}
+
+function buildTestWebm(trackType, clusterTimestamp, payloadByte) {
+  const ebml = buildEbmlElement(0x1a45dfa3, [buildEbmlElement(0x4286, [new Uint8Array([1])])]);
+  const info = buildEbmlElement(0x1549a966, [buildEbmlElement(0x2ad7b1, [new Uint8Array([0x0f, 0x42, 0x40])])]);
+  const tracks = buildEbmlElement(0x1654ae6b, [
+    buildEbmlElement(0xae, [
+      buildEbmlElement(0xd7, [new Uint8Array([1])]),
+      buildEbmlElement(0x83, [new Uint8Array([trackType])])
+    ])
+  ]);
+  const cluster = buildEbmlElement(0x1f43b675, [
+    buildEbmlElement(0xe7, [new Uint8Array([clusterTimestamp & 0xff])]),
+    buildEbmlElement(0xa3, [new Uint8Array([0x81, 0x00, 0x00, 0x80, payloadByte])])
+  ]);
+  const seg = buildEbmlElement(0x18538067, [info, tracks, cluster]);
+  return new Uint8Array(Buffer.concat([ebml, seg]));
+}
+
+function buildTestAdtsSegment(fill = 0x55) {
+  const frameLen = 19;
+  const adts = new Uint8Array(frameLen);
+  adts[0] = 0xff;
+  adts[1] = 0xf1;
+  adts[2] = (1 << 6) | (3 << 2);
+  adts[3] = (2 << 6);
+  adts[4] = (frameLen >> 3) & 0xff;
+  adts[5] = ((frameLen & 0x07) << 5) | 0x1f;
+  adts[6] = 0xfc;
+  adts.fill(fill, 7);
+  return adts;
+}
+
+test('offscreen muxes dual-track WebM MSE streams, DASH WebM audio, HLS fMP4+ADTS AAC, and progressiveMux pairs', async () => {
+  const toB64 = (bytes) => Buffer.from(bytes).toString('base64');
+
+  // 1. MSE dual-track WebM (video/webm + audio/webm)
+  const webmVideo = buildTestWebm(1, 0, 0xaa);
+  const webmAudio = buildTestWebm(2, 10, 0xbb);
+  await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_MSE_BLOB,
+    action: 'append',
+    requestId: 'mse-dual-webm',
+    track: 'video',
+    chunkBase64: toB64(webmVideo)
+  });
+  await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_MSE_BLOB,
+    action: 'append',
+    requestId: 'mse-dual-webm',
+    track: 'audio',
+    chunkBase64: toB64(webmAudio)
+  });
+  const mseWebmResp = await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_MSE_BLOB,
+    action: 'finalize',
+    requestId: 'mse-dual-webm',
+    videoMime: 'video/webm; codecs="vp9"',
+    audioMime: 'audio/webm; codecs="opus"'
+  });
+  assert.equal(mseWebmResp.ok, true);
+  assert.equal(mseWebmResp.outputExtension, 'webm');
+  const mergedWebmBytes = new Uint8Array(await createdBlobs.get(mseWebmResp.blobUrl).arrayBuffer());
+  assert.equal(countTracksInWebmInit(mergedWebmBytes), 2);
+
+  // 2. DASH WebM + HLS fMP4 with separate ADTS .aac audio (without AUDIO= attr) + progressiveMux
+  const vInit = makeFmp4Init(1);
+  const vFrag = makeMediaChunk(1, 0x33);
+  const aInit = makeFmp4Init(1);
+  const aFrag = makeMediaChunk(1, 0x44);
+  const progVideo = Buffer.concat([vInit, vFrag]);
+  const progAudio = Buffer.concat([aInit, aFrag]);
+  const adtsSeg = buildTestAdtsSegment(0x77);
+  const dashMpd = [
+    '<?xml version="1.0"?>',
+    '<MPD type="static" mediaPresentationDuration="PT4S">',
+    '<Period>',
+    '<AdaptationSet contentType="video" mimeType="video/webm" width="1280" height="720">',
+    '<Representation id="vp9" bandwidth="1500000"><BaseURL>vp9_only.webm</BaseURL></Representation>',
+    '</AdaptationSet>',
+    '<AdaptationSet contentType="audio" mimeType="audio/webm" lang="en">',
+    '<Representation id="opus" bandwidth="128000"><BaseURL>opus_only.webm</BaseURL></Representation>',
+    '</AdaptationSet>',
+    '</Period>',
+    '</MPD>'
+  ].join('');
+
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target.endsWith('dash_webm.mpd')) {
+      return { ok: true, status: 200, headers: { get: () => null }, text: async () => dashMpd };
+    }
+    if (target.endsWith('vp9_only.webm')) {
+      return { ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => toExactArrayBuffer(webmVideo) };
+    }
+    if (target.endsWith('opus_only.webm')) {
+      return { ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => toExactArrayBuffer(webmAudio) };
+    }
+    if (target.endsWith('hls_adts_master.m3u8')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => [
+          '#EXTM3U',
+          '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aac",NAME="Main",DEFAULT=YES,URI="aac_audio.m3u8"',
+          '#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=1280x720',
+          'fmp4_video.m3u8'
+        ].join('\n')
+      };
+    }
+    if (target.endsWith('fmp4_video.m3u8')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => ['#EXTM3U', '#EXT-X-MAP:URI="v_init.mp4"', '#EXTINF:2.0,', 'v1.m4s', '#EXT-X-ENDLIST'].join('\n')
+      };
+    }
+    if (target.endsWith('aac_audio.m3u8')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        text: async () => ['#EXTM3U', '#EXTINF:2.0,', 'a1.aac', '#EXT-X-ENDLIST'].join('\n')
+      };
+    }
+    if (target.endsWith('v_init.mp4')) {
+      return { ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => vInit.buffer };
+    }
+    if (target.endsWith('v1.m4s')) {
+      return { ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => vFrag.buffer };
+    }
+    if (target.endsWith('a1.aac')) {
+      return { ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => adtsSeg.buffer };
+    }
+    if (target.endsWith('DASH_720.mp4')) {
+      return { ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => toExactArrayBuffer(progVideo) };
+    }
+    if (target.endsWith('DASH_AUDIO_128.mp4')) {
+      return { ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => toExactArrayBuffer(progAudio) };
+    }
+    throw new Error(`Unexpected fetch ${target}`);
+  };
+
+  const dashWebmResp = await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_HLS_BLOB,
+    requestId: 'dash-webm-1',
+    originalUrl: 'https://cdn.example.com/dash_webm.mpd',
+    playlistUrl: 'https://cdn.example.com/dash_webm.mpd'
+  });
+  assert.equal(dashWebmResp.ok, true);
+  assert.equal(dashWebmResp.outputExtension, 'webm');
+  assert.equal(countTracksInWebmInit(await createdBlobs.get(dashWebmResp.blobUrl).arrayBuffer()), 2);
+
+  const hlsAdtsResp = await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_HLS_BLOB,
+    requestId: 'hls-adts-1',
+    originalUrl: 'https://cdn.example.com/hls_adts_master.m3u8',
+    playlistUrl: 'https://cdn.example.com/hls_adts_master.m3u8'
+  });
+  assert.equal(hlsAdtsResp.ok, true);
+  assert.equal(hlsAdtsResp.outputExtension, 'mp4');
+  const hlsAdtsBuf = await createdBlobs.get(hlsAdtsResp.blobUrl).arrayBuffer();
+  assert.equal(countTracksInInit(hlsAdtsBuf), 2);
+  assert.equal(hasAudioTrackInInit(hlsAdtsBuf), true);
+
+  const progMuxResp = await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_HLS_BLOB,
+    requestId: 'prog-mux-1',
+    originalUrl: 'https://v.redd.it/clip1/DASH_720.mp4',
+    playlistUrl: 'https://v.redd.it/clip1/DASH_720.mp4',
+    audioUrl: 'https://v.redd.it/clip1/DASH_AUDIO_128.mp4',
+    progressiveMux: true
+  });
+  assert.equal(progMuxResp.ok, true);
+  assert.equal(progMuxResp.outputExtension, 'mp4');
+  assert.equal(countTracksInInit(await createdBlobs.get(progMuxResp.blobUrl).arrayBuffer()), 2);
 });

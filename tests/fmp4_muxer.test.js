@@ -20,8 +20,10 @@ import {
   buildIsoBox,
   countTracksInInit,
   extractAudioOnlyFromFmp4Parts,
+  hasAudioTrackInInit,
   mergeFmp4VideoAndAudio,
   mergeFmp4VideoAndAudioParts,
+  normalizeFmp4Fragment,
   parseIsoBoxes,
   readHandlerTypeFromTrak,
   readTrackIdFromTrak,
@@ -235,4 +237,49 @@ test('extractAudioOnlyFromFmp4Parts isolates soun track from muxed fMP4 and reje
     () => extractAudioOnlyFromFmp4Parts(videoOnlyInit, [videoFrag]),
     /NO_AUDIO_TRACK/
   );
+});
+
+test('normalizeFmp4Fragment strips base-data-offset-present and updates trun data_offset safely', () => {
+  const tfhdBody = new Uint8Array(16);
+  tfhdBody[0] = 0; // version
+  tfhdBody[3] = 0x01; // base-data-offset-present
+  const tfhdView = new DataView(tfhdBody.buffer);
+  tfhdView.setUint32(4, 1, false); // track_ID = 1
+  tfhdView.setBigUint64(8, 9999n, false); // stale absolute base_data_offset
+  const tfhd = buildIsoBox('tfhd', [tfhdBody]);
+
+  const trunBody = new Uint8Array(12);
+  trunBody[3] = 0x01; // data-offset-present
+  new DataView(trunBody.buffer).setUint32(4, 1, false); // sample_count = 1
+  const traf = buildIsoBox('traf', [tfhd, buildIsoBox('trun', [trunBody])]);
+  const rawMoof = buildIsoBox('moof', [traf]);
+  const oldDataOffset = rawMoof.byteLength + 8;
+
+  // Patch initial trun data_offset to oldMoofSize + 8
+  const rawChunk = new Uint8Array(rawMoof.byteLength + 12);
+  rawChunk.set(rawMoof, 0);
+  new DataView(rawChunk.buffer).setInt32(rawMoof.byteLength - 4, oldDataOffset, false);
+  rawChunk.set(buildIsoBox('mdat', [new Uint8Array([0x11, 0x22, 0x33, 0x44])]), rawMoof.byteLength);
+
+  const normalized = normalizeFmp4Fragment(rawChunk, 2);
+  const boxes = parseIsoBoxes(normalized);
+  assert.deepEqual(boxes.map((b) => b.type), ['moof', 'mdat']);
+  const newMoof = boxes[0];
+  assert.equal(newMoof.data.byteLength, rawMoof.byteLength - 8);
+
+  const newTraf = parseIsoBoxes(normalized, newMoof.start + 8, newMoof.end).find((b) => b.type === 'traf');
+  const trafChildren = parseIsoBoxes(normalized, newTraf.start + 8, newTraf.end);
+  const newTfhd = trafChildren.find((b) => b.type === 'tfhd');
+  const newTrun = trafChildren.find((b) => b.type === 'trun');
+
+  const newFlags = (newTfhd.data[9] << 16) | (newTfhd.data[10] << 8) | newTfhd.data[11];
+  assert.equal(newFlags & 0x000001, 0);
+  assert.equal(newFlags & 0x020000, 0x020000);
+  assert.equal(new DataView(newTfhd.data.buffer, newTfhd.data.byteOffset).getUint32(12, false), 2);
+  assert.equal(
+    new DataView(newTrun.data.buffer, newTrun.data.byteOffset).getInt32(16, false),
+    newMoof.data.byteLength + 8
+  );
+  assert.equal(hasAudioTrackInInit(makeTypedInit([{ trackId: 1, handlerType: 'vide' }])), false);
+  assert.equal(hasAudioTrackInInit(makeTypedInit([{ trackId: 2, handlerType: 'soun' }])), true);
 });
