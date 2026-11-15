@@ -60,6 +60,7 @@ export function collectPopupElements(doc) {
     sortSelect: doc.getElementById('sortSelect'),
     selectionBar: doc.getElementById('selectionBar'),
     selectAllBtn: doc.getElementById('selectAllBtn'),
+    clearSelectionBtn: doc.getElementById('clearSelectionBtn'),
     downloadSelectedBtn: doc.getElementById('downloadSelectedBtn'),
     downloadAllBtn: doc.getElementById('downloadAllBtn'),
     companionPageBtn: doc.getElementById('companionPageBtn'),
@@ -266,6 +267,9 @@ export function createPopupController(deps = {}) {
       [String(selectedTargets.length)]
     );
     els.downloadSelectedBtn.disabled = selectedTargets.length === 0;
+    if (els.clearSelectionBtn) {
+      els.clearSelectionBtn.classList.toggle('hidden', state.selectedUrls.size === 0);
+    }
   }
 
   /**
@@ -1204,6 +1208,19 @@ export function createPopupController(deps = {}) {
           const cardEntry = state.cardsByUrl.get(item.url);
           if (cardEntry && cardEntry.selectCheckbox) {
             cardEntry.selectCheckbox.checked = !allSelected;
+          }
+        }
+        const visibleNow = getVisibleItems();
+        updateBatchControls(visibleNow.filter((item) => !item.isStream), visibleNow);
+      });
+    }
+
+    if (els.clearSelectionBtn) {
+      els.clearSelectionBtn.addEventListener('click', () => {
+        state.selectedUrls.clear();
+        for (const entry of state.cardsByUrl.values()) {
+          if (entry.selectCheckbox) {
+            entry.selectCheckbox.checked = false;
           }
         }
         const visibleNow = getVisibleItems();

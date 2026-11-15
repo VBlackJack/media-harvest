@@ -78,3 +78,15 @@
   background: rgba(185, 28, 28, 0.9);
   color: #ffffff;
 }
+
+:fullscreen .mh-site-download-btn,
+:-webkit-full-screen .mh-site-download-btn {
+  opacity: 0;
+  pointer-events: none;
+}
+
+:fullscreen .mh-site-overlay-host:hover .mh-site-download-btn,
+:-webkit-full-screen .mh-site-overlay-host:hover .mh-site-download-btn {
+  opacity: 0.88;
+  pointer-events: auto;
+}

@@ -189,6 +189,7 @@ function createFakePopupDocument() {
   makeTracked('select', 'sortSelect');
   makeTracked('div', 'selectionBar', ['hidden']);
   makeTracked('button', 'selectAllBtn');
+  makeTracked('button', 'clearSelectionBtn', ['hidden']);
   makeTracked('button', 'downloadSelectedBtn');
   makeTracked('button', 'downloadAllBtn', ['hidden']);
   makeTracked('button', 'stopBatchBtn', ['hidden']);
@@ -631,11 +632,22 @@ test('popup controller supports multi-select mixed batches, subtitles filter, si
   assert.equal(controller.els.downloadSelectedBtn.disabled, false);
   assert.equal(controller.els.downloadSelectedBtn.textContent, 'popup_action_download_selected:3');
   assert.equal(controller.els.selectAllBtn.textContent, 'popup_action_deselect_all');
+  assert.equal(controller.els.clearSelectionBtn.classList.contains('hidden'), false);
 
   const coverEntry = controller.state.cardsByUrl.get('https://cdn.example.com/cover.jpg');
   coverEntry.selectCheckbox.checked = false;
   await coverEntry.selectCheckbox.dispatchEvent({ type: 'change' });
   assert.equal(controller.els.downloadSelectedBtn.textContent, 'popup_action_download_selected:2');
+
+  // Clear selection resets all checkboxes and selection state
+  await controller.els.clearSelectionBtn.dispatchEvent({ type: 'click' });
+  assert.equal(controller.state.selectedUrls.size, 0);
+  assert.equal(controller.els.clearSelectionBtn.classList.contains('hidden'), true);
+
+  // Re-select for batch download
+  await controller.els.selectAllBtn.dispatchEvent({ type: 'click' });
+  coverEntry.selectCheckbox.checked = false;
+  await coverEntry.selectCheckbox.dispatchEvent({ type: 'change' });
 
   await controller.els.downloadSelectedBtn.dispatchEvent({ type: 'click' });
   assert.equal(downloadPayloads.length, 2);

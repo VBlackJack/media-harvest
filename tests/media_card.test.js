@@ -459,4 +459,5 @@ test('createMediaCard supports HLS subtitles, live stream blocking, audio previe
   assert.equal(copiedUrl, 'https://cdn.example.com/clip.mp4');
   assert.equal(copyableCard.copyBtn.classList.contains('is-copied'), true);
   assert.equal(statusReported, 'popup_action_copied');
+  assert.equal(copyableCard.nameEl.title, 'clip.mp4\nhttps://cdn.example.com/clip.mp4');
 });

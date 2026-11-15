@@ -552,7 +552,8 @@ export function createMediaCard(item, context = {}) {
   const nameEl = doc.createElement('div');
   nameEl.className = 'filename';
   nameEl.textContent = item.suggestedFilename || item.url;
-  nameEl.title = item.url;
+  const fullName = item.suggestedFilename || '';
+  nameEl.title = fullName && fullName !== item.url ? `${fullName}\n${item.url}` : item.url;
   meta.appendChild(nameEl);
 
   const badgesEl = doc.createElement('div');
@@ -756,7 +757,10 @@ export function updateCardEntry(entry, nextItem, context = {}) {
     entry.item.isBlocked = prevBlocked;
   }
   entry.nameEl.textContent = nextItem.suggestedFilename || nextItem.url;
-  entry.nameEl.title = nextItem.url;
+  const nextFullName = nextItem.suggestedFilename || '';
+  entry.nameEl.title = nextFullName && nextFullName !== nextItem.url
+    ? `${nextFullName}\n${nextItem.url}`
+    : nextItem.url;
   if (entry.selectCheckbox) {
     entry.selectCheckbox.disabled = Boolean(entry.item.isBlocked);
     if (context.isSelected) {

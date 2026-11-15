@@ -390,7 +390,7 @@
     "description": "Button to retry stream manifest inspection after a failure."
   },
   "popup_search_placeholder": {
-    "message": "Filter by name or URL...",
+    "message": "Search name, ext:mp4, >10MB, 1080p...",
     "description": "Placeholder text for the popup search input."
   },
   "popup_search_label": {
@@ -734,5 +734,13 @@
   "options_action_configure_shortcuts": {
     "message": "Configure in Chrome",
     "description": "Button to open the Chrome extensions shortcuts settings page."
+  },
+  "options_unsaved_changes": {
+    "message": "Unsaved changes",
+    "description": "Badge indicator displayed when form settings have been modified but not saved."
+  },
+  "popup_action_clear_selection": {
+    "message": "Clear selection",
+    "description": "Button to clear all selected checkboxes across the popup."
   }
 }

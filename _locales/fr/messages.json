@@ -390,7 +390,7 @@
     "description": "Bouton pour relancer l'inspection du manifeste après un échec."
   },
   "popup_search_placeholder": {
-    "message": "Filtrer par nom ou URL...",
+    "message": "Chercher nom, ext:mp4, >10Mo, 1080p...",
     "description": "Texte indicatif du champ de recherche de la popup."
   },
   "popup_search_label": {
@@ -734,5 +734,13 @@
   "options_action_configure_shortcuts": {
     "message": "Configurer dans Chrome",
     "description": "Bouton pour ouvrir la page des raccourcis d'extensions Chrome."
+  },
+  "options_unsaved_changes": {
+    "message": "Modifications non enregistrées",
+    "description": "Indicateur affiché lorsque les options ont été modifiées mais pas encore enregistrées."
+  },
+  "popup_action_clear_selection": {
+    "message": "Désélectionner tout",
+    "description": "Bouton pour réinitialiser la sélection de cases à cocher."
   }
 }

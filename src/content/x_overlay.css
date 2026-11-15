@@ -61,3 +61,15 @@
   background: rgba(185, 28, 28, 0.85);
   color: #ffffff;
 }
+
+:fullscreen .mh-x-download-btn,
+:-webkit-full-screen .mh-x-download-btn {
+  opacity: 0;
+  pointer-events: none;
+}
+
+:fullscreen article[data-testid="tweet"]:hover .mh-x-download-btn,
+:-webkit-full-screen article[data-testid="tweet"]:hover .mh-x-download-btn {
+  opacity: 1;
+  pointer-events: auto;
+}

@@ -44,6 +44,8 @@ export function collectOptionElements(doc) {
     resetConfirmBar: doc.getElementById('resetConfirmBar'),
     resetConfirmBtn: doc.getElementById('resetConfirmBtn'),
     resetCancelBtn: doc.getElementById('resetCancelBtn'),
+    saveBtn: doc.getElementById('saveBtn'),
+    dirtyIndicator: doc.getElementById('dirtyIndicator'),
     companionCmd: doc.getElementById('companionCmd'),
     copyCompanionCmdBtn: doc.getElementById('copyCompanionCmdBtn'),
     openShortcutsBtn: doc.getElementById('openShortcutsBtn')
@@ -89,6 +91,26 @@ export function createOptionsController(deps = {}) {
       : null);
   const els = collectOptionElements(doc);
   let statusTimer = null;
+  let baselineSettings = null;
+
+  /**
+   * Checks whether form controls have unsaved changes relative to baseline.
+   * @returns {boolean}
+   */
+  function checkDirtyState() {
+    if (!baselineSettings) {
+      return false;
+    }
+    const current = readFormValues();
+    const isDirty = Object.keys(baselineSettings).some((k) => baselineSettings[k] !== current[k]);
+    if (els.dirtyIndicator) {
+      els.dirtyIndicator.classList.toggle('hidden', !isDirty);
+    }
+    if (els.saveBtn) {
+      els.saveBtn.classList.toggle('is-dirty', isDirty);
+    }
+    return isDirty;
+  }
 
   /**
    * Updates the companion installation PowerShell command with the active runtime extension ID.
@@ -212,6 +234,8 @@ export function createOptionsController(deps = {}) {
     if (els.promptSaveAs) {
       els.promptSaveAs.checked = Boolean(settings.promptSaveAs);
     }
+    baselineSettings = { ...settings };
+    checkDirtyState();
   }
 
   /**
@@ -303,6 +327,8 @@ export function createOptionsController(deps = {}) {
     applyI18nFn(doc);
     applyInputBounds(els);
     els.form.addEventListener('submit', handleSubmit);
+    els.form.addEventListener('input', checkDirtyState);
+    els.form.addEventListener('change', checkDirtyState);
     els.resetBtn.addEventListener('click', requestReset);
     if (els.resetConfirmBtn) {
       els.resetConfirmBtn.addEventListener('click', handleReset);
@@ -351,6 +377,7 @@ export function createOptionsController(deps = {}) {
     updateCompanionSnippet,
     handleCopyCompanionCmd,
     handleGlobalKeyDown,
+    checkDirtyState,
     init
   };
 }
