@@ -849,3 +849,122 @@ test('service_worker DOWNLOAD_SITE_VIDEO prefers matching muxed stream or compan
   assert.equal(pairedBuildMsg.originalUrl, 'https://v.redd.it/abc456/DASH_720.mp4');
   assert.equal(pairedBuildMsg.audioUrl, 'https://v.redd.it/abc456/DASH_AUDIO_128.mp4');
 });
+
+test('service_worker DOWNLOAD_TWEET_VIDEO and DOWNLOAD_SITE_VIDEO prefer master playlists over audio/video sub-playlists', async () => {
+  offscreenMessages.length = 0;
+
+  // Reverse chronological capture order (like webRequest unshift): audio sub-playlist first, master last
+  sessionStore.set(`${STORAGE_KEYS.TAB_MEDIA_PREFIX}103`, [
+    {
+      url: 'https://video.twimg.com/ext_tw_video/1999111222/pu/pl/mp4a/0/0/128000/aud.m3u8',
+      type: 'stream',
+      ext: 'm3u8',
+      isStream: true,
+      capturedAt: 3000
+    },
+    {
+      url: 'https://video.twimg.com/ext_tw_video/1999111222/pu/pl/avc1/720x1280/vid.m3u8',
+      type: 'stream',
+      ext: 'm3u8',
+      isStream: true,
+      capturedAt: 2000
+    },
+    {
+      url: 'https://video.twimg.com/ext_tw_video/1999111222/pu/pl/master_abc.m3u8?tag=12',
+      type: 'stream',
+      ext: 'm3u8',
+      isStream: true,
+      capturedAt: 1000
+    }
+  ]);
+
+  const tweetMasterResp = await dispatchRuntimeMessage(
+    {
+      type: MESSAGE_TYPES.DOWNLOAD_TWEET_VIDEO,
+      payload: {
+        requestId: 'tweet_master_req',
+        mediaId: '1999111222',
+        authorHandle: 'creator',
+        tweetId: '777888'
+      }
+    },
+    { tab: { id: 103, url: 'https://x.com/creator/status/777888' } }
+  );
+  assert.equal(tweetMasterResp.ok, true);
+  const tweetMasterMsg = offscreenMessages.find((m) => m.requestId === 'tweet_master_req');
+  assert.ok(tweetMasterMsg);
+  assert.equal(tweetMasterMsg.playlistUrl, 'https://video.twimg.com/ext_tw_video/1999111222/pu/pl/master_abc.m3u8?tag=12');
+  assert.equal(tweetMasterMsg.audioUrl, '');
+
+  // When only sub-playlists were captured (no master), choose video sub-playlist and pair sibling mp4a audio
+  offscreenMessages.length = 0;
+  sessionStore.set(`${STORAGE_KEYS.TAB_MEDIA_PREFIX}104`, [
+    {
+      url: 'https://video.twimg.com/amplify_video/2000999/pl/mp4a/0/0/128000/aud_only.m3u8',
+      type: 'stream',
+      ext: 'm3u8',
+      isStream: true,
+      capturedAt: 2000
+    },
+    {
+      url: 'https://video.twimg.com/amplify_video/2000999/pl/avc1/720x1280/vid_only.m3u8',
+      type: 'stream',
+      ext: 'm3u8',
+      isStream: true,
+      capturedAt: 1000
+    }
+  ]);
+
+  const tweetSiblingResp = await dispatchRuntimeMessage(
+    {
+      type: MESSAGE_TYPES.DOWNLOAD_TWEET_VIDEO,
+      payload: {
+        requestId: 'tweet_sibling_req',
+        mediaId: '2000999',
+        authorHandle: 'creator',
+        tweetId: '999000'
+      }
+    },
+    { tab: { id: 104, url: 'https://x.com/creator/status/999000' } }
+  );
+  assert.equal(tweetSiblingResp.ok, true);
+  const tweetSiblingMsg = offscreenMessages.find((m) => m.requestId === 'tweet_sibling_req');
+  assert.ok(tweetSiblingMsg);
+  assert.equal(tweetSiblingMsg.playlistUrl, 'https://video.twimg.com/amplify_video/2000999/pl/avc1/720x1280/vid_only.m3u8');
+  assert.equal(tweetSiblingMsg.audioUrl, 'https://video.twimg.com/amplify_video/2000999/pl/mp4a/0/0/128000/aud_only.m3u8');
+
+  // General site overlay also skips leading audio sub-playlist in favor of master playlist
+  offscreenMessages.length = 0;
+  sessionStore.set(`${STORAGE_KEYS.TAB_MEDIA_PREFIX}105`, [
+    {
+      url: 'https://cdn.example.com/hls/audio/en_128.m3u8',
+      type: 'stream',
+      ext: 'm3u8',
+      isStream: true,
+      capturedAt: 2000
+    },
+    {
+      url: 'https://cdn.example.com/hls/master.m3u8',
+      type: 'stream',
+      ext: 'm3u8',
+      isStream: true,
+      capturedAt: 1000
+    }
+  ]);
+
+  const siteMasterResp = await dispatchRuntimeMessage(
+    {
+      type: MESSAGE_TYPES.DOWNLOAD_SITE_VIDEO,
+      payload: {
+        requestId: 'site_master_req',
+        siteId: 'generic',
+        pageUrl: 'https://example.com/watch'
+      }
+    },
+    { tab: { id: 105, url: 'https://example.com/watch' } }
+  );
+  assert.equal(siteMasterResp.ok, true);
+  const siteMasterMsg = offscreenMessages.find((m) => m.requestId === 'site_master_req');
+  assert.ok(siteMasterMsg);
+  assert.equal(siteMasterMsg.playlistUrl, 'https://cdn.example.com/hls/master.m3u8');
+});

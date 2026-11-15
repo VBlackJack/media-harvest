@@ -1543,4 +1543,19 @@ test('offscreen muxes dual-track WebM MSE streams, DASH WebM audio, HLS fMP4+ADT
   assert.equal(progMuxResp.ok, true);
   assert.equal(progMuxResp.outputExtension, 'mp4');
   assert.equal(countTracksInInit(await createdBlobs.get(progMuxResp.blobUrl).arrayBuffer()), 2);
+
+  // Sibling non-master video sub-playlist + explicit audioUrl sub-playlist (e.g. X avc1 + mp4a without master)
+  const siblingSubResp = await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_HLS_BLOB,
+    requestId: 'hls-sibling-sub-1',
+    originalUrl: 'https://cdn.example.com/fmp4_video.m3u8',
+    playlistUrl: 'https://cdn.example.com/fmp4_video.m3u8',
+    audioUrl: 'https://cdn.example.com/aac_audio.m3u8'
+  });
+  assert.equal(siblingSubResp.ok, true);
+  assert.equal(siblingSubResp.outputExtension, 'mp4');
+  const siblingSubBuf = await createdBlobs.get(siblingSubResp.blobUrl).arrayBuffer();
+  assert.equal(countTracksInInit(siblingSubBuf), 2);
+  assert.equal(hasAudioTrackInInit(siblingSubBuf), true);
 });

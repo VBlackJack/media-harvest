@@ -772,6 +772,118 @@ async function inspectHlsStream(url, referer = '') {
   });
 }
 
+function isLikelyAudioOnlyStreamUrl(rawUrl) {
+  if (typeof rawUrl !== 'string' || !rawUrl) {
+    return false;
+  }
+  return /\/(?:mp4a|aac|audio(?:-only|_only)?|snd)(?:\/|$)/i.test(rawUrl)
+    || /[?&](?:mime|type|track)=audio\b/i.test(rawUrl)
+    || /\/DASH_AUDIO/i.test(rawUrl)
+    || /\.(?:aac|m4a|mp3|ogg|opus|wav)(?:$|[?#])/i.test(rawUrl);
+}
+
+function isLikelyVideoOnlyDirectUrl(rawUrl) {
+  if (typeof rawUrl !== 'string' || !rawUrl) {
+    return false;
+  }
+  return /\/DASH_\d+\.(?:mp4|m4s)/i.test(rawUrl)
+    || /(?:[?&]mime=video|\/video(?:only|-only)\b)/i.test(rawUrl);
+}
+
+function isLikelySubPlaylistUrl(rawUrl, isStream = true) {
+  if (typeof rawUrl !== 'string' || !rawUrl) {
+    return false;
+  }
+  if (isLikelyAudioOnlyStreamUrl(rawUrl) || isLikelyVideoOnlyDirectUrl(rawUrl)) {
+    return true;
+  }
+  if (!isStream) {
+    return false;
+  }
+  return /\/(?:avc1|hev1|hvc1|vp09|vp9|av01)(?:\/|$)/i.test(rawUrl)
+    || /\/\d{2,4}x\d{2,4}(?:\/|$)/i.test(rawUrl);
+}
+
+function getUrlPathDepth(rawUrl) {
+  try {
+    return new URL(rawUrl).pathname.split('/').filter(Boolean).length;
+  } catch {
+    return 999;
+  }
+}
+
+function scoreVideoCandidate(item) {
+  if (!item || !item.url) {
+    return -100000;
+  }
+  if (isLikelyAudioOnlyStreamUrl(item.url)) {
+    return -10000;
+  }
+  if (item.isStream && !isLikelySubPlaylistUrl(item.url, true)) {
+    return 3000;
+  }
+  if (!item.isStream && !isLikelyVideoOnlyDirectUrl(item.url)) {
+    return 2000;
+  }
+  if (item.isStream) {
+    return 1000;
+  }
+  return 500;
+}
+
+/**
+ * Sorts video/stream candidates so master playlists precede sub-playlists and audio-only streams.
+ * Ties favor shallower paths and earlier captures (remembering recordNetworkMedia unshifts newest first).
+ * @param {Array<object>} candidates
+ * @returns {Array<object>}
+ */
+function rankVideoCandidates(candidates) {
+  if (!Array.isArray(candidates) || candidates.length <= 1) {
+    return Array.isArray(candidates) ? [...candidates] : [];
+  }
+  return candidates
+    .map((item, idx) => ({ item, idx, score: scoreVideoCandidate(item), depth: getUrlPathDepth(item.url) }))
+    .sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      if (a.item.isStream && b.item.isStream && a.depth !== b.depth) {
+        return a.depth - b.depth;
+      }
+      const timeA = Number(a.item.capturedAt) || 0;
+      const timeB = Number(b.item.capturedAt) || 0;
+      if (timeA > 0 && timeB > 0 && timeA !== timeB) {
+        return timeA - timeB;
+      }
+      return b.idx - a.idx;
+    })
+    .map((entry) => entry.item);
+}
+
+function findSiblingStreamAudioUrl(chosen, allItems) {
+  if (!chosen || !chosen.isStream || !isLikelySubPlaylistUrl(chosen.url, true) || !Array.isArray(allItems)) {
+    return '';
+  }
+  const chosenMediaId = extractMediaId(chosen.url);
+  const chosenDir = getUrlDirectoryPrefix(chosen.url);
+  const match = allItems.find((item) => {
+    if (!item || !item.url || item.url === chosen.url || !item.isStream) {
+      return false;
+    }
+    if (!isLikelyAudioOnlyStreamUrl(item.url)) {
+      return false;
+    }
+    if (chosenMediaId && extractMediaId(item.url) === chosenMediaId) {
+      return true;
+    }
+    if (chosenDir && getUrlDirectoryPrefix(item.url) === chosenDir) {
+      return true;
+    }
+    return false;
+  });
+  return match ? match.url : '';
+}
+
 /**
  * Resolves and downloads the video matching an inline X post click.
  * @param {number} tabId
@@ -783,12 +895,19 @@ async function handleTweetVideoDownload(tabId, payload, pageUrl = '') {
   const settings = await loadSettings();
   const networkItems = await getTabNetworkMedia(tabId);
   const videoCandidates = networkItems.filter(
+    (item) => (item.type === MEDIA_TYPES.STREAM || item.type === MEDIA_TYPES.VIDEO)
+      && !isLikelyAudioOnlyStreamUrl(item.url)
+  );
+  const allCandidatesForMatch = networkItems.filter(
     (item) => item.type === MEDIA_TYPES.STREAM || item.type === MEDIA_TYPES.VIDEO
   );
 
   let chosen = null;
   if (payload.mediaId) {
-    chosen = videoCandidates.find((item) => extractMediaId(item.url) === payload.mediaId) || null;
+    const mediaMatches = rankVideoCandidates(
+      videoCandidates.filter((item) => extractMediaId(item.url) === payload.mediaId)
+    );
+    chosen = mediaMatches[0] || null;
   }
   if (!chosen && payload.directSrc && isHttpUrl(payload.directSrc)) {
     chosen = {
@@ -797,12 +916,20 @@ async function handleTweetVideoDownload(tabId, payload, pageUrl = '') {
       ext: DEFAULT_FILENAMES.HLS_FMP4_EXT
     };
   }
-  if (!chosen && videoCandidates.length === 1) {
-    chosen = videoCandidates[0];
+  if (!chosen && videoCandidates.length > 0) {
+    const rankedAll = rankVideoCandidates(videoCandidates);
+    const distinctIds = new Set(rankedAll.map((item) => extractMediaId(item.url)).filter(Boolean));
+    if (rankedAll.length === 1 || (!payload.mediaId && distinctIds.size === 1)) {
+      chosen = rankedAll[0];
+    }
   }
   if (!chosen) {
     throw new Error('PLAY_FIRST');
   }
+
+  const audioUrl = chosen.isStream
+    ? findSiblingStreamAudioUrl(chosen, allCandidatesForMatch)
+    : findCompanionAudioUrl(chosen.url, networkItems);
 
   const baseStem = payload.authorHandle && payload.tweetId
     ? `${payload.authorHandle}_${payload.tweetId}`
@@ -816,6 +943,7 @@ async function handleTweetVideoDownload(tabId, payload, pageUrl = '') {
   return handleDownloadMedia({
     url: chosen.url,
     playlistUrl: chosen.url,
+    audioUrl,
     isStream: Boolean(chosen.isStream),
     filename,
     saveAs: Boolean(settings.promptSaveAs),
@@ -1207,34 +1335,30 @@ function getUrlDirectoryPrefix(rawUrl) {
   }
 }
 
-function isLikelyVideoOnlyDirectUrl(rawUrl) {
-  if (typeof rawUrl !== 'string' || !rawUrl) {
-    return false;
-  }
-  return /\/DASH_\d+\.(?:mp4|m4s)/i.test(rawUrl)
-    || /(?:[?&]mime=video|\/video(?:only|-only)\b)/i.test(rawUrl);
-}
-
 function findMatchingStreamForDirectUrl(directUrl, streams) {
   if (!directUrl || !Array.isArray(streams) || streams.length === 0) {
     return null;
   }
+  const rankedStreams = rankVideoCandidates(streams).filter((s) => !isLikelyAudioOnlyStreamUrl(s.url));
+  if (rankedStreams.length === 0) {
+    return null;
+  }
   const directDir = getUrlDirectoryPrefix(directUrl);
   if (directDir) {
-    const dirMatch = streams.find((s) => getUrlDirectoryPrefix(s.url) === directDir);
+    const dirMatch = rankedStreams.find((s) => getUrlDirectoryPrefix(s.url) === directDir);
     if (dirMatch) {
       return dirMatch;
     }
   }
   const directMediaId = extractMediaId(directUrl);
   if (directMediaId) {
-    const idMatch = streams.find((s) => extractMediaId(s.url) === directMediaId);
+    const idMatch = rankedStreams.find((s) => extractMediaId(s.url) === directMediaId);
     if (idMatch) {
       return idMatch;
     }
   }
-  if (isLikelyVideoOnlyDirectUrl(directUrl) && streams.length === 1) {
-    return streams[0];
+  if (isLikelyVideoOnlyDirectUrl(directUrl) && rankedStreams.length === 1) {
+    return rankedStreams[0];
   }
   return null;
 }
@@ -1273,9 +1397,11 @@ async function handleSiteVideoDownload(tabId, payload, fallbackPageUrl = '') {
     settings.enableMseCapture ? getTabMseMedia(tabId) : Promise.resolve([])
   ]);
 
-  const streams = networkItems.filter((item) => item.type === MEDIA_TYPES.STREAM);
+  const streams = rankVideoCandidates(
+    networkItems.filter((item) => item.type === MEDIA_TYPES.STREAM && !isLikelyAudioOnlyStreamUrl(item.url))
+  );
   const directNetworkVideos = networkItems
-    .filter((item) => item.type === MEDIA_TYPES.VIDEO)
+    .filter((item) => item.type === MEDIA_TYPES.VIDEO && !isLikelyAudioOnlyStreamUrl(item.url))
     .sort((a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0));
   const sortedMseItems = [...mseItems].sort((a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0));
 
@@ -1322,9 +1448,11 @@ async function handleSiteVideoDownload(tabId, payload, fallbackPageUrl = '') {
     throw new Error('PLAY_FIRST');
   }
 
-  const companionAudioUrl = !chosen.isStream && !chosen.isMse
-    ? findCompanionAudioUrl(chosen.url, networkItems)
-    : '';
+  const companionAudioUrl = chosen.isMse
+    ? ''
+    : (chosen.isStream
+        ? findSiblingStreamAudioUrl(chosen, networkItems)
+        : findCompanionAudioUrl(chosen.url, networkItems));
 
   const baseStem = (payload.title && payload.title.trim())
     || deriveFilenameStem(chosen.url, chosen.title || '', pageUrl);

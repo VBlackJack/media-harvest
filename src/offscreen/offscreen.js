@@ -378,12 +378,29 @@ async function resolveStreamPlan(
   }
 
   if (!rootParsed.isMaster) {
+    let siblingAudioParsed = null;
+    let siblingAudioUrl = '';
+    if (isHttpUrl(preferredAudioUrl) && preferredAudioUrl !== masterOrMediaUrl) {
+      try {
+        const audioText = await fetchWithManagedTimeout(preferredAudioUrl, {
+          responseMode: 'text',
+          cancelSignal
+        });
+        const candidate = parseHlsPlaylist(audioText, preferredAudioUrl);
+        if (!isBlockedPlaylistEncryption(candidate) && candidate.segments.length > 0) {
+          siblingAudioParsed = candidate;
+          siblingAudioUrl = preferredAudioUrl;
+        }
+      } catch {
+        // Ignore companion audio sub-playlist failure and continue with media playlist
+      }
+    }
     return {
       format: 'hls',
       mediaPlaylist: rootParsed,
-      audioPlaylist: null,
+      audioPlaylist: siblingAudioParsed,
       videoPlaylistUrl: masterOrMediaUrl,
-      audioPlaylistUrl: ''
+      audioPlaylistUrl: siblingAudioUrl
     };
   }
 
