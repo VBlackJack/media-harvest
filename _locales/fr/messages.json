@@ -722,5 +722,17 @@
   "popup_status_empty_hint": {
     "message": "Astuce : lancez la lecture d'une vidéo ou rechargez l'onglet pour détecter les flux.",
     "description": "Conseil affiché dans l'état vide lorsqu'aucun média n'a encore été capturé."
+  },
+  "options_shortcuts_title": {
+    "message": "Raccourci clavier",
+    "description": "Titre de la section informant sur le raccourci clavier global."
+  },
+  "options_shortcuts_desc": {
+    "message": "Appuyez sur Alt+Shift+M depuis n'importe quelle page web pour ouvrir le panneau d'extension.",
+    "description": "Description expliquant le raccourci global par défaut."
+  },
+  "options_action_configure_shortcuts": {
+    "message": "Configurer dans Chrome",
+    "description": "Bouton pour ouvrir la page des raccourcis d'extensions Chrome."
   }
 }

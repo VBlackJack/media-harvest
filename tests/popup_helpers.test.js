@@ -128,6 +128,18 @@ test('matchesSearch and sortMediaItems filter and order media items deterministi
   assert.equal(matchesSearch(items[2], 'cdn.example.com/c'), true);
   assert.equal(matchesSearch(items[0], '   '), true);
 
+  // Power search tokens: ext, is, size, resolution
+  const richItems = [
+    { url: 'https://cdn.example.com/video.mp4', suggestedFilename: 'video.mp4', ext: 'mp4', type: 'video', sizeBytes: 15 * 1024 * 1024, height: 1080, width: 1920 },
+    { url: 'https://cdn.example.com/stream.m3u8', suggestedFilename: 'live.m3u8', ext: 'm3u8', isStream: true, type: 'stream', sizeBytes: 0, height: 720, width: 1280 },
+    { url: 'https://cdn.example.com/photo.jpg', suggestedFilename: 'photo.jpg', ext: 'jpg', type: 'image', sizeBytes: 250 * 1024, height: 800, width: 600 }
+  ];
+  assert.equal(matchesSearch(richItems[0], 'ext:mp4 >10m 1080p'), true);
+  assert.equal(matchesSearch(richItems[1], 'ext:mp4'), false);
+  assert.equal(matchesSearch(richItems[1], 'is:stream 720p'), true);
+  assert.equal(matchesSearch(richItems[2], 'is:image <500k'), true);
+  assert.equal(matchesSearch(richItems[2], 'is:video'), false);
+
   assert.deepEqual(sortMediaItems(items, SORT_MODES.DEFAULT, metaByUrl).map((i) => i.suggestedFilename), [
     'intro.mp4',
     'keynote.mp4',

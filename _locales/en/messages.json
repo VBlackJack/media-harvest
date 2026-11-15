@@ -722,5 +722,17 @@
   "popup_status_empty_hint": {
     "message": "Tip: Start video playback or reload the tab to detect streaming media.",
     "description": "Helpful hint shown in the empty state when no media has been captured yet."
+  },
+  "options_shortcuts_title": {
+    "message": "Keyboard shortcut",
+    "description": "Section header for global extension keyboard shortcut info."
+  },
+  "options_shortcuts_desc": {
+    "message": "Press Alt+Shift+M from any webpage to open the extension popup.",
+    "description": "Description explaining the default global extension shortcut."
+  },
+  "options_action_configure_shortcuts": {
+    "message": "Configure in Chrome",
+    "description": "Button to open the Chrome extensions shortcuts settings page."
   }
 }

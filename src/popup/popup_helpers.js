@@ -162,7 +162,12 @@ export async function runWithConcurrency(items, concurrency, worker) {
 }
 
 /**
- * Checks whether an item matches the user's free-text filter query.
+ * Checks whether an item matches the user's search query, supporting:
+ * - Extension matching: 'ext:mp4', 'ext:m3u8', 'ext:jpg'
+ * - Type filters: 'is:stream', 'is:video', 'is:image', 'is:audio', 'is:subtitles'
+ * - Size filters: '>5m', '<1m', '>500k'
+ * - Resolution tokens: '1080p', '720p', '4k'
+ * - Multi-term substring matching across filename, url, title, and extension.
  * @param {object} item
  * @param {string} rawQuery
  * @returns {boolean}
@@ -172,8 +177,53 @@ export function matchesSearch(item, rawQuery) {
   if (!query) {
     return true;
   }
-  const fields = [item.suggestedFilename, item.url, item.title];
-  return fields.some((val) => typeof val === 'string' && val.toLowerCase().includes(query));
+  const tokens = query.split(/\s+/).filter(Boolean);
+  const ext = (item.ext || '').toLowerCase();
+  const fields = [item.suggestedFilename, item.url, item.title, ext];
+
+  return tokens.every((token) => {
+    if (token.startsWith('ext:')) {
+      const targetExt = token.slice(4).replace(/^\./, '');
+      return ext === targetExt;
+    }
+    if (token.startsWith('is:')) {
+      const typeTarget = token.slice(3);
+      if (typeTarget === 'stream') return Boolean(item.isStream);
+      if (typeTarget === 'mse') return Boolean(item.isMse);
+      if (typeTarget === 'direct') return !item.isStream && !item.isMse;
+      if (typeTarget === 'video') return item.type === 'video' || item.type === 'stream';
+      if (typeTarget === 'image') return item.type === 'image';
+      if (typeTarget === 'audio') return item.type === 'audio';
+      if (typeTarget === 'subtitles' || typeTarget === 'subtitle') return item.type === 'subtitle';
+    }
+    if (token === '1080p') {
+      return (item.height || 0) >= 1080 || (item.width || 0) >= 1920;
+    }
+    if (token === '720p') {
+      return (item.height || 0) >= 720 || (item.width || 0) >= 1280;
+    }
+    if (token === '4k' || token === '2160p') {
+      return (item.height || 0) >= 2160 || (item.width || 0) >= 3840;
+    }
+    const sizeMatch = token.match(/^([><]=?)(\d+(?:\.\d+)?)\s*([kmgt]?b?)$/);
+    if (sizeMatch) {
+      const op = sizeMatch[1];
+      const num = parseFloat(sizeMatch[2]);
+      const unit = (sizeMatch[3] || '').replace(/b$/, '');
+      let multiplier = 1;
+      if (unit === 'k') multiplier = 1024;
+      else if (unit === 'm') multiplier = 1024 * 1024;
+      else if (unit === 'g') multiplier = 1024 * 1024 * 1024;
+      else if (unit === 't') multiplier = 1024 * 1024 * 1024 * 1024;
+      const targetBytes = num * multiplier;
+      const itemBytes = item.sizeBytes || item.estimatedBytes || 0;
+      if (op === '>') return itemBytes > targetBytes;
+      if (op === '>=') return itemBytes >= targetBytes;
+      if (op === '<') return itemBytes > 0 && itemBytes < targetBytes;
+      if (op === '<=') return itemBytes > 0 && itemBytes <= targetBytes;
+    }
+    return fields.some((val) => typeof val === 'string' && val.toLowerCase().includes(token));
+  });
 }
 
 /**

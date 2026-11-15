@@ -69,7 +69,8 @@ function createFakeDocument() {
     ['resetConfirmBtn', createFakeElement()],
     ['resetCancelBtn', createFakeElement()],
     ['companionCmd', createFakeElement({ text: '' })],
-    ['copyCompanionCmdBtn', createFakeElement()]
+    ['copyCompanionCmdBtn', createFakeElement()],
+    ['openShortcutsBtn', createFakeElement()]
   ]);
   const docListeners = new Map();
   return {
@@ -89,6 +90,8 @@ test('options controller syncs LIMITS bounds, confirms resets, keeps errors visi
   const doc = createFakeDocument();
   let stored = { ...DEFAULT_SETTINGS, largeStreamWarningMb: 400 };
   let failSave = false;
+  let copiedText = '';
+  let openedTabUrl = '';
 
   const controller = createOptionsController({
     documentRef: doc,
@@ -105,6 +108,7 @@ test('options controller syncs LIMITS bounds, confirms resets, keeps errors visi
     applyTranslationsFn: () => {},
     chromeRuntimeId: 'test-extension-id',
     writeClipboardFn: async (text) => { copiedText = text; },
+    chromeTabsApi: { create: ({ url }) => { openedTabUrl = url; } },
     sendMessageFn: async () => ({ ok: true, available: true, ytDlpVersion: '2026.01.01' })
   });
 
@@ -145,7 +149,7 @@ test('options controller syncs LIMITS bounds, confirms resets, keeps errors visi
 
   // Companion snippet interpolation and copy
   assert.ok(controller.els.companionCmd.textContent.includes('test-extension-id'));
-  let copiedText = '';
+  copiedText = '';
   controller.writeClipboardFn = async (text) => { copiedText = text; };
   await controller.handleCopyCompanionCmd();
   assert.equal(copiedText, controller.els.companionCmd.textContent);
@@ -156,4 +160,8 @@ test('options controller syncs LIMITS bounds, confirms resets, keeps errors visi
   assert.equal(controller.els.resetConfirmBar.classList.contains('hidden'), false);
   await doc.dispatchEvent({ type: 'keydown', key: 'Escape' });
   assert.equal(controller.els.resetConfirmBar.classList.contains('hidden'), true);
+
+  // Shortcut button opens extensions shortcuts settings
+  await controller.els.openShortcutsBtn.dispatchEvent({ type: 'click' });
+  assert.equal(openedTabUrl, 'chrome://extensions/shortcuts');
 });

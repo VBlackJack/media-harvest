@@ -45,7 +45,8 @@ export function collectOptionElements(doc) {
     resetConfirmBtn: doc.getElementById('resetConfirmBtn'),
     resetCancelBtn: doc.getElementById('resetCancelBtn'),
     companionCmd: doc.getElementById('companionCmd'),
-    copyCompanionCmdBtn: doc.getElementById('copyCompanionCmdBtn')
+    copyCompanionCmdBtn: doc.getElementById('copyCompanionCmdBtn'),
+    openShortcutsBtn: doc.getElementById('openShortcutsBtn')
   };
 }
 
@@ -314,6 +315,14 @@ export function createOptionsController(deps = {}) {
     }
     if (els.copyCompanionCmdBtn) {
       els.copyCompanionCmdBtn.addEventListener('click', handleCopyCompanionCmd);
+    }
+    if (els.openShortcutsBtn) {
+      els.openShortcutsBtn.addEventListener('click', () => {
+        const tabsApi = deps.chromeTabsApi || (typeof chrome !== 'undefined' && chrome.tabs);
+        if (tabsApi && typeof tabsApi.create === 'function') {
+          tabsApi.create({ url: 'chrome://extensions/shortcuts' });
+        }
+      });
     }
     if (doc && typeof doc.addEventListener === 'function') {
       doc.addEventListener('keydown', handleGlobalKeyDown);
