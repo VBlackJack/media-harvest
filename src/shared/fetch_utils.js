@@ -72,6 +72,34 @@ function concatChunksToArrayBuffer(chunks, totalBytes) {
 }
 
 /**
+ * Runs async worker tasks over an item array with bounded concurrency.
+ * @template T, R
+ * @param {Array<T>} items
+ * @param {number} concurrency
+ * @param {(item: T, index: number) => Promise<R>} worker
+ * @returns {Promise<Array<R>>}
+ */
+export async function runWithConcurrency(items, concurrency, worker) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return [];
+  }
+  const limit = Math.max(1, Math.min(concurrency || LIMITS.INSPECT_CONCURRENCY, items.length));
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  const runWorker = async () => {
+    while (nextIndex < items.length) {
+      const idx = nextIndex;
+      nextIndex += 1;
+      results[idx] = await worker(items[idx], idx);
+    }
+  };
+
+  await Promise.all(Array.from({ length: limit }, () => runWorker()));
+  return results;
+}
+
+/**
  * Reads a response body while enforcing a shared byteTracker cap against LIMITS.MAX_HLS_BUFFER_BYTES.
  * Reserves declared Content-Length upfront when unencoded, or streams chunks when body reader exists.
  * @param {Response} response
@@ -159,30 +187,78 @@ async function readBoundedBuffer(response, byteTracker, maxBytes) {
 }
 
 /**
- * Fetches text or binary content with timeout, optional cancel AbortSignal, and byte-cap tracking.
+ * Returns true if a fetch failure is transient and safe to retry.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isRetryableFetchError(err) {
+  if (!err || typeof err !== 'object') {
+    return false;
+  }
+  const msg = typeof err.message === 'string' ? err.message : '';
+  if (
+    msg === 'INVALID_URL' ||
+    msg === CANCEL_REASON ||
+    msg === 'BUILD_ABORTED' ||
+    msg === 'STREAM_TOO_LARGE'
+  ) {
+    return false;
+  }
+  if (msg === 'FETCH_TIMEOUT') {
+    return true;
+  }
+  if (msg.startsWith('HTTP ')) {
+    const status = Number(msg.slice(5));
+    return status === 408 || status === 429 || (status >= 500 && status <= 599);
+  }
+  return true;
+}
+
+/**
+ * Waits briefly between retry attempts unless cancelled via cancelSignal.
+ * @param {number} delayMs
+ * @param {AbortSignal | null} cancelSignal
+ * @returns {Promise<void>}
+ */
+function waitForRetryDelay(delayMs, cancelSignal) {
+  if (!Number.isFinite(delayMs) || delayMs <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    if (cancelSignal && cancelSignal.aborted) {
+      reject(new Error(cancelSignal.reason === CANCEL_REASON ? CANCEL_REASON : 'BUILD_ABORTED'));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error(cancelSignal && cancelSignal.reason === CANCEL_REASON ? CANCEL_REASON : 'BUILD_ABORTED'));
+    };
+    const timer = setTimeout(() => {
+      if (cancelSignal) {
+        cancelSignal.removeEventListener('abort', onAbort);
+      }
+      resolve();
+    }, delayMs);
+    if (cancelSignal) {
+      cancelSignal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+}
+
+/**
+ * Executes a single managed fetch attempt with timeout and cancel signal binding.
  * @param {string} url
- * @param {{
- *   responseMode?: 'text' | 'buffer' | 'bufferWithStatus',
- *   timeoutMs?: number,
- *   headers?: Record<string, string>,
- *   cancelSignal?: AbortSignal | null,
- *   byteTracker?: { bytes: number },
- *   maxBytes?: number
- * }} [options]
+ * @param {object} options
  * @returns {Promise<string | ArrayBuffer | { status: number, buffer: ArrayBuffer }>}
  */
-export async function fetchWithManagedTimeout(url, options = {}) {
-  if (!isHttpUrl(url)) {
-    throw new Error('INVALID_URL');
-  }
-
+async function executeSingleFetchAttempt(url, options) {
   const {
-    responseMode = 'text',
-    timeoutMs = LIMITS.FETCH_TIMEOUT_MS,
+    responseMode,
+    timeoutMs,
     headers,
-    cancelSignal = null,
+    cancelSignal,
     byteTracker,
-    maxBytes = LIMITS.MAX_HLS_BUFFER_BYTES
+    maxBytes
   } = options;
 
   if (cancelSignal && cancelSignal.aborted) {
@@ -237,4 +313,61 @@ export async function fetchWithManagedTimeout(url, options = {}) {
       cancelSignal.removeEventListener('abort', onCancel);
     }
   }
+}
+
+/**
+ * Fetches text or binary content with timeout, optional cancel AbortSignal, byte-cap tracking, and retries.
+ * @param {string} url
+ * @param {{
+ *   responseMode?: 'text' | 'buffer' | 'bufferWithStatus',
+ *   timeoutMs?: number,
+ *   headers?: Record<string, string>,
+ *   cancelSignal?: AbortSignal | null,
+ *   byteTracker?: { bytes: number },
+ *   maxBytes?: number,
+ *   retries?: number,
+ *   retryDelayMs?: number
+ * }} [options]
+ * @returns {Promise<string | ArrayBuffer | { status: number, buffer: ArrayBuffer }>}
+ */
+export async function fetchWithManagedTimeout(url, options = {}) {
+  if (!isHttpUrl(url)) {
+    throw new Error('INVALID_URL');
+  }
+
+  const {
+    responseMode = 'text',
+    timeoutMs = LIMITS.FETCH_TIMEOUT_MS,
+    headers,
+    cancelSignal = null,
+    byteTracker,
+    maxBytes = LIMITS.MAX_HLS_BUFFER_BYTES,
+    retries = 0,
+    retryDelayMs = LIMITS.SEGMENT_RETRY_DELAY_MS
+  } = options;
+
+  const maxAttempts = 1 + Math.max(0, Math.floor(Number(retries) || 0));
+  let lastError;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      return await executeSingleFetchAttempt(url, {
+        responseMode,
+        timeoutMs,
+        headers,
+        cancelSignal,
+        byteTracker,
+        maxBytes
+      });
+    } catch (err) {
+      lastError = err;
+      const canRetry = attempt + 1 < maxAttempts && isRetryableFetchError(err);
+      if (!canRetry) {
+        throw err;
+      }
+      await waitForRetryDelay(retryDelayMs * (attempt + 1), cancelSignal);
+    }
+  }
+
+  throw lastError;
 }

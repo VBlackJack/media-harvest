@@ -195,11 +195,22 @@ function createFakePopupDocument() {
   makeTracked('input', 'searchInput');
   makeTracked('select', 'sortSelect');
   makeTracked('button', 'viewModeBtn');
+  makeTracked('div', 'imageFiltersBar', ['hidden']);
+  makeTracked('select', 'minImagePxSelect');
+  makeTracked('select', 'imageExtFilterSelect');
+  makeTracked('select', 'imageScaleSelect');
   makeTracked('select', 'imageConvertSelect', ['hidden']);
   makeTracked('div', 'selectionBar', ['hidden']);
   makeTracked('button', 'selectAllBtn');
   makeTracked('button', 'clearSelectionBtn', ['hidden']);
   makeTracked('button', 'downloadSelectedBtn');
+  makeTracked('button', 'downloadZipBtn');
+  makeTracked('div', 'imageLightbox', ['hidden']);
+  makeTracked('div', 'lightboxBackdrop');
+  makeTracked('span', 'lightboxTitle');
+  makeTracked('span', 'lightboxMeta', ['hidden']);
+  makeTracked('img', 'lightboxImg');
+  makeTracked('button', 'lightboxCloseBtn');
   makeTracked('button', 'downloadAllBtn', ['hidden']);
   makeTracked('button', 'stopBatchBtn', ['hidden']);
   makeTracked('div', 'batchConfirmBar', ['hidden']);
@@ -857,4 +868,141 @@ test('popup controller manages SVG filter, gallery grid persistence, and image c
   assert.equal(downloadPayloads[0].convertTo, IMAGE_CONVERT_FORMATS.PNG);
   assert.equal(downloadPayloads[0].filename, 'logo.png');
   assert.ok(downloadPayloads[0].requestId);
+});
+
+test('popup controller manages quick image filters, SVG scale, batch ZIP export, and lightbox modal', async () => {
+  const doc = createFakePopupDocument();
+  const zipPayloads = [];
+  const convertPayloads = [];
+  const savedStates = [];
+
+  const items = [
+    {
+      url: 'https://cdn.example.com/banner.webp',
+      type: 'image',
+      ext: 'webp',
+      width: 1200,
+      height: 600,
+      isStream: false,
+      source: 'dom',
+      suggestedFilename: 'banner.webp'
+    },
+    {
+      url: 'https://cdn.example.com/tiny.png',
+      type: 'image',
+      ext: 'png',
+      width: 64,
+      height: 64,
+      isStream: false,
+      source: 'dom',
+      suggestedFilename: 'tiny.png'
+    },
+    {
+      url: 'data:image/svg+xml;charset=utf-8,%3Csvg%3E%3Ccircle%2F%3E%3C%2Fsvg%3E',
+      type: 'image',
+      ext: 'svg',
+      width: 48,
+      height: 48,
+      isStream: false,
+      source: 'dom',
+      svgMarkup: '<svg><circle/></svg>',
+      suggestedFilename: 'badge.svg'
+    }
+  ];
+
+  const chromeApi = {
+    tabs: {
+      query: async () => [{ id: 15, url: 'https://example.com/gallery' }]
+    },
+    runtime: {
+      onMessage: { addListener: () => {} },
+      sendMessage: async (msg) => {
+        if (msg.type === MESSAGE_TYPES.GET_MEDIA_FOR_TAB) {
+          return { ok: true, items, hasBlobVideo: false };
+        }
+        if (msg.type === MESSAGE_TYPES.DOWNLOAD_MEDIA) {
+          convertPayloads.push(msg.payload);
+          return { ok: true };
+        }
+        if (msg.type === MESSAGE_TYPES.EXPORT_BATCH_ZIP) {
+          zipPayloads.push(msg.payload);
+          return { ok: true, downloadId: 77, requestId: msg.payload.requestId };
+        }
+        return { ok: true };
+      }
+    },
+    storage: {
+      local: {
+        get: async () => ({
+          [STORAGE_KEYS.POPUP_UI_STATE]: {
+            filter: 'images',
+            sortBy: SORT_MODES.DEFAULT,
+            viewMode: POPUP_VIEW_MODES.GRID,
+            minImagePx: 300,
+            imageExtFilter: '',
+            imageScalePx: 1024
+          }
+        }),
+        set: async (obj) => {
+          savedStates.push(obj[STORAGE_KEYS.POPUP_UI_STATE]);
+        }
+      },
+      sync: { get: async () => ({}) }
+    }
+  };
+
+  const controller = createPopupController({
+    documentRef: doc,
+    windowRef: { addEventListener: () => {} },
+    chromeApi,
+    loadSettingsFn: async () => DEFAULT_SETTINGS,
+    translateFn: (k, args = []) => (args.length ? `${k}:${args.join(',')}` : k),
+    getUiLanguageFn: () => 'en',
+    applyTranslationsFn: () => {}
+  });
+
+  await controller.init();
+  assert.equal(controller.els.imageFiltersBar.classList.contains('hidden'), false);
+  assert.equal(controller.state.minImagePx, 300);
+  assert.equal(controller.state.imageScalePx, 1024);
+
+  // Quick min px 300 excludes 64px tiny.png and 48px badge.svg while rendering 1200px banner.webp
+  assert.equal(controller.state.cardsByUrl.get('https://cdn.example.com/banner.webp').card.classList.contains('hidden'), false);
+  assert.equal(controller.state.cardsByUrl.has('https://cdn.example.com/tiny.png'), false);
+
+  // Reset min px to 0 reveals tiny.png and badge.svg cleanly
+  controller.els.minImagePxSelect.value = '0';
+  await controller.els.minImagePxSelect.dispatchEvent({ type: 'change' });
+  assert.equal(controller.state.cardsByUrl.get('https://cdn.example.com/tiny.png').card.classList.contains('hidden'), false);
+
+  controller.els.imageScaleSelect.value = '2048';
+  await controller.els.imageScaleSelect.dispatchEvent({ type: 'change' });
+  assert.equal(controller.state.imageScalePx, 2048);
+  assert.equal(savedStates.at(-1).imageScalePx, 2048);
+
+  const svgEntry = controller.state.cardsByUrl.get('data:image/svg+xml;charset=utf-8,%3Csvg%3E%3Ccircle%2F%3E%3C%2Fsvg%3E');
+  await svgEntry.convertPngBtn.dispatchEvent({ type: 'click' });
+  assert.equal(convertPayloads.length, 1);
+  assert.equal(convertPayloads[0].rasterSizePx, 2048);
+
+  // Lightbox opens when clicking image thumbnail and closes on Escape key
+  const bannerEntry = controller.state.cardsByUrl.get('https://cdn.example.com/banner.webp');
+  await bannerEntry.thumbEl.dispatchEvent({ type: 'click' });
+  assert.equal(controller.els.imageLightbox.classList.contains('hidden'), false);
+  assert.equal(controller.els.lightboxImg.src, 'https://cdn.example.com/banner.webp');
+  assert.ok(controller.els.lightboxMeta.textContent.includes('WEBP'));
+  controller.handleGlobalKeyDown({ key: 'Escape' });
+  assert.equal(controller.els.imageLightbox.classList.contains('hidden'), true);
+  assert.equal(controller.els.lightboxImg.src, '');
+
+  // Select visible images + choose PNG conversion -> Download ZIP bundles with EXPORT_BATCH_ZIP
+  await controller.els.selectAllBtn.dispatchEvent({ type: 'click' });
+  controller.els.imageConvertSelect.value = IMAGE_CONVERT_FORMATS.PNG;
+  await controller.els.imageConvertSelect.dispatchEvent({ type: 'change' });
+  await controller.els.downloadZipBtn.dispatchEvent({ type: 'click' });
+  assert.equal(zipPayloads.length, 1);
+  assert.equal(zipPayloads[0].items.length, 3);
+  assert.equal(zipPayloads[0].items[0].convertTo, 'png');
+  assert.equal(zipPayloads[0].items[0].rasterSizePx, 2048);
+  assert.equal(zipPayloads[0].items[1].convertTo, '');
 });

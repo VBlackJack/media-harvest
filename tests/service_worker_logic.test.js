@@ -16,7 +16,7 @@
 
 import test, { after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { FILENAME_TEMPLATES, MESSAGE_TYPES, STORAGE_KEYS } from '../src/config/constants.js';
+import { BADGE_CONFIG, FILENAME_TEMPLATES, MESSAGE_TYPES, STORAGE_KEYS } from '../src/config/constants.js';
 
 const prevChrome = globalThis.chrome;
 const prevFetch = globalThis.fetch;
@@ -30,6 +30,8 @@ const cancelledDownloads = [];
 const offscreenMessages = [];
 let downloadSearchState = 'complete';
 let badgeText = '';
+let badgeColor = '';
+const badgeHistory = [];
 let offscreenExists = false;
 let offscreenResponder = async () => ({
   ok: true,
@@ -51,9 +53,12 @@ let nativeResponder = async (msg) => {
 
 globalThis.chrome = {
   action: {
-    setBadgeBackgroundColor: async () => {},
+    setBadgeBackgroundColor: async ({ color }) => {
+      badgeColor = color;
+    },
     setBadgeText: async ({ text }) => {
       badgeText = text;
+      badgeHistory.push({ color: badgeColor, text });
     }
   },
   storage: {
@@ -666,4 +671,57 @@ test('service_worker applies same-origin/CDN DNR rules, correlates multi-video b
   });
   assert.equal(stopResp.ok, true);
   assert.ok(offscreenMessages.some((m) => m.type === MESSAGE_TYPES.OFFSCREEN_STOP_LIVE_RECORD && m.requestId === 'req_live_1'));
+
+  // Live DVR recording updates badge to red REC while active and restores count after completion
+  badgeHistory.length = 0;
+  downloads.length = 0;
+  offscreenMessages.length = 0;
+  let releaseLiveBuild;
+  offscreenResponder = (msg) => {
+    if (msg && msg.type === MESSAGE_TYPES.OFFSCREEN_RECORD_HLS_LIVE) {
+      return new Promise((resolve) => {
+        releaseLiveBuild = resolve;
+      });
+    }
+    return Promise.resolve({ ok: true });
+  };
+  const liveBadgePromise = dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.DOWNLOAD_MEDIA,
+    payload: {
+      url: 'https://cdn.example.com/live/channel.m3u8',
+      playlistUrl: 'https://cdn.example.com/live/720.m3u8',
+      isStream: true,
+      recordLive: true,
+      tabId: 12,
+      filename: 'channel.mp4',
+      requestId: 'req_live_badge'
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(badgeHistory.some((b) => b.text === BADGE_CONFIG.REC_TEXT && b.color === BADGE_CONFIG.REC_COLOR));
+  releaseLiveBuild({ ok: true, blobUrl: 'blob:chrome-extension://id/live-badge', outputExtension: 'mp4' });
+  const liveBadgeResp = await liveBadgePromise;
+  assert.equal(liveBadgeResp.ok, true);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(badgeColor, BADGE_CONFIG.BACKGROUND_COLOR);
+  assert.notEqual(badgeText, BADGE_CONFIG.REC_TEXT);
+
+  // EXPORT_BATCH_ZIP invokes OFFSCREEN_BUILD_ZIP_BLOB and downloads archive.zip
+  offscreenResponder = async () => ({
+    ok: true,
+    blobUrl: 'blob:chrome-extension://id/batch-zip-1',
+    outputExtension: 'zip'
+  });
+  const zipResp = await dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.EXPORT_BATCH_ZIP,
+    payload: {
+      items: [{ url: 'https://cdn.example.com/a.jpg', filename: 'a.jpg', ext: 'jpg' }],
+      filename: 'gallery',
+      referer: 'https://example.com/',
+      requestId: 'req_zip_1'
+    }
+  });
+  assert.equal(zipResp.ok, true);
+  assert.ok(offscreenMessages.some((m) => m.type === MESSAGE_TYPES.OFFSCREEN_BUILD_ZIP_BLOB && m.requestId === 'req_zip_1'));
+  assert.ok(downloads.some((d) => d.filename === 'gallery.zip'));
 });

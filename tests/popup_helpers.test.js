@@ -23,6 +23,7 @@ import {
   getEstimatedStreamBytes,
   localizeError,
   matchesFilter,
+  matchesImageQuickFilters,
   matchesSearch,
   runWithConcurrency,
   sortMediaItems
@@ -165,4 +166,18 @@ test('matchesSearch and sortMediaItems filter and order media items deterministi
     'intro.mp4',
     'banner.jpg'
   ]);
+});
+
+test('matchesImageQuickFilters filters images by pixel size and extension while passing non-images through', () => {
+  const thumb = { type: 'image', ext: 'png', width: 64, height: 64 };
+  const photo = { type: 'image', ext: 'jpeg', width: 1200, height: 800 };
+  const svg = { type: 'image', ext: 'svg', width: 48, height: 48 };
+  const video = { type: 'video', ext: 'mp4', width: 0, height: 0 };
+
+  assert.equal(matchesImageQuickFilters(thumb, { minImagePx: 300 }), false);
+  assert.equal(matchesImageQuickFilters(photo, { minImagePx: 300 }), true);
+  assert.equal(matchesImageQuickFilters(photo, { imageExt: 'jpg' }), true);
+  assert.equal(matchesImageQuickFilters(thumb, { imageExt: 'jpg' }), false);
+  assert.equal(matchesImageQuickFilters(svg, { imageExt: 'svg' }), true);
+  assert.equal(matchesImageQuickFilters(video, { minImagePx: 800, imageExt: 'png' }), true);
 });

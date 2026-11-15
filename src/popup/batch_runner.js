@@ -17,6 +17,7 @@
 import {
   DEFAULT_FILENAMES,
   IMAGE_CONVERT_FORMATS,
+  LIMITS,
   MEDIA_TYPES,
   MESSAGE_TYPES
 } from '../config/constants.js';
@@ -107,6 +108,9 @@ export async function runBatchDownloads({
         ? cardEntry.audioSelect.value
         : '';
       const convertTo = resolveBatchImageConvertFormat(item, state.imageConvertFormat);
+      const rasterSizePx = convertTo
+        ? (Number(state.imageScalePx) || LIMITS.DEFAULT_SVG_RASTER_SIZE_PX)
+        : 0;
       const filename = convertTo
         ? `${(item.suggestedFilename || DEFAULT_FILENAMES.BASE).replace(/\.[^./\\]+$/, '')}.${convertTo}`
         : item.suggestedFilename;
@@ -127,6 +131,7 @@ export async function runBatchDownloads({
             playlistUrl: selectedPlaylistUrl,
             audioUrl: selectedAudioUrl,
             convertTo,
+            rasterSizePx,
             width: item.width || 0,
             height: item.height || 0,
             isStream: Boolean(item.isStream),

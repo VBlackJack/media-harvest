@@ -171,15 +171,44 @@ function getHeader(headers, headerName) {
 }
 
 /**
- * Updates the toolbar badge with the number of detected video/stream items for a tab.
+ * Checks whether any active offscreen build for tabId is currently live recording.
+ * @param {number} tabId
+ * @returns {boolean}
+ */
+function hasActiveLiveRecordersForTab(tabId) {
+  if (typeof tabId !== 'number' || tabId < 0) {
+    return false;
+  }
+  for (const build of activeBuilds.values()) {
+    if (build && build.isLiveRecord && build.tabId === tabId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Updates the toolbar badge with the live REC indicator or video/stream count for a tab.
  * @param {number} tabId
  * @param {Array<object>} items
  */
 async function updateTabBadge(tabId, items) {
-  const videoCount = items.filter(
-    (item) => item.type === MEDIA_TYPES.VIDEO || item.type === MEDIA_TYPES.STREAM
-  ).length;
+  const isRecording = hasActiveLiveRecordersForTab(tabId);
   try {
+    if (isRecording) {
+      await chrome.action.setBadgeBackgroundColor({
+        color: BADGE_CONFIG.REC_COLOR,
+        tabId
+      });
+      await chrome.action.setBadgeText({
+        text: BADGE_CONFIG.REC_TEXT,
+        tabId
+      });
+      return;
+    }
+    const videoCount = items.filter(
+      (item) => item.type === MEDIA_TYPES.VIDEO || item.type === MEDIA_TYPES.STREAM
+    ).length;
     await chrome.action.setBadgeBackgroundColor({
       color: BADGE_CONFIG.BACKGROUND_COLOR,
       tabId
@@ -191,6 +220,22 @@ async function updateTabBadge(tabId, items) {
   } catch {
     // Tab may have been closed before badge update completed
   }
+}
+
+/**
+ * Recomputes and applies the badge for a tab from current stored media and active recorders.
+ * @param {number} tabId
+ * @returns {Promise<void>}
+ */
+async function refreshTabBadge(tabId) {
+  if (typeof tabId !== 'number' || tabId < 0) {
+    return;
+  }
+  const [networkItems, mseItems] = await Promise.all([
+    getTabNetworkMedia(tabId),
+    getTabMseMedia(tabId)
+  ]);
+  await updateTabBadge(tabId, [...networkItems, ...mseItems]);
 }
 
 /**
@@ -902,6 +947,7 @@ async function executeOffscreenBlobDownload({
   allowFolders,
   tabId,
   referer = '',
+  isLiveRecord = false,
   buildOffscreenMessage,
   runOffscreenBuild
 }) {
@@ -911,10 +957,14 @@ async function executeOffscreenBlobDownload({
     url: targetUrl,
     done: 0,
     total: 0,
-    tabId
+    tabId,
+    isLiveRecord: Boolean(isLiveRecord)
   };
   activeBuilds.set(requestId, buildState);
   activeOffscreenBuilds += 1;
+  if (buildState.isLiveRecord && tabId >= 0) {
+    refreshTabBadge(tabId).catch(() => {});
+  }
   let blobUrl = '';
   try {
     const settings = await loadSettings();
@@ -991,8 +1041,12 @@ async function executeOffscreenBlobDownload({
     );
     throw err;
   } finally {
+    const wasLiveRecord = Boolean(buildState.isLiveRecord);
     activeBuilds.delete(requestId);
     activeOffscreenBuilds -= 1;
+    if (wasLiveRecord && tabId >= 0) {
+      refreshTabBadge(tabId).catch(() => {});
+    }
     enqueueOffscreenOp(() => maybeCloseOffscreenDocument()).catch(() => {});
   }
 }
@@ -1019,6 +1073,7 @@ async function startStreamDownload(payload, rawStem, requestId) {
     allowFolders: Boolean(payload.allowFolders),
     tabId: typeof payload.tabId === 'number' ? payload.tabId : -1,
     referer: typeof payload.referer === 'string' ? payload.referer : '',
+    isLiveRecord: Boolean(payload.recordLive),
     buildOffscreenMessage: (settings) => ({
       target: 'offscreen',
       type: payload.recordLive
@@ -1351,7 +1406,43 @@ async function startImageConversionDownload(payload, rawStem, requestId) {
       targetUrl: payload.url,
       targetFormat,
       width: Number.isFinite(payload.width) ? payload.width : 0,
-      height: Number.isFinite(payload.height) ? payload.height : 0
+      height: Number.isFinite(payload.height) ? payload.height : 0,
+      rasterSizePx: Number.isFinite(payload.rasterSizePx) ? payload.rasterSizePx : 0
+    })
+  });
+}
+
+/**
+ * Packages multiple selected items into a single offscreen ZIP archive and downloads it.
+ * @param {object} payload
+ * @returns {Promise<{ downloadId: number, requestId: string }>}
+ */
+async function handleExportBatchZip(payload) {
+  const items = payload && Array.isArray(payload.items) ? payload.items : [];
+  if (items.length === 0) {
+    throw new Error('EMPTY_PLAYLIST');
+  }
+  const requestId = typeof payload.requestId === 'string' && payload.requestId
+    ? payload.requestId
+    : `zip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const firstHttpItem = items.find((item) => item && isHttpUrl(item.url));
+  const targetUrl = (firstHttpItem && firstHttpItem.url) || (typeof payload.referer === 'string' ? payload.referer : '') || 'zip://archive';
+  const rawStem = resolveDownloadStem(payload.filename || DEFAULT_FILENAMES.BASE, targetUrl);
+  return executeOffscreenBlobDownload({
+    requestId,
+    targetUrl,
+    rawStem,
+    fallbackExt: DEFAULT_FILENAMES.ZIP_EXT,
+    saveAs: Boolean(payload.saveAs),
+    allowFolders: Boolean(payload.allowFolders),
+    tabId: typeof payload.tabId === 'number' ? payload.tabId : -1,
+    referer: typeof payload.referer === 'string' ? payload.referer : '',
+    buildOffscreenMessage: (settings) => ({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_BUILD_ZIP_BLOB,
+      requestId,
+      items,
+      concurrency: settings.hlsFetchConcurrency
     })
   });
 }
@@ -1396,10 +1487,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === MESSAGE_TYPES.DOWNLOAD_PROGRESS && message.requestId) {
     const buildState = activeBuilds.get(message.requestId);
     if (buildState) {
+      const wasLive = Boolean(buildState.isLiveRecord);
       buildState.done = message.done || 0;
       buildState.total = message.total || 0;
       buildState.isLiveRecord = Boolean(message.isLiveRecord);
       buildState.bytes = Number.isFinite(message.bytes) ? message.bytes : 0;
+      if (buildState.tabId >= 0 && buildState.isLiveRecord && !wasLive) {
+        refreshTabBadge(buildState.tabId).catch(() => {});
+      }
       if (buildState.tabId >= 0 && chrome.tabs && typeof chrome.tabs.sendMessage === 'function') {
         chrome.tabs.sendMessage(buildState.tabId, {
           type: MESSAGE_TYPES.DOWNLOAD_PROGRESS,
@@ -1475,6 +1570,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === MESSAGE_TYPES.DOWNLOAD_MEDIA) {
     handleDownloadMedia(message.payload)
+      .then((res) => sendResponse({ ok: true, ...res }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.EXPORT_BATCH_ZIP) {
+    handleExportBatchZip(message.payload)
       .then((res) => sendResponse({ ok: true, ...res }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;

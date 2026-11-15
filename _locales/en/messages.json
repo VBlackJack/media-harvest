@@ -836,5 +836,91 @@
         "example": "8.4 MB"
       }
     }
+  },
+  "popup_action_download_zip": {
+    "message": "Download ZIP ($COUNT$)",
+    "description": "Button label to bundle selected items into a single ZIP archive.",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "5"
+      }
+    }
+  },
+  "popup_status_zip_preparing": {
+    "message": "Creating ZIP archive: $DONE$/$TOTAL$",
+    "description": "Progress banner text while building a multi-item ZIP archive.",
+    "placeholders": {
+      "done": {
+        "content": "$1",
+        "example": "3"
+      },
+      "total": {
+        "content": "$2",
+        "example": "10"
+      }
+    }
+  },
+  "popup_image_min_px_label": {
+    "message": "Minimum image dimension",
+    "description": "Accessible label for quick minimum image pixel dimension filter."
+  },
+  "popup_image_min_px_all": {
+    "message": "Size: All",
+    "description": "Option to show images of any dimension."
+  },
+  "popup_image_min_px_value": {
+    "message": ">= $PX$ px",
+    "description": "Option label for minimum image pixel width or height.",
+    "placeholders": {
+      "px": {
+        "content": "$1",
+        "example": "300"
+      }
+    }
+  },
+  "popup_image_ext_label": {
+    "message": "Image format filter",
+    "description": "Accessible label for quick image extension filter."
+  },
+  "popup_image_ext_all": {
+    "message": "Ext: All",
+    "description": "Option to show all image formats."
+  },
+  "popup_svg_scale_label": {
+    "message": "SVG raster size",
+    "description": "Accessible label for SVG PNG/JPG export resolution selector."
+  },
+  "popup_svg_scale_value": {
+    "message": "SVG: $PX$ px",
+    "description": "Option label for SVG rasterization output dimension.",
+    "placeholders": {
+      "px": {
+        "content": "$1",
+        "example": "512"
+      }
+    }
+  },
+  "popup_action_lightbox_open": {
+    "message": "Inspect image preview",
+    "description": "Accessible label to open full lightbox preview for an image or SVG."
+  },
+  "popup_lightbox_close": {
+    "message": "Close",
+    "description": "Button label to dismiss the image lightbox modal."
+  },
+  "popup_lightbox_dimensions": {
+    "message": "$WIDTH$ x $HEIGHT$ px",
+    "description": "Dimension readout in image lightbox modal.",
+    "placeholders": {
+      "width": {
+        "content": "$1",
+        "example": "1920"
+      },
+      "height": {
+        "content": "$2",
+        "example": "1080"
+      }
+    }
   }
 }

@@ -18,6 +18,7 @@ import {
   DEFAULT_FILENAMES,
   DEFAULT_SETTINGS,
   IMAGE_CONVERT_FORMATS,
+  IMAGE_EXTENSIONS,
   LIMITS,
   MEDIA_TYPES,
   MESSAGE_TYPES,
@@ -40,6 +41,7 @@ import {
   formatBytes,
   localizeError,
   matchesFilter,
+  matchesImageQuickFilters,
   matchesSearch,
   runWithConcurrency,
   sortMediaItems
@@ -63,11 +65,22 @@ export function collectPopupElements(doc) {
     searchInput: doc.getElementById('searchInput'),
     sortSelect: doc.getElementById('sortSelect'),
     viewModeBtn: doc.getElementById('viewModeBtn'),
+    imageFiltersBar: doc.getElementById('imageFiltersBar'),
+    minImagePxSelect: doc.getElementById('minImagePxSelect'),
+    imageExtFilterSelect: doc.getElementById('imageExtFilterSelect'),
+    imageScaleSelect: doc.getElementById('imageScaleSelect'),
     imageConvertSelect: doc.getElementById('imageConvertSelect'),
     selectionBar: doc.getElementById('selectionBar'),
     selectAllBtn: doc.getElementById('selectAllBtn'),
     clearSelectionBtn: doc.getElementById('clearSelectionBtn'),
     downloadSelectedBtn: doc.getElementById('downloadSelectedBtn'),
+    downloadZipBtn: doc.getElementById('downloadZipBtn'),
+    imageLightbox: doc.getElementById('imageLightbox'),
+    lightboxBackdrop: doc.getElementById('lightboxBackdrop'),
+    lightboxTitle: doc.getElementById('lightboxTitle'),
+    lightboxMeta: doc.getElementById('lightboxMeta'),
+    lightboxImg: doc.getElementById('lightboxImg'),
+    lightboxCloseBtn: doc.getElementById('lightboxCloseBtn'),
     downloadAllBtn: doc.getElementById('downloadAllBtn'),
     companionPageBtn: doc.getElementById('companionPageBtn'),
     stopBatchBtn: doc.getElementById('stopBatchBtn'),
@@ -116,6 +129,10 @@ export function createPopupController(deps = {}) {
     sortBy: SORT_MODES.DEFAULT,
     viewMode: POPUP_VIEW_MODES.LIST,
     imageConvertFormat: IMAGE_CONVERT_FORMATS.ORIGINAL,
+    minImagePx: 0,
+    imageExtFilter: '',
+    imageScalePx: LIMITS.DEFAULT_SVG_RASTER_SIZE_PX,
+    activeZipRequestId: '',
     items: [],
     hasBlobVideo: false,
     settings: { ...DEFAULT_SETTINGS },
@@ -178,6 +195,65 @@ export function createPopupController(deps = {}) {
   const VALID_FILTERS = new Set(['all', 'videos', 'images', 'svg', 'audio', 'subtitles']);
   const VALID_SORTS = new Set(Object.values(SORT_MODES));
   const VALID_VIEW_MODES = new Set(Object.values(POPUP_VIEW_MODES));
+  const VALID_MIN_IMAGE_PX = new Set(LIMITS.QUICK_MIN_IMAGE_PX_OPTIONS);
+  const VALID_SVG_SCALES = new Set(LIMITS.SVG_RASTER_SIZES);
+  const QUICK_IMAGE_EXTENSIONS = IMAGE_EXTENSIONS.filter((ext) => ext !== 'jpeg');
+  const VALID_IMAGE_EXTS = new Set(['', ...QUICK_IMAGE_EXTENSIONS]);
+
+  /**
+   * Populates quick image filter and SVG export resolution selectors from shared constants.
+   */
+  function populateImageFilterOptions() {
+    if (els.minImagePxSelect && els.minImagePxSelect.options && els.minImagePxSelect.options.length === 0) {
+      for (const px of LIMITS.QUICK_MIN_IMAGE_PX_OPTIONS) {
+        const opt = doc.createElement('option');
+        opt.value = String(px);
+        opt.textContent = px === 0
+          ? translateFn('popup_image_min_px_all')
+          : translateFn('popup_image_min_px_value', [String(px)]);
+        els.minImagePxSelect.appendChild(opt);
+      }
+    }
+    if (els.imageExtFilterSelect && els.imageExtFilterSelect.options && els.imageExtFilterSelect.options.length === 0) {
+      const allOpt = doc.createElement('option');
+      allOpt.value = '';
+      allOpt.textContent = translateFn('popup_image_ext_all');
+      els.imageExtFilterSelect.appendChild(allOpt);
+      for (const ext of QUICK_IMAGE_EXTENSIONS) {
+        const opt = doc.createElement('option');
+        opt.value = ext;
+        opt.textContent = ext.toUpperCase();
+        els.imageExtFilterSelect.appendChild(opt);
+      }
+    }
+    if (els.imageScaleSelect && els.imageScaleSelect.options && els.imageScaleSelect.options.length === 0) {
+      for (const sizePx of LIMITS.SVG_RASTER_SIZES) {
+        const opt = doc.createElement('option');
+        opt.value = String(sizePx);
+        opt.textContent = translateFn('popup_svg_scale_value', [String(sizePx)]);
+        els.imageScaleSelect.appendChild(opt);
+      }
+    }
+  }
+
+  /**
+   * Shows and synchronizes quick image filters bar when viewing images or SVG tabs.
+   */
+  function applyImageFiltersUi() {
+    const showImageFilters = state.filter === 'images' || state.filter === 'svg';
+    if (els.imageFiltersBar) {
+      els.imageFiltersBar.classList.toggle('hidden', !showImageFilters);
+    }
+    if (els.minImagePxSelect) {
+      els.minImagePxSelect.value = String(state.minImagePx || 0);
+    }
+    if (els.imageExtFilterSelect) {
+      els.imageExtFilterSelect.value = state.imageExtFilter || '';
+    }
+    if (els.imageScaleSelect) {
+      els.imageScaleSelect.value = String(state.imageScalePx || LIMITS.DEFAULT_SVG_RASTER_SIZE_PX);
+    }
+  }
 
   /**
    * Restores persisted filter category, sort order, and view mode from local extension storage.
@@ -201,8 +277,18 @@ export function createPopupController(deps = {}) {
       if (typeof saved.viewMode === 'string' && VALID_VIEW_MODES.has(saved.viewMode)) {
         state.viewMode = saved.viewMode;
       }
+      if (Number.isFinite(saved.minImagePx) && VALID_MIN_IMAGE_PX.has(saved.minImagePx)) {
+        state.minImagePx = saved.minImagePx;
+      }
+      if (typeof saved.imageExtFilter === 'string' && VALID_IMAGE_EXTS.has(saved.imageExtFilter)) {
+        state.imageExtFilter = saved.imageExtFilter;
+      }
+      if (Number.isFinite(saved.imageScalePx) && VALID_SVG_SCALES.has(saved.imageScalePx)) {
+        state.imageScalePx = saved.imageScalePx;
+      }
       applyActiveFilterUi();
       applyViewModeUi();
+      applyImageFiltersUi();
       if (els.sortSelect) {
         els.sortSelect.value = state.sortBy;
       }
@@ -223,7 +309,10 @@ export function createPopupController(deps = {}) {
         [STORAGE_KEYS.POPUP_UI_STATE]: {
           filter: state.filter,
           sortBy: state.sortBy,
-          viewMode: state.viewMode
+          viewMode: state.viewMode,
+          minImagePx: state.minImagePx,
+          imageExtFilter: state.imageExtFilter,
+          imageScalePx: state.imageScalePx
         }
       });
       if (result && typeof result.catch === 'function') {
@@ -303,7 +392,15 @@ export function createPopupController(deps = {}) {
       'popup_action_download_selected',
       [String(selectedTargets.length)]
     );
-    els.downloadSelectedBtn.disabled = selectedTargets.length === 0;
+    els.downloadSelectedBtn.disabled = selectedTargets.length === 0 || Boolean(state.activeZipRequestId);
+    if (els.downloadZipBtn) {
+      const selectedZipTargets = selectedTargets.filter((item) => !item.isStream && !item.isMse);
+      els.downloadZipBtn.textContent = translateFn(
+        'popup_action_download_zip',
+        [String(selectedZipTargets.length)]
+      );
+      els.downloadZipBtn.disabled = selectedZipTargets.length === 0 || Boolean(state.activeZipRequestId);
+    }
     if (els.clearSelectionBtn) {
       els.clearSelectionBtn.classList.toggle('hidden', state.selectedUrls.size === 0);
     }
@@ -370,8 +467,14 @@ export function createPopupController(deps = {}) {
    * @returns {Array<object>}
    */
   function getVisibleItems() {
+    const useQuickImageFilters = state.filter === 'images' || state.filter === 'svg';
     const filtered = state.items.filter(
-      (item) => matchesFilter(item, state.filter) && matchesSearch(item, state.searchQuery)
+      (item) => matchesFilter(item, state.filter)
+        && matchesSearch(item, state.searchQuery)
+        && (!useQuickImageFilters || matchesImageQuickFilters(item, {
+          minImagePx: state.minImagePx,
+          imageExt: state.imageExtFilter
+        }))
     );
     return sortMediaItems(filtered, state.sortBy, state.hlsMetaByUrl);
   }
@@ -432,10 +535,13 @@ export function createPopupController(deps = {}) {
   function resetFilters() {
     state.filter = 'all';
     state.searchQuery = '';
+    state.minImagePx = 0;
+    state.imageExtFilter = '';
     if (els.searchInput) {
       els.searchInput.value = '';
     }
     applyActiveFilterUi();
+    applyImageFiltersUi();
     persistPopupUiState();
     hideBatchConfirm();
     renderList();
@@ -451,6 +557,9 @@ export function createPopupController(deps = {}) {
   async function triggerDownload(entry, selectedPlaylistUrl, selectedAudioUrl = '', options = {}) {
     const { item, downloadBtn, cancelBtn, stopRecordBtn, progressEl } = entry;
     const convertTo = typeof options.convertTo === 'string' ? options.convertTo : '';
+    const rasterSizePx = convertTo
+      ? (Number(state.imageScalePx) || LIMITS.DEFAULT_SVG_RASTER_SIZE_PX)
+      : 0;
     const recordLive = Boolean(options.recordLive || (item.canRecordLive && !options.audioOnly && !convertTo));
     const isOffscreenBuild = Boolean(item.isStream || item.isMse || convertTo);
     const requestId = `dl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -487,6 +596,7 @@ export function createPopupController(deps = {}) {
           audioOnly: Boolean(options.audioOnly),
           recordLive,
           convertTo,
+          rasterSizePx,
           width: item.width || 0,
           height: item.height || 0,
           isStream: Boolean(item.isStream),
@@ -722,6 +832,7 @@ export function createPopupController(deps = {}) {
     onCompanionDownload: (entry, targetUrl) => triggerCompanionDownload(entry, targetUrl),
     onExtractAudio: triggerAudioExtraction,
     onConvertImage: triggerImageConversion,
+    onOpenLightbox: (entry) => openLightbox(entry),
     isSelected: (url) => state.selectedUrls.has(url),
     onSelectionChange: (entry, checked) => {
       if (checked && isItemSelectable(entry.item)) {
@@ -851,8 +962,10 @@ export function createPopupController(deps = {}) {
         }
         return;
       }
+      const hasQuickImageFilters = (state.filter === 'images' || state.filter === 'svg')
+        && (state.minImagePx > 0 || state.imageExtFilter !== '');
       const isFilteredEmpty = state.items.length > 0
-        && (state.filter !== 'all' || state.searchQuery.trim() !== '');
+        && (state.filter !== 'all' || state.searchQuery.trim() !== '' || hasQuickImageFilters);
       const empty = existingEmpty || doc.createElement('div');
       empty.className = 'empty-state';
       const emptyMsg = doc.createElement('span');
@@ -1112,6 +1225,119 @@ export function createPopupController(deps = {}) {
   }
 
   /**
+   * Bundles selected direct media and images into a single downloadable ZIP archive.
+   * @param {Array<object>} selectedItems
+   */
+  async function executeBatchZip(selectedItems) {
+    const zipCandidates = (selectedItems || []).filter((item) => item && !item.isStream && !item.isMse);
+    if (state.batchRunning || state.activeZipRequestId || zipCandidates.length === 0) {
+      return null;
+    }
+    const requestId = `zip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    state.activeZipRequestId = requestId;
+    state.localPendingRequestIds.add(requestId);
+    const visibleNow = getVisibleItems();
+    updateSelectionControls(visibleNow);
+    setStatusBanner(translateFn('popup_status_zip_preparing', ['0', String(zipCandidates.length)]));
+
+    const requestedConvert = state.imageConvertFormat;
+    const rasterSizePx = Number(state.imageScalePx) || LIMITS.DEFAULT_SVG_RASTER_SIZE_PX;
+    const zipItems = zipCandidates.map((item) => {
+      const ext = (item.ext || '').toLowerCase();
+      const convertTo = (
+        item.type === MEDIA_TYPES.IMAGE
+        && (requestedConvert === IMAGE_CONVERT_FORMATS.PNG || requestedConvert === IMAGE_CONVERT_FORMATS.JPG)
+        && ext !== requestedConvert
+        && !(requestedConvert === IMAGE_CONVERT_FORMATS.JPG && ext === 'jpeg')
+      )
+        ? requestedConvert
+        : '';
+      return {
+        url: item.url,
+        filename: item.suggestedFilename || '',
+        ext: item.ext || '',
+        width: item.width || 0,
+        height: item.height || 0,
+        convertTo,
+        rasterSizePx: convertTo ? rasterSizePx : 0
+      };
+    });
+
+    try {
+      const response = await chromeApi.runtime.sendMessage({
+        type: MESSAGE_TYPES.EXPORT_BATCH_ZIP,
+        payload: {
+          items: zipItems,
+          filename: DEFAULT_FILENAMES.BASE,
+          referer: state.activeTabUrl || '',
+          tabId: typeof state.activeTabId === 'number' ? state.activeTabId : -1,
+          allowFolders: isFolderFilenameTemplate(state.settings.filenameTemplate),
+          saveAs: Boolean(state.settings.promptSaveAs),
+          requestId
+        }
+      });
+      if (!response || !response.ok) {
+        throw new Error((response && response.error) || 'DOWNLOAD_FAILED');
+      }
+      setStatusBanner(translateFn('popup_status_download_started'));
+      return response;
+    } catch (err) {
+      setStatusBanner(localizeError(err && err.message, translateFn), true);
+      return null;
+    } finally {
+      state.localPendingRequestIds.delete(requestId);
+      if (state.activeZipRequestId === requestId) {
+        state.activeZipRequestId = '';
+      }
+      updateSelectionControls(getVisibleItems());
+    }
+  }
+
+  /**
+   * Opens the modal lightbox viewer for inspecting an image or SVG thumbnail in full size.
+   * @param {object} entry
+   */
+  function openLightbox(entry) {
+    if (!entry || !entry.item || !els.imageLightbox || !els.lightboxImg) {
+      return;
+    }
+    const { item } = entry;
+    els.lightboxImg.src = item.url || '';
+    els.lightboxImg.alt = item.suggestedFilename || '';
+    if (els.lightboxTitle) {
+      els.lightboxTitle.textContent = item.suggestedFilename || item.url || '';
+    }
+    if (els.lightboxMeta) {
+      const parts = [];
+      if (item.width && item.height) {
+        parts.push(translateFn('popup_lightbox_dimensions', [String(item.width), String(item.height)]));
+      }
+      if (item.ext) {
+        parts.push(String(item.ext).toUpperCase());
+      }
+      els.lightboxMeta.textContent = parts.join(' - ');
+      els.lightboxMeta.classList.toggle('hidden', parts.length === 0);
+    }
+    els.imageLightbox.classList.remove('hidden');
+    if (els.lightboxCloseBtn && typeof els.lightboxCloseBtn.focus === 'function') {
+      els.lightboxCloseBtn.focus();
+    }
+  }
+
+  /**
+   * Closes the modal image lightbox and resets its image source.
+   */
+  function closeLightbox() {
+    if (!els.imageLightbox) {
+      return;
+    }
+    els.imageLightbox.classList.add('hidden');
+    if (els.lightboxImg) {
+      els.lightboxImg.src = '';
+    }
+  }
+
+  /**
    * Resolves a rendered card entry by active requestId or fallback media URL.
    * @param {string | undefined} requestId
    * @param {string | undefined} url
@@ -1138,6 +1364,13 @@ export function createPopupController(deps = {}) {
     }
 
     if (message.type === MESSAGE_TYPES.DOWNLOAD_PROGRESS) {
+      if (message.requestId && message.requestId === state.activeZipRequestId) {
+        setStatusBanner(translateFn('popup_status_zip_preparing', [
+          String(message.done || 0),
+          String(message.total || 0)
+        ]));
+        return;
+      }
       const progressOpts = {
         isLiveRecord: Boolean(message.isLiveRecord),
         bytes: Number.isFinite(message.bytes) ? message.bytes : 0
@@ -1236,6 +1469,10 @@ export function createPopupController(deps = {}) {
       return;
     }
     if (event.key === 'Escape') {
+      if (els.imageLightbox && !els.imageLightbox.classList.contains('hidden')) {
+        closeLightbox();
+        return;
+      }
       let hadActivePreview = false;
       for (const entry of state.cardsByUrl.values()) {
         if (entry.previewBox && !entry.previewBox.classList.contains('hidden')) {
@@ -1295,9 +1532,47 @@ export function createPopupController(deps = {}) {
         state.filter = btn.dataset.filter || 'all';
         hideBatchConfirm();
         applyActiveFilterUi();
+        applyImageFiltersUi();
         persistPopupUiState();
         renderList();
       });
+    }
+
+    if (els.minImagePxSelect) {
+      els.minImagePxSelect.addEventListener('change', () => {
+        const parsed = Number(els.minImagePxSelect.value);
+        state.minImagePx = VALID_MIN_IMAGE_PX.has(parsed) ? parsed : 0;
+        hideBatchConfirm();
+        persistPopupUiState();
+        renderList();
+      });
+    }
+
+    if (els.imageExtFilterSelect) {
+      els.imageExtFilterSelect.addEventListener('change', () => {
+        const val = (els.imageExtFilterSelect.value || '').toLowerCase();
+        state.imageExtFilter = VALID_IMAGE_EXTS.has(val) ? val : '';
+        hideBatchConfirm();
+        persistPopupUiState();
+        renderList();
+      });
+    }
+
+    if (els.imageScaleSelect) {
+      els.imageScaleSelect.addEventListener('change', () => {
+        const parsed = Number(els.imageScaleSelect.value);
+        state.imageScalePx = VALID_SVG_SCALES.has(parsed)
+          ? parsed
+          : LIMITS.DEFAULT_SVG_RASTER_SIZE_PX;
+        persistPopupUiState();
+      });
+    }
+
+    if (els.lightboxCloseBtn) {
+      els.lightboxCloseBtn.addEventListener('click', closeLightbox);
+    }
+    if (els.lightboxBackdrop) {
+      els.lightboxBackdrop.addEventListener('click', closeLightbox);
     }
 
     if (els.searchInput) {
@@ -1417,6 +1692,20 @@ export function createPopupController(deps = {}) {
       });
     }
 
+    if (els.downloadZipBtn) {
+      els.downloadZipBtn.addEventListener('click', () => {
+        const selectedItems = sortMediaItems(
+          state.items.filter((item) => isItemSelectable(item) && state.selectedUrls.has(item.url)),
+          state.sortBy,
+          state.hlsMetaByUrl
+        );
+        if (selectedItems.length === 0) {
+          return;
+        }
+        return executeBatchZip(selectedItems);
+      });
+    }
+
     els.downloadAllBtn.addEventListener('click', () => {
       const directItems = getVisibleItems().filter((item) => !item.isStream);
       if (directItems.length === 0) {
@@ -1512,8 +1801,10 @@ export function createPopupController(deps = {}) {
     } catch {
       // Keep default settings if sync storage read fails
     }
+    populateImageFilterOptions();
     await restorePopupUiState();
     applyViewModeUi();
+    applyImageFiltersUi();
     refreshCompanionAvailability();
     await loadActiveTabMedia();
   }
@@ -1526,6 +1817,9 @@ export function createPopupController(deps = {}) {
     renderList,
     triggerDownload,
     executeBatchDownloads,
+    executeBatchZip,
+    openLightbox,
+    closeLightbox,
     flushHydrationQueue,
     handleRuntimeMessage,
     handleGlobalKeyDown,

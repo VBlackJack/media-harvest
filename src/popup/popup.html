@@ -116,6 +116,12 @@
     </button>
   </div>
 
+  <div id="imageFiltersBar" class="image-filters-bar hidden">
+    <select id="minImagePxSelect" class="sort-select" data-i18n-aria="popup_image_min_px_label"></select>
+    <select id="imageExtFilterSelect" class="sort-select" data-i18n-aria="popup_image_ext_label"></select>
+    <select id="imageScaleSelect" class="sort-select" data-i18n-aria="popup_svg_scale_label"></select>
+  </div>
+
   <div id="hintBanner" class="banner banner-info hidden" role="status" aria-live="polite"></div>
   <div id="statusBanner" class="banner banner-status hidden" role="status" aria-live="polite"></div>
 
@@ -129,6 +135,7 @@
         <option value="jpg" data-i18n="popup_image_format_jpg"></option>
       </select>
       <button id="downloadSelectedBtn" class="btn btn-primary btn-compact" type="button" disabled></button>
+      <button id="downloadZipBtn" class="btn btn-secondary btn-compact" type="button" disabled></button>
     </div>
     <button id="downloadAllBtn" class="btn btn-secondary hidden" type="button"></button>
     <button id="companionPageBtn" class="btn btn-secondary hidden" type="button" data-i18n="popup_action_companion_page"></button>
@@ -143,6 +150,20 @@
   </div>
 
   <main id="mediaList" class="media-list"></main>
+
+  <div id="imageLightbox" class="lightbox hidden" role="dialog" aria-modal="true" aria-labelledby="lightboxTitle">
+    <div id="lightboxBackdrop" class="lightbox-backdrop"></div>
+    <div class="lightbox-panel">
+      <div class="lightbox-header">
+        <span id="lightboxTitle" class="lightbox-title"></span>
+        <span id="lightboxMeta" class="badge hidden"></span>
+        <button id="lightboxCloseBtn" class="btn btn-secondary btn-compact" type="button" data-i18n="popup_lightbox_close"></button>
+      </div>
+      <div class="lightbox-stage">
+        <img id="lightboxImg" class="lightbox-img" alt="">
+      </div>
+    </div>
+  </div>
 
   <script src="../vendor/mux-mp4.min.js"></script>
   <script type="module" src="popup.js"></script>

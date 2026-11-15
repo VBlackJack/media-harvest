@@ -147,3 +147,45 @@ test('fetchWithManagedTimeout rejects invalid URLs and respects user cancellatio
     /FETCH_TIMEOUT/
   );
 });
+
+test('fetchWithManagedTimeout retries transient 503/network errors cleanly and does not retry 404', async () => {
+  let transientAttempts = 0;
+  const byteTracker = { bytes: 0 };
+  globalThis.fetch = async () => {
+    transientAttempts += 1;
+    if (transientAttempts < 3) {
+      return { ok: false, status: 503, headers: new Headers() };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-length': '4' }),
+      arrayBuffer: async () => new Uint8Array([10, 20, 30, 40]).buffer
+    };
+  };
+
+  const buf = await fetchWithManagedTimeout('https://example.com/seg_retry.ts', {
+    responseMode: 'buffer',
+    byteTracker,
+    retries: 2,
+    retryDelayMs: 1
+  });
+  assert.equal(transientAttempts, 3);
+  assert.equal(buf.byteLength, 4);
+  assert.equal(byteTracker.bytes, 4);
+
+  let permanentAttempts = 0;
+  globalThis.fetch = async () => {
+    permanentAttempts += 1;
+    return { ok: false, status: 404, headers: new Headers() };
+  };
+  await assert.rejects(
+    fetchWithManagedTimeout('https://example.com/missing.ts', {
+      responseMode: 'buffer',
+      retries: 2,
+      retryDelayMs: 1
+    }),
+    /HTTP 404/
+  );
+  assert.equal(permanentAttempts, 1);
+});

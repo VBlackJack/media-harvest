@@ -597,4 +597,65 @@ test('createMediaCard supports HLS subtitles, live stream blocking, audio previe
   await liveHlsCard.stopRecordBtn.dispatchEvent({ type: 'click' });
   assert.deepEqual(stopLiveCalls, ['live_req_99']);
   assert.equal(liveHlsCard.stopRecordBtn.disabled, true);
+
+  // Live DASH stream with explicit streamFormat='dash' enables Record live DVR mode
+  const liveDashCard = createMediaCard(
+    {
+      url: 'https://cdn.example.com/live/manifest.mpd',
+      type: 'stream',
+      ext: 'mpd',
+      isStream: true,
+      source: 'network',
+      suggestedFilename: 'live_dash.mp4'
+    },
+    {
+      documentRef: doc,
+      translateFn: (k) => k,
+      hlsMetaByUrl: metaMap,
+      getSettings: () => DEFAULT_SETTINGS
+    }
+  );
+  const liveDashMeta = {
+    encrypted: false,
+    isDynamic: true,
+    streamFormat: 'dash',
+    variants: [{ id: 'v720', url: 'https://cdn.example.com/live/manifest.mpd#v720', resolution: '1280x720' }],
+    audioTracks: []
+  };
+  metaMap.set(liveDashCard.item.url, liveDashMeta);
+  applyStreamMetadata(liveDashCard, liveDashMeta, {
+    documentRef: doc,
+    translateFn: (k) => k,
+    hlsMetaByUrl: metaMap,
+    getSettings: () => DEFAULT_SETTINGS
+  });
+  assert.equal(liveDashCard.item.isBlocked, false);
+  assert.equal(liveDashCard.item.canRecordLive, true);
+  assert.equal(liveDashCard.downloadBtn.textContent, 'popup_action_record_live');
+
+  // Image card thumbnail triggers lightbox callback when clicked
+  const lightboxCalls = [];
+  const imgCard = createMediaCard(
+    {
+      url: 'https://cdn.example.com/photo.jpg',
+      type: 'image',
+      ext: 'jpg',
+      width: 1200,
+      height: 800,
+      isStream: false,
+      source: 'dom',
+      suggestedFilename: 'photo.jpg'
+    },
+    {
+      documentRef: doc,
+      translateFn: (k) => k,
+      hlsMetaByUrl: metaMap,
+      getSettings: () => DEFAULT_SETTINGS,
+      onOpenLightbox: (entry) => lightboxCalls.push(entry)
+    }
+  );
+  assert.equal(imgCard.thumbEl.tagName, 'BUTTON');
+  await imgCard.thumbEl.dispatchEvent({ type: 'click' });
+  assert.equal(lightboxCalls.length, 1);
+  assert.equal(lightboxCalls[0].item.url, 'https://cdn.example.com/photo.jpg');
 });

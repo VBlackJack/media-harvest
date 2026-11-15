@@ -34,7 +34,8 @@ import {
   CANCEL_REASON,
   fetchWithManagedTimeout,
   isDashDescriptor,
-  looksLikeDashXml
+  looksLikeDashXml,
+  runWithConcurrency
 } from '../shared/fetch_utils.js';
 import {
   countTracksInInit,
@@ -50,6 +51,7 @@ import {
 } from '../shared/media_classifier.js';
 import { clampInteger } from '../shared/settings.js';
 import { transmuxTsSegmentsToMp4Parts } from '../shared/ts_transmuxer.js';
+import { buildZipBlob } from '../shared/zip_builder.js';
 
 const activeBlobUrls = new Set();
 const activeBuildControllers = new Map();
@@ -71,7 +73,8 @@ async function fetchSegmentBuffer(url, byteRange, cancelSignal, rangeCacheByUrl,
     const { buffer } = await fetchWithManagedTimeout(url, {
       responseMode: 'bufferWithStatus',
       cancelSignal,
-      byteTracker
+      byteTracker,
+      retries: LIMITS.SEGMENT_FETCH_RETRIES
     });
     return buffer;
   }
@@ -102,7 +105,8 @@ async function fetchSegmentBuffer(url, byteRange, cancelSignal, rangeCacheByUrl,
         responseMode: 'bufferWithStatus',
         cancelSignal,
         headers,
-        byteTracker
+        byteTracker,
+        retries: LIMITS.SEGMENT_FETCH_RETRIES
       });
       if (status === 200) {
         rangeCacheByUrl.set(url, { mode: '200', buffer });
@@ -277,9 +281,11 @@ async function resolveStreamPlan(
   options = {}
 ) {
   const allowLiveHls = Boolean(options && options.allowLiveHls);
+  const allowLiveDash = Boolean(options && options.allowLiveDash);
   const rootText = await fetchWithManagedTimeout(masterOrMediaUrl, {
     responseMode: 'text',
-    cancelSignal
+    cancelSignal,
+    retries: LIMITS.SEGMENT_FETCH_RETRIES
   });
   const looksDash = isDashDescriptor(masterOrMediaUrl) || looksLikeDashXml(rootText);
 
@@ -288,7 +294,7 @@ async function resolveStreamPlan(
     if (dashParsed.encrypted) {
       throw new Error('ENCRYPTED_STREAM');
     }
-    if (dashParsed.isDynamic) {
+    if (dashParsed.isDynamic && !allowLiveDash) {
       throw new Error('LIVE_STREAM');
     }
     const chosenVariant = pickVariant(dashParsed.variants, preferredVariantUrl, qualityPreference);
@@ -304,14 +310,17 @@ async function resolveStreamPlan(
       format: 'dash',
       mediaPlaylist: {
         ...chosenVariant,
+        isDynamic: Boolean(dashParsed.isDynamic),
         initSegmentByteRange: null,
         outputExtension: isWebm ? 'webm' : DEFAULT_FILENAMES.HLS_FMP4_EXT
       },
       audioPlaylist: !isWebm && chosenAudio
         ? { ...chosenAudio, initSegmentByteRange: null }
         : null,
-      videoPlaylistUrl: masterOrMediaUrl,
-      audioPlaylistUrl: ''
+      videoPlaylistUrl: masterOrMediaUrl.split('#')[0],
+      audioPlaylistUrl: '',
+      selectedVariantId: chosenVariant.id || '',
+      selectedAudioId: chosenAudio && chosenAudio.id ? chosenAudio.id : ''
     };
   }
 
@@ -888,14 +897,15 @@ async function recordLiveHlsBlob(payload) {
       qualityPreference,
       buildController.signal,
       preferredAudioUrl,
-      { allowLiveHls: true }
+      { allowLiveHls: true, allowLiveDash: true }
     );
-    if (initialPlan.format !== 'hls') {
+    if (initialPlan.format !== 'hls' && initialPlan.format !== 'dash') {
       throw new Error('LIVE_STREAM');
     }
 
     let latestMediaPlaylist = initialPlan.mediaPlaylist;
     let latestAudioPlaylist = initialPlan.audioPlaylist;
+    const isDashStream = initialPlan.format === 'dash';
     const videoPlaylistUrl = initialPlan.videoPlaylistUrl || playlistUrl;
     const audioPlaylistUrl = initialPlan.audioPlaylistUrl || '';
 
@@ -907,22 +917,56 @@ async function recordLiveHlsBlob(payload) {
       }
 
       if (pollIndex > 0) {
-        const videoText = await fetchWithManagedTimeout(videoPlaylistUrl, {
-          responseMode: 'text',
-          cancelSignal: buildController.signal
-        });
-        latestMediaPlaylist = parseHlsPlaylist(videoText, videoPlaylistUrl);
-        if (isBlockedPlaylistEncryption(latestMediaPlaylist)) {
-          throw new Error('ENCRYPTED_STREAM');
-        }
-        if (audioPlaylistUrl && latestAudioPlaylist) {
-          const audioText = await fetchWithManagedTimeout(audioPlaylistUrl, {
+        if (isDashStream) {
+          const xmlText = await fetchWithManagedTimeout(videoPlaylistUrl, {
             responseMode: 'text',
-            cancelSignal: buildController.signal
+            cancelSignal: buildController.signal,
+            retries: LIMITS.SEGMENT_FETCH_RETRIES
           });
-          const parsedAudio = parseHlsPlaylist(audioText, audioPlaylistUrl);
-          if (!isBlockedPlaylistEncryption(parsedAudio) && parsedAudio.segments.length > 0) {
-            latestAudioPlaylist = parsedAudio;
+          const dashParsed = parseDashManifest(xmlText, videoPlaylistUrl);
+          if (dashParsed.encrypted) {
+            throw new Error('ENCRYPTED_STREAM');
+          }
+          const matchedVariant = (
+            initialPlan.selectedVariantId
+            && dashParsed.variants.find((v) => v.id === initialPlan.selectedVariantId)
+          ) || pickVariant(dashParsed.variants, playlistUrl, qualityPreference);
+          if (!matchedVariant || matchedVariant.segments.length === 0) {
+            throw new Error('EMPTY_PLAYLIST');
+          }
+          const isWebm = matchedVariant.mimeType === 'video/webm';
+          latestMediaPlaylist = {
+            ...matchedVariant,
+            isDynamic: Boolean(dashParsed.isDynamic),
+            initSegmentByteRange: null,
+            outputExtension: isWebm ? 'webm' : DEFAULT_FILENAMES.HLS_FMP4_EXT
+          };
+          const matchedAudio = !isWebm && (
+            (initialPlan.selectedAudioId && dashParsed.audioTracks.find((a) => a.id === initialPlan.selectedAudioId && a.segments.length > 0))
+            || (preferredAudioUrl && dashParsed.audioTracks.find((a) => a.url === preferredAudioUrl && a.segments.length > 0))
+            || dashParsed.audioTracks.find((a) => a.segments.length > 0)
+          );
+          latestAudioPlaylist = matchedAudio ? { ...matchedAudio, initSegmentByteRange: null } : null;
+        } else {
+          const videoText = await fetchWithManagedTimeout(videoPlaylistUrl, {
+            responseMode: 'text',
+            cancelSignal: buildController.signal,
+            retries: LIMITS.SEGMENT_FETCH_RETRIES
+          });
+          latestMediaPlaylist = parseHlsPlaylist(videoText, videoPlaylistUrl);
+          if (isBlockedPlaylistEncryption(latestMediaPlaylist)) {
+            throw new Error('ENCRYPTED_STREAM');
+          }
+          if (audioPlaylistUrl && latestAudioPlaylist) {
+            const audioText = await fetchWithManagedTimeout(audioPlaylistUrl, {
+              responseMode: 'text',
+              cancelSignal: buildController.signal,
+              retries: LIMITS.SEGMENT_FETCH_RETRIES
+            });
+            const parsedAudio = parseHlsPlaylist(audioText, audioPlaylistUrl);
+            if (!isBlockedPlaylistEncryption(parsedAudio) && parsedAudio.segments.length > 0) {
+              latestAudioPlaylist = parsedAudio;
+            }
           }
         }
       }
@@ -1308,15 +1352,36 @@ function loadImageFromBlob(sourceBlob) {
 }
 
 /**
- * Computes canvas export dimensions, upscaling small SVGs for clean raster output.
+ * Validates and clamps an explicit raster dimension value in pixels.
+ * @param {number} rawSize
+ * @returns {number}
+ */
+function resolveRasterSizePx(rawSize) {
+  const num = Number(rawSize);
+  if (!Number.isFinite(num) || num <= 0) {
+    return 0;
+  }
+  return Math.max(64, Math.min(4096, Math.round(num)));
+}
+
+/**
+ * Computes canvas export dimensions, scaling SVGs to the configured raster size.
  * @param {number} naturalWidth
  * @param {number} naturalHeight
  * @param {number} hintWidth
  * @param {number} hintHeight
  * @param {boolean} isSvg
+ * @param {number} [rasterSizePx=0]
  * @returns {{ width: number, height: number }}
  */
-function resolveConvertDimensions(naturalWidth, naturalHeight, hintWidth, hintHeight, isSvg) {
+function resolveConvertDimensions(
+  naturalWidth,
+  naturalHeight,
+  hintWidth,
+  hintHeight,
+  isSvg,
+  rasterSizePx = 0
+) {
   let width = Math.round(naturalWidth || hintWidth || LIMITS.DEFAULT_SVG_RASTER_SIZE_PX);
   let height = Math.round(naturalHeight || hintHeight || LIMITS.DEFAULT_SVG_RASTER_SIZE_PX);
   if (width <= 0) {
@@ -1326,9 +1391,11 @@ function resolveConvertDimensions(naturalWidth, naturalHeight, hintWidth, hintHe
     height = LIMITS.DEFAULT_SVG_RASTER_SIZE_PX;
   }
   if (isSvg) {
+    const requestedSize = resolveRasterSizePx(rasterSizePx);
+    const targetSize = requestedSize || LIMITS.DEFAULT_SVG_RASTER_SIZE_PX;
     const maxDim = Math.max(width, height);
-    if (maxDim < LIMITS.DEFAULT_SVG_RASTER_SIZE_PX) {
-      const scale = LIMITS.DEFAULT_SVG_RASTER_SIZE_PX / maxDim;
+    if (requestedSize > 0 || maxDim < targetSize) {
+      const scale = targetSize / maxDim;
       width = Math.max(1, Math.round(width * scale));
       height = Math.max(1, Math.round(height * scale));
     }
@@ -1337,14 +1404,94 @@ function resolveConvertDimensions(naturalWidth, naturalHeight, hintWidth, hintHe
 }
 
 /**
+ * Fetches or decodes an image/SVG and rasterizes it to a PNG or JPG Blob.
+ * @param {string} targetUrl
+ * @param {string} targetFormat
+ * @param {number} hintWidth
+ * @param {number} hintHeight
+ * @param {number} rasterSizePx
+ * @param {AbortSignal} cancelSignal
+ * @returns {Promise<Blob>}
+ */
+async function rasterizeImageToBlob(
+  targetUrl,
+  targetFormat,
+  hintWidth,
+  hintHeight,
+  rasterSizePx,
+  cancelSignal
+) {
+  const isSvg = isSvgDataUrl(targetUrl) || extractUrlExtension(targetUrl) === DEFAULT_FILENAMES.SVG_EXT;
+  let sourceBlob;
+  if (isSvgDataUrl(targetUrl)) {
+    sourceBlob = svgDataUrlToBlob(targetUrl);
+  } else {
+    const buf = await fetchWithManagedTimeout(targetUrl, {
+      responseMode: 'buffer',
+      cancelSignal,
+      retries: LIMITS.SEGMENT_FETCH_RETRIES
+    });
+    sourceBlob = new Blob([buf], { type: isSvg ? 'image/svg+xml;charset=utf-8' : undefined });
+  }
+
+  if (cancelSignal && cancelSignal.aborted && cancelSignal.reason === CANCEL_REASON) {
+    throw new Error(CANCEL_REASON);
+  }
+
+  const img = await loadImageFromBlob(sourceBlob);
+  const { width, height } = resolveConvertDimensions(
+    img.naturalWidth || img.width || 0,
+    img.naturalHeight || img.height || 0,
+    hintWidth || 0,
+    hintHeight || 0,
+    isSvg,
+    rasterSizePx || 0
+  );
+
+  const canvas = typeof document !== 'undefined' && typeof document.createElement === 'function'
+    ? document.createElement('canvas')
+    : null;
+  if (!canvas || typeof canvas.getContext !== 'function') {
+    throw new Error('IMAGE_CONVERT_FAILED');
+  }
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('IMAGE_CONVERT_FAILED');
+  }
+
+  const mimeType = targetFormat === IMAGE_CONVERT_FORMATS.JPG ? 'image/jpeg' : 'image/png';
+  if (targetFormat === IMAGE_CONVERT_FORMATS.JPG) {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+  }
+  ctx.drawImage(img, 0, 0, width, height);
+
+  return new Promise((resolve, reject) => {
+    const quality = targetFormat === IMAGE_CONVERT_FORMATS.JPG ? LIMITS.JPEG_EXPORT_QUALITY : undefined;
+    if (typeof canvas.toBlob === 'function') {
+      canvas.toBlob((blob) => {
+        if (blob) {
+          resolve(blob);
+        } else {
+          reject(new Error('IMAGE_CONVERT_FAILED'));
+        }
+      }, mimeType, quality);
+    } else {
+      reject(new Error('IMAGE_CONVERT_FAILED'));
+    }
+  });
+}
+
+/**
  * Fetches or decodes an image (WebP, AVIF, SVG, etc.) and converts it to PNG or JPG via canvas.
- * @param {{ targetUrl: string, targetFormat: string, width?: number, height?: number, requestId: string }} payload
+ * @param {{ targetUrl: string, targetFormat: string, width?: number, height?: number, rasterSizePx?: number, requestId: string }} payload
  * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number }>}
  */
 async function convertImageBlob(payload) {
   const targetUrl = typeof payload.targetUrl === 'string' ? payload.targetUrl : '';
   const targetFormat = String(payload.targetFormat || '').toLowerCase();
-  const isSvg = isSvgDataUrl(targetUrl) || extractUrlExtension(targetUrl) === DEFAULT_FILENAMES.SVG_EXT;
   if (!isHttpUrl(targetUrl) && !isSvgDataUrl(targetUrl)) {
     throw new Error('INVALID_URL');
   }
@@ -1357,64 +1504,14 @@ async function convertImageBlob(payload) {
   activeBuildControllers.set(requestId, buildController);
 
   try {
-    let sourceBlob;
-    if (isSvgDataUrl(targetUrl)) {
-      sourceBlob = svgDataUrlToBlob(targetUrl);
-    } else {
-      const buf = await fetchWithManagedTimeout(targetUrl, {
-        responseMode: 'buffer',
-        cancelSignal: buildController.signal
-      });
-      sourceBlob = new Blob([buf], { type: isSvg ? 'image/svg+xml;charset=utf-8' : undefined });
-    }
-
-    if (buildController.signal.aborted && buildController.signal.reason === CANCEL_REASON) {
-      throw new Error(CANCEL_REASON);
-    }
-
-    const img = await loadImageFromBlob(sourceBlob);
-    const { width, height } = resolveConvertDimensions(
-      img.naturalWidth || img.width || 0,
-      img.naturalHeight || img.height || 0,
+    const outBlob = await rasterizeImageToBlob(
+      targetUrl,
+      targetFormat,
       payload.width || 0,
       payload.height || 0,
-      isSvg
+      payload.rasterSizePx || 0,
+      buildController.signal
     );
-
-    const canvas = typeof document !== 'undefined' && typeof document.createElement === 'function'
-      ? document.createElement('canvas')
-      : null;
-    if (!canvas || typeof canvas.getContext !== 'function') {
-      throw new Error('IMAGE_CONVERT_FAILED');
-    }
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      throw new Error('IMAGE_CONVERT_FAILED');
-    }
-
-    const mimeType = targetFormat === IMAGE_CONVERT_FORMATS.JPG ? 'image/jpeg' : 'image/png';
-    if (targetFormat === IMAGE_CONVERT_FORMATS.JPG) {
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, width, height);
-    }
-    ctx.drawImage(img, 0, 0, width, height);
-
-    const outBlob = await new Promise((resolve, reject) => {
-      const quality = targetFormat === IMAGE_CONVERT_FORMATS.JPG ? LIMITS.JPEG_EXPORT_QUALITY : undefined;
-      if (typeof canvas.toBlob === 'function') {
-        canvas.toBlob((blob) => {
-          if (blob) {
-            resolve(blob);
-          } else {
-            reject(new Error('IMAGE_CONVERT_FAILED'));
-          }
-        }, mimeType, quality);
-      } else {
-        reject(new Error('IMAGE_CONVERT_FAILED'));
-      }
-    });
 
     const blobUrl = URL.createObjectURL(outBlob);
     activeBlobUrls.add(blobUrl);
@@ -1422,6 +1519,131 @@ async function convertImageBlob(payload) {
       blobUrl,
       outputExtension: targetFormat,
       byteLength: outBlob.size
+    };
+  } finally {
+    activeBuildControllers.delete(requestId);
+  }
+}
+
+/**
+ * Replaces or appends the file extension on a ZIP entry filename.
+ * @param {string} rawFilename
+ * @param {string} targetExt
+ * @returns {string}
+ */
+function replaceFilenameExtension(rawFilename, targetExt) {
+  const base = String(rawFilename || DEFAULT_FILENAMES.BASE).replace(/\.[^./\\]+$/, '');
+  return `${base || DEFAULT_FILENAMES.BASE}.${targetExt}`;
+}
+
+/**
+ * Fetches and optionally converts selected image/media items into a downloadable ZIP Blob archive.
+ * @param {{ items: Array<object>, requestId: string, concurrency?: number }} payload
+ * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number, entryCount: number }>}
+ */
+async function buildZipBlobArchive(payload) {
+  const items = Array.isArray(payload.items) ? payload.items.slice(0, LIMITS.MAX_ZIP_ITEMS) : [];
+  if (items.length === 0) {
+    throw new Error('EMPTY_PLAYLIST');
+  }
+  const requestId = payload.requestId || `zip_${Date.now()}`;
+  const buildController = new AbortController();
+  activeBuildControllers.set(requestId, buildController);
+  const byteTracker = { bytes: 0 };
+  const concurrency = clampInteger(
+    payload.concurrency,
+    LIMITS.HLS_FETCH_CONCURRENCY,
+    LIMITS.MIN_HLS_CONCURRENCY,
+    LIMITS.MAX_HLS_CONCURRENCY
+  );
+
+  notifyProgress(requestId, 'zip', 0, items.length);
+
+  try {
+    let completed = 0;
+    let lastError = null;
+    const entries = new Array(items.length).fill(null);
+
+    await runWithConcurrency(items, concurrency, async (item, index) => {
+      if (buildController.signal.aborted) {
+        throw new Error(buildController.signal.reason === CANCEL_REASON ? CANCEL_REASON : 'BUILD_ABORTED');
+      }
+      const targetUrl = item && typeof item.url === 'string' ? item.url : '';
+      const rawExt = item && typeof item.ext === 'string' ? item.ext.toLowerCase() : extractUrlExtension(targetUrl);
+      const requestedFormat = item && typeof item.convertTo === 'string' ? item.convertTo.toLowerCase() : '';
+      const needsConversion = (
+        (requestedFormat === IMAGE_CONVERT_FORMATS.PNG || requestedFormat === IMAGE_CONVERT_FORMATS.JPG)
+        && rawExt !== requestedFormat
+        && !(requestedFormat === IMAGE_CONVERT_FORMATS.JPG && rawExt === 'jpeg')
+      );
+
+      try {
+        let entryData;
+        let entryName = (item && item.filename) || `${DEFAULT_FILENAMES.BASE}_${index + 1}.${rawExt || DEFAULT_FILENAMES.FALLBACK_EXT}`;
+        if (needsConversion) {
+          const convertedBlob = await rasterizeImageToBlob(
+            targetUrl,
+            requestedFormat,
+            item.width || 0,
+            item.height || 0,
+            item.rasterSizePx || 0,
+            buildController.signal
+          );
+          const buf = await convertedBlob.arrayBuffer();
+          if (byteTracker.bytes + buf.byteLength > LIMITS.MAX_HLS_BUFFER_BYTES) {
+            throw new Error('STREAM_TOO_LARGE');
+          }
+          byteTracker.bytes += buf.byteLength;
+          entryData = new Uint8Array(buf);
+          entryName = replaceFilenameExtension(entryName, requestedFormat);
+        } else if (isSvgDataUrl(targetUrl)) {
+          const svgBlob = svgDataUrlToBlob(targetUrl);
+          const buf = await svgBlob.arrayBuffer();
+          byteTracker.bytes += buf.byteLength;
+          entryData = new Uint8Array(buf);
+          if (!entryName.toLowerCase().endsWith(`.${DEFAULT_FILENAMES.SVG_EXT}`)) {
+            entryName = replaceFilenameExtension(entryName, DEFAULT_FILENAMES.SVG_EXT);
+          }
+        } else if (isHttpUrl(targetUrl)) {
+          const buf = await fetchWithManagedTimeout(targetUrl, {
+            responseMode: 'buffer',
+            cancelSignal: buildController.signal,
+            byteTracker,
+            retries: LIMITS.SEGMENT_FETCH_RETRIES
+          });
+          entryData = new Uint8Array(buf);
+        } else {
+          throw new Error('INVALID_URL');
+        }
+        entries[index] = { name: entryName, data: entryData };
+      } catch (err) {
+        if (err && (err.message === CANCEL_REASON || err.message === 'BUILD_ABORTED' || err.message === 'STREAM_TOO_LARGE')) {
+          throw err;
+        }
+        lastError = err;
+      } finally {
+        completed += 1;
+        notifyProgress(requestId, 'zip', completed, items.length);
+      }
+    });
+
+    if (buildController.signal.aborted && buildController.signal.reason === CANCEL_REASON) {
+      throw new Error(CANCEL_REASON);
+    }
+
+    const validEntries = entries.filter(Boolean);
+    if (validEntries.length === 0) {
+      throw lastError || new Error('DOWNLOAD_FAILED');
+    }
+
+    const zipBlob = buildZipBlob(validEntries);
+    const blobUrl = URL.createObjectURL(zipBlob);
+    activeBlobUrls.add(blobUrl);
+    return {
+      blobUrl,
+      outputExtension: DEFAULT_FILENAMES.ZIP_EXT,
+      byteLength: zipBlob.size,
+      entryCount: validEntries.length
     };
   } finally {
     activeBuildControllers.delete(requestId);
@@ -1510,10 +1732,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       targetFormat: message.targetFormat,
       width: message.width,
       height: message.height,
+      rasterSizePx: message.rasterSizePx,
       requestId
     })
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((err) => sendResponse({ ok: false, error: err.message || 'IMAGE_CONVERT_FAILED' }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.OFFSCREEN_BUILD_ZIP_BLOB) {
+    const requestId = message.requestId || `zip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    buildZipBlobArchive({
+      items: message.items,
+      concurrency: message.concurrency,
+      requestId
+    })
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((err) => sendResponse({ ok: false, error: err.message || 'DOWNLOAD_FAILED' }));
     return true;
   }
 

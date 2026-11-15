@@ -15,7 +15,10 @@
  */
 
 import { LIMITS, MEDIA_TYPES, SORT_MODES, UNIT_CONVERSIONS } from '../config/constants.js';
+import { runWithConcurrency } from '../shared/fetch_utils.js';
 import { t } from '../shared/i18n.js';
+
+export { runWithConcurrency };
 
 const ERROR_KEY_BY_CODE = Object.freeze({
   ENCRYPTED_STREAM: 'popup_error_encrypted_stream',
@@ -140,31 +143,32 @@ export function getEstimatedStreamBytes(entry, metaByUrl) {
 }
 
 /**
- * Runs async worker tasks over an item array with bounded concurrency.
- * @template T, R
- * @param {Array<T>} items
- * @param {number} concurrency
- * @param {(item: T, index: number) => Promise<R>} worker
- * @returns {Promise<Array<R>>}
+ * Checks whether an image item passes quick pixel-size and format filters.
+ * Non-image items pass through unchanged.
+ * @param {object} item
+ * @param {{ minImagePx?: number, imageExt?: string }} [options={}]
+ * @returns {boolean}
  */
-export async function runWithConcurrency(items, concurrency, worker) {
-  if (!Array.isArray(items) || items.length === 0) {
-    return [];
+export function matchesImageQuickFilters(item, { minImagePx = 0, imageExt = '' } = {}) {
+  if (!item || item.type !== MEDIA_TYPES.IMAGE) {
+    return true;
   }
-  const limit = Math.max(1, Math.min(concurrency || LIMITS.INSPECT_CONCURRENCY, items.length));
-  const results = new Array(items.length);
-  let nextIndex = 0;
-
-  const runWorker = async () => {
-    while (nextIndex < items.length) {
-      const idx = nextIndex;
-      nextIndex += 1;
-      results[idx] = await worker(items[idx], idx);
+  const minPx = Number(minImagePx) || 0;
+  if (minPx > 0) {
+    const maxSide = Math.max(Number(item.width) || 0, Number(item.height) || 0);
+    if (maxSide < minPx) {
+      return false;
     }
-  };
-
-  await Promise.all(Array.from({ length: limit }, () => runWorker()));
-  return results;
+  }
+  const normalizedTarget = typeof imageExt === 'string' ? imageExt.trim().toLowerCase() : '';
+  if (normalizedTarget) {
+    const itemExt = (item.ext || '').toLowerCase();
+    if (normalizedTarget === 'jpg') {
+      return itemExt === 'jpg' || itemExt === 'jpeg';
+    }
+    return itemExt === normalizedTarget;
+  }
+  return true;
 }
 
 /**

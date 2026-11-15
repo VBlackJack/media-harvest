@@ -413,8 +413,10 @@ export function applyStreamMetadata(entry, meta, context = {}) {
     return;
   }
 
-  const isLiveHls = Boolean(meta.isDynamic && meta.streamFormat === 'hls');
-  if (meta.isDynamic && !isLiveHls) {
+  const isLiveDvr = Boolean(
+    meta.isDynamic && (meta.streamFormat === 'hls' || meta.streamFormat === 'dash')
+  );
+  if (meta.isDynamic && !isLiveDvr) {
     item.isDynamic = true;
     item.isBlocked = true;
     item.canRecordLive = false;
@@ -435,13 +437,13 @@ export function applyStreamMetadata(entry, meta, context = {}) {
     return;
   }
 
-  item.isDynamic = isLiveHls;
+  item.isDynamic = isLiveDvr;
   item.isBlocked = false;
-  item.canRecordLive = isLiveHls;
+  item.canRecordLive = isLiveDvr;
   downloadBtn.disabled = Boolean(entry.activeRequestId);
-  downloadBtn.textContent = translate(isLiveHls ? 'popup_action_record_live' : 'popup_action_download');
+  downloadBtn.textContent = translate(isLiveDvr ? 'popup_action_record_live' : 'popup_action_download');
   if (entry.selectCheckbox) {
-    if (isLiveHls) {
+    if (isLiveDvr) {
       entry.selectCheckbox.checked = false;
       entry.selectCheckbox.disabled = true;
       if (context.onSelectionChange) {
@@ -452,7 +454,7 @@ export function applyStreamMetadata(entry, meta, context = {}) {
     }
   }
 
-  setPreviewDisabled(entry, isLiveHls);
+  setPreviewDisabled(entry, isLiveDvr);
   if (!entry.activeRequestId && !entry.showingCapWarning) {
     progressEl.classList.add('hidden');
     progressEl.textContent = '';
@@ -653,6 +655,7 @@ export function createMediaCard(item, context = {}) {
   const { doc, translate, togglePreview, refreshPreview } = resolveCardDeps(context);
   const isVideoLike = item.type === MEDIA_TYPES.VIDEO || item.type === MEDIA_TYPES.STREAM;
   const canPreview = !item.isMse && (isVideoLike || item.type === MEDIA_TYPES.AUDIO);
+  const canLightbox = !item.isMse && item.type === MEDIA_TYPES.IMAGE && Boolean(item.url);
   const card = doc.createElement('article');
   card.className = 'media-card';
 
@@ -667,12 +670,16 @@ export function createMediaCard(item, context = {}) {
   selectCheckbox.disabled = Boolean(item.isBlocked);
   row.appendChild(selectCheckbox);
 
-  const thumbEl = doc.createElement(canPreview ? 'button' : 'div');
+  const thumbEl = doc.createElement(canPreview || canLightbox ? 'button' : 'div');
   if (canPreview) {
     thumbEl.type = 'button';
     thumbEl.className = 'thumb thumb-btn is-clickable';
     thumbEl.setAttribute('aria-label', translate('popup_action_preview'));
     thumbEl.setAttribute('aria-expanded', 'false');
+  } else if (canLightbox) {
+    thumbEl.type = 'button';
+    thumbEl.className = 'thumb thumb-btn is-clickable';
+    thumbEl.setAttribute('aria-label', translate('popup_action_lightbox_open'));
   } else {
     thumbEl.className = 'thumb';
   }
@@ -769,6 +776,12 @@ export function createMediaCard(item, context = {}) {
     thumbEl.addEventListener('click', handlePreview);
     controls.appendChild(previewBtn);
     entry.previewBtn = previewBtn;
+  } else if (canLightbox) {
+    thumbEl.addEventListener('click', () => {
+      if (context.onOpenLightbox) {
+        context.onOpenLightbox(entry);
+      }
+    });
   }
 
   if (item.isStream) {

@@ -836,5 +836,91 @@
         "example": "8.4 MB"
       }
     }
+  },
+  "popup_action_download_zip": {
+    "message": "Télécharger ZIP ($COUNT$)",
+    "description": "Bouton pour empaqueter les éléments sélectionnés dans une archive ZIP.",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "5"
+      }
+    }
+  },
+  "popup_status_zip_preparing": {
+    "message": "Création archive ZIP : $DONE$/$TOTAL$",
+    "description": "Texte de progression lors de la création d'une archive ZIP.",
+    "placeholders": {
+      "done": {
+        "content": "$1",
+        "example": "3"
+      },
+      "total": {
+        "content": "$2",
+        "example": "10"
+      }
+    }
+  },
+  "popup_image_min_px_label": {
+    "message": "Dimension minimale d'image",
+    "description": "Libellé accessible pour le filtre rapide de taille minimale d'image."
+  },
+  "popup_image_min_px_all": {
+    "message": "Taille : Toutes",
+    "description": "Option pour afficher toutes les dimensions d'images."
+  },
+  "popup_image_min_px_value": {
+    "message": ">= $PX$ px",
+    "description": "Option indiquant la largeur ou hauteur minimale en pixels.",
+    "placeholders": {
+      "px": {
+        "content": "$1",
+        "example": "300"
+      }
+    }
+  },
+  "popup_image_ext_label": {
+    "message": "Filtre de format d'image",
+    "description": "Libellé accessible pour le filtre par extension d'image."
+  },
+  "popup_image_ext_all": {
+    "message": "Ext : Tous",
+    "description": "Option pour afficher tous les formats d'images."
+  },
+  "popup_svg_scale_label": {
+    "message": "Résolution export SVG",
+    "description": "Libellé accessible pour le sélecteur de taille de conversion SVG."
+  },
+  "popup_svg_scale_value": {
+    "message": "SVG : $PX$ px",
+    "description": "Option de résolution cible pour la rastérisation SVG.",
+    "placeholders": {
+      "px": {
+        "content": "$1",
+        "example": "512"
+      }
+    }
+  },
+  "popup_action_lightbox_open": {
+    "message": "Agrandir l'aperçu",
+    "description": "Libellé accessible pour ouvrir l'image ou le SVG en grand format."
+  },
+  "popup_lightbox_close": {
+    "message": "Fermer",
+    "description": "Bouton pour fermer la fenêtre d'aperçu d'image."
+  },
+  "popup_lightbox_dimensions": {
+    "message": "$WIDTH$ x $HEIGHT$ px",
+    "description": "Dimensions affichées dans la visionneuse d'image.",
+    "placeholders": {
+      "width": {
+        "content": "$1",
+        "example": "1920"
+      },
+      "height": {
+        "content": "$2",
+        "example": "1080"
+      }
+    }
   }
 }

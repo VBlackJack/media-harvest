@@ -848,3 +848,146 @@ test('offscreen records live HLS sliding windows without duplicates and finalize
     globalThis.chrome.runtime.sendMessage = prevSendMessage;
   }
 });
+
+test('offscreen records dynamic live DASH manifests cleanly and respects custom SVG rasterSizePx', async () => {
+  const ftyp = buildIsoBox('ftyp', [new Uint8Array([0x69, 0x73, 0x6f, 0x35])]);
+  const moov = buildIsoBox('moov', [new Uint8Array(12)]);
+  const vInit = new Uint8Array(ftyp.byteLength + moov.byteLength);
+  vInit.set(ftyp, 0);
+  vInit.set(moov, ftyp.byteLength);
+  const seg1 = buildIsoBox('mdat', [new Uint8Array([1, 2, 3])]);
+  const seg2 = buildIsoBox('mdat', [new Uint8Array([4, 5, 6])]);
+
+  let dashPolls = 0;
+  let seg1Fetches = 0;
+  const prevSendMessage = globalThis.chrome.runtime.sendMessage;
+  globalThis.chrome.runtime.sendMessage = async (msg) => {
+    if (msg && msg.type === MESSAGE_TYPES.DOWNLOAD_PROGRESS && msg.done >= 1) {
+      queueMicrotask(() => {
+        dispatchOffscreenMessage({
+          target: 'offscreen',
+          type: MESSAGE_TYPES.OFFSCREEN_STOP_LIVE_RECORD,
+          requestId: 'live-dash-1'
+        });
+      });
+    }
+  };
+
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target.endsWith('live.mpd')) {
+      dashPolls += 1;
+      const body = dashPolls === 1
+        ? `
+          <MPD type="dynamic">
+            <Period>
+              <AdaptationSet mimeType="video/mp4">
+                <Representation id="v720" bandwidth="1500000" width="1280" height="720">
+                  <SegmentList>
+                    <Initialization sourceURL="init.mp4"/>
+                    <SegmentURL media="dash_1.m4s"/>
+                  </SegmentList>
+                </Representation>
+              </AdaptationSet>
+            </Period>
+          </MPD>`
+        : `
+          <MPD type="dynamic">
+            <Period>
+              <AdaptationSet mimeType="video/mp4">
+                <Representation id="v720" bandwidth="1500000" width="1280" height="720">
+                  <SegmentList>
+                    <Initialization sourceURL="init.mp4"/>
+                    <SegmentURL media="dash_1.m4s"/>
+                    <SegmentURL media="dash_2.m4s"/>
+                  </SegmentList>
+                </Representation>
+              </AdaptationSet>
+            </Period>
+          </MPD>`;
+      return { ok: true, status: 200, headers: { get: () => null }, text: async () => body };
+    }
+    if (target.endsWith('init.mp4')) {
+      return { ok: true, status: 200, headers: { get: () => String(vInit.byteLength) }, arrayBuffer: async () => vInit.slice().buffer };
+    }
+    if (target.endsWith('dash_1.m4s')) {
+      seg1Fetches += 1;
+      return { ok: true, status: 200, headers: { get: () => String(seg1.byteLength) }, arrayBuffer: async () => seg1.slice().buffer };
+    }
+    return { ok: true, status: 200, headers: { get: () => String(seg2.byteLength) }, arrayBuffer: async () => seg2.slice().buffer };
+  };
+
+  try {
+    const dashLiveResp = await dispatchOffscreenMessage({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_RECORD_HLS_LIVE,
+      requestId: 'live-dash-1',
+      playlistUrl: 'https://cdn.example.com/dash/live.mpd',
+      originalUrl: 'https://cdn.example.com/dash/live.mpd',
+      pollIntervalMs: 10
+    });
+    assert.equal(dashLiveResp.ok, true);
+    assert.equal(dashLiveResp.outputExtension, 'mp4');
+    assert.ok(seg1Fetches === 1);
+  } finally {
+    globalThis.chrome.runtime.sendMessage = prevSendMessage;
+  }
+
+  // Test OFFSCREEN_BUILD_ZIP_BLOB with mixed HTTP image and converted SVG at custom rasterSizePx
+  const prevImage = globalThis.Image;
+  const prevDocument = globalThis.document;
+  const drawWidths = [];
+  class FakeZipImage {
+    set src(_v) {
+      this.naturalWidth = 24;
+      this.naturalHeight = 24;
+      queueMicrotask(() => {
+        if (typeof this.onload === 'function') this.onload();
+      });
+    }
+  }
+  globalThis.Image = FakeZipImage;
+  globalThis.document = {
+    createElement: () => ({
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        fillStyle: '',
+        fillRect: () => {},
+        drawImage: (_i, _x, _y, w) => drawWidths.push(w)
+      }),
+      toBlob: (cb, mime) => cb(new Blob([new Uint8Array([9, 8, 7])], { type: mime }))
+    })
+  };
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => '4' },
+    arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer
+  });
+
+  try {
+    const zipResp = await dispatchOffscreenMessage({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_BUILD_ZIP_BLOB,
+      requestId: 'zip-build-1',
+      items: [
+        { url: 'https://cdn.example.com/photo.jpg', filename: 'photo.jpg', ext: 'jpg' },
+        {
+          url: 'data:image/svg+xml;charset=utf-8,%3Csvg%3E%3C%2Fsvg%3E',
+          filename: 'logo.svg',
+          ext: 'svg',
+          convertTo: 'png',
+          rasterSizePx: 1024
+        }
+      ]
+    });
+    assert.equal(zipResp.ok, true);
+    assert.equal(zipResp.outputExtension, 'zip');
+    assert.equal(zipResp.entryCount, 2);
+    assert.equal(drawWidths[0], 1024);
+  } finally {
+    globalThis.Image = prevImage;
+    globalThis.document = prevDocument;
+  }
+});

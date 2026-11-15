@@ -140,6 +140,7 @@ test('runBatchDownloads applies selected batch image conversion format only when
     batchRunning: false,
     batchAbortRequested: false,
     imageConvertFormat: IMAGE_CONVERT_FORMATS.PNG,
+    imageScalePx: 1024,
     settings: { filenameTemplate: 'default' },
     activeTabUrl: 'https://example.com/gallery',
     activeTabId: 7,
@@ -173,6 +174,7 @@ test('runBatchDownloads applies selected batch image conversion format only when
 
   assert.equal(result.startedCount, 2);
   assert.equal(sentMessages[0].payload.convertTo, 'png');
+  assert.equal(sentMessages[0].payload.rasterSizePx, 1024);
   assert.equal(sentMessages[0].payload.filename, 'hero.png');
   assert.ok(sentMessages[0].payload.requestId);
   assert.equal(sentMessages[1].payload.convertTo, '');
