@@ -221,6 +221,33 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
     LIMITS.MAX_HLS_CONCURRENCY
   );
   const keyCache = new Map();
+  const TransmuxerCtor = options.TransmuxerCtor
+    || (globalThis.muxjs && globalThis.muxjs.Transmuxer);
+  const shouldTransmuxTs = Boolean(
+    typeof TransmuxerCtor === 'function'
+    && !mediaPlaylist.initSegmentUrl
+    && mediaPlaylist.ext !== DEFAULT_FILENAMES.HLS_FMP4_EXT
+  );
+  const discontinuitySet = mediaPlaylist.discontinuityIndices instanceof Set
+    ? mediaPlaylist.discontinuityIndices
+    : new Set(Array.isArray(mediaPlaylist.discontinuityIndices) ? mediaPlaylist.discontinuityIndices : []);
+
+  let transmuxer = null;
+  let wroteInitSegment = false;
+  const queuedMp4Parts = [];
+  if (shouldTransmuxTs) {
+    transmuxer = new TransmuxerCtor({ keepOriginalTimestamps: false });
+    transmuxer.on('data', (segment) => {
+      if (!wroteInitSegment && segment && segment.initSegment && segment.initSegment.byteLength > 0) {
+        wroteInitSegment = true;
+        queuedMp4Parts.push(new Uint8Array(segment.initSegment));
+      }
+      if (segment && segment.data && segment.data.byteLength > 0) {
+        queuedMp4Parts.push(new Uint8Array(segment.data));
+      }
+    });
+  }
+
   let totalBytesWritten = 0;
   let completedCount = 0;
 
@@ -238,11 +265,30 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
         throw new Error('DOWNLOAD_CANCELLED');
       }
       const chunk = buffers[i];
-      await writable.write(chunk);
-      totalBytesWritten += chunk.byteLength;
+      if (transmuxer) {
+        const segIdx = start + i;
+        if (segIdx > 0 && discontinuitySet.has(segIdx)) {
+          if (typeof transmuxer.endTimeline === 'function') {
+            transmuxer.endTimeline();
+          }
+          transmuxer.flush();
+        }
+        transmuxer.push(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
+        if (segIdx === requests.length - 1 || i === buffers.length - 1) {
+          transmuxer.flush();
+        }
+        while (queuedMp4Parts.length > 0) {
+          const part = queuedMp4Parts.shift();
+          await writable.write(part);
+          totalBytesWritten += part.byteLength;
+        }
+      } else {
+        await writable.write(chunk);
+        totalBytesWritten += chunk.byteLength;
+      }
       completedCount += 1;
       buffers[i] = null;
-      onProgress(completedCount, requests.length, totalBytesWritten);
+      onProgress(completedCount, requests.length, totalBytesWritten, shouldTransmuxTs);
     }
   }
 
@@ -345,9 +391,12 @@ export function createStreamSaverController(deps = {}) {
       const totalBytes = await streamPlaylistToWritable(activeJob, writable, {
         fetchFn,
         signal: activeAbortController.signal,
-        onProgress: (done, total, bytes) => {
+        onProgress: (done, total, bytes, transmuxing) => {
           setProgress(done, total);
-          setStatus(translateFn('saver_status_streaming', [String(done), String(total), formatBytes(bytes)]));
+          setStatus(translateFn(
+            transmuxing ? 'saver_status_transmuxing' : 'saver_status_streaming',
+            [String(done), String(total), formatBytes(bytes)]
+          ));
         }
       });
       await writable.close();

@@ -17,9 +17,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  convertSvgToCurrentColor,
   decodeSvgDataUrl,
+  extractSvgPalette,
   extractSymbolFromSvgSprite,
+  normalizeSvgColor,
   optimizeSvgMarkup,
+  replaceSvgColor,
   splitSvgSpriteUrl
 } from '../src/shared/svg_utils.js';
 
@@ -96,4 +100,23 @@ test('decodeSvgDataUrl handles base64 and percent-encoded SVG data URIs', () => 
 
   assert.equal(decodeSvgDataUrl(b64), raw);
   assert.equal(decodeSvgDataUrl(pct), raw);
+});
+
+test('normalizeSvgColor, extractSvgPalette, replaceSvgColor, and convertSvgToCurrentColor recolor SVGs cleanly', () => {
+  assert.equal(normalizeSvgColor('#AbC'), '#aabbcc');
+  assert.equal(normalizeSvgColor('rgb(255, 0, 128)'), '#ff0080');
+  assert.equal(normalizeSvgColor('none'), '');
+  assert.equal(normalizeSvgColor('url(#grad1)'), '');
+
+  const svg = '<svg><path fill="#F00" stroke="rgb(0, 128, 255)"/><rect style="fill:#0f0;stroke:none"/><circle fill="currentColor"/></svg>';
+  assert.deepEqual(extractSvgPalette(svg), ['#ff0000', '#0080ff', '#00ff00']);
+
+  const recolored = replaceSvgColor(svg, '#ff0000', '#123456');
+  assert.equal(recolored.includes('fill="#123456"'), true);
+  assert.equal(recolored.includes('stroke="rgb(0, 128, 255)"'), true);
+
+  const mono = convertSvgToCurrentColor(svg);
+  assert.deepEqual(extractSvgPalette(mono), []);
+  assert.equal(mono.includes('fill="currentColor"'), true);
+  assert.equal(mono.includes('stroke:none'), true);
 });

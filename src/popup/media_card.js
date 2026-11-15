@@ -415,7 +415,7 @@ function resolveAudioExtractCapabilities(entry, meta, context = {}) {
     && (item.ext || '').toLowerCase() !== DEFAULT_FILENAMES.WEBM_EXT
   );
   const canBrowserDirectWav = Boolean(
-    audioFormat === AUDIO_EXPORT_FORMATS.WAV
+    (audioFormat === AUDIO_EXPORT_FORMATS.WAV || audioFormat === AUDIO_EXPORT_FORMATS.OPUS)
     && !item.isStream
     && !item.isMse
     && item.type === MEDIA_TYPES.VIDEO
@@ -963,7 +963,11 @@ export function createMediaCard(item, context = {}) {
 
   let stopRecordBtn = null;
   let saveLargeBtn = null;
-  if (item.isStream) {
+  const isOversizedProgressiveVideo = !item.isStream
+    && !item.isMse
+    && item.type === MEDIA_TYPES.VIDEO
+    && (item.sizeBytes || 0) > LIMITS.MAX_HLS_BUFFER_BYTES;
+  if (item.isStream || isOversizedProgressiveVideo) {
     saveLargeBtn = doc.createElement('button');
     saveLargeBtn.type = 'button';
     saveLargeBtn.className = 'action-chip save-large-btn hidden';
@@ -977,7 +981,8 @@ export function createMediaCard(item, context = {}) {
       }
     });
     controls.appendChild(saveLargeBtn);
-
+  }
+  if (item.isStream) {
     stopRecordBtn = doc.createElement('button');
     stopRecordBtn.type = 'button';
     stopRecordBtn.className = 'btn btn-primary hidden';
@@ -1026,6 +1031,9 @@ export function createMediaCard(item, context = {}) {
   entry.stopRecordBtn = stopRecordBtn;
   entry.cancelBtn = cancelBtn;
   entry.progressEl = progressEl;
+  if (saveLargeBtn && !item.isStream) {
+    updateStreamLimitWarning(entry, context);
+  }
 
   downloadBtn.addEventListener('click', () => {
     const chosenUrl = !qualitySelect.classList.contains('hidden') ? qualitySelect.value : entry.item.url;

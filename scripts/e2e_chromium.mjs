@@ -308,6 +308,16 @@ async function waitForPredicate(cdp, sessionId, expression, timeoutMs = 8000) {
   return false;
 }
 
+async function createTargetSession(cdp, url) {
+  const { targetId } = await cdp.send('Target.createTarget', { url });
+  const { sessionId } = await cdp.send('Target.attachToTarget', {
+    targetId,
+    flatten: true
+  });
+  await cdp.send('Runtime.enable', {}, sessionId);
+  return { targetId, sessionId };
+}
+
 async function runE2E() {
   const chromePath = findChromeBinary();
   if (!chromePath) {
@@ -327,21 +337,20 @@ async function runE2E() {
     await cdp.connect();
 
     // 1. Navigate real page tab to local test fixture
-    const { targetId: pageTargetId } = await cdp.send('Target.createTarget', {
-      url: `${baseUrl}/page.html`
-    });
-    const { sessionId: pageSessionId } = await cdp.send('Target.attachToTarget', {
-      targetId: pageTargetId,
-      flatten: true
-    });
-    await cdp.send('Runtime.enable', {}, pageSessionId);
+    const { sessionId: pageSessionId } = await createTargetSession(cdp, `${baseUrl}/page.html`);
 
     const pageReady = await waitForPredicate(
       cdp,
       pageSessionId,
       'document.readyState === "complete" && document.images.length >= 1 && document.querySelectorAll("svg").length >= 3'
     );
-    assert.equal(pageReady, true, 'Fixture page did not finish loading within timeout');
+    if (!pageReady) {
+      const diag = await cdp.send('Runtime.evaluate', {
+        expression: 'JSON.stringify({ href: location.href, ready: document.readyState, imgs: document.images.length, svgs: document.querySelectorAll("svg").length, body: document.body ? document.body.innerText.slice(0, 120) : "" })',
+        returnByValue: true
+      }, pageSessionId).catch((e) => ({ result: { value: String(e) } }));
+      assert.fail(`Fixture page did not finish loading within timeout: ${diag && diag.result ? diag.result.value : ''}`);
+    }
     const domCheck = await cdp.send('Runtime.evaluate', {
       expression: 'JSON.stringify({ title: document.title, svgs: document.querySelectorAll("svg").length, imgs: document.images.length })',
       returnByValue: true
@@ -391,14 +400,10 @@ async function runE2E() {
     // 3. Verify unpacked MV3 extension target / popup UI if allowed by browser build
     const { extensionId } = await waitForExtensionId(cdp, 5000);
     if (extensionId) {
-      const { targetId: popupTargetId } = await cdp.send('Target.createTarget', {
-        url: `chrome-extension://${extensionId}/src/popup/popup.html`
-      });
-      const { sessionId: popupSessionId } = await cdp.send('Target.attachToTarget', {
-        targetId: popupTargetId,
-        flatten: true
-      });
-      await cdp.send('Runtime.enable', {}, popupSessionId);
+      const { sessionId: popupSessionId } = await createTargetSession(
+        cdp,
+        `chrome-extension://${extensionId}/src/popup/popup.html`
+      );
 
       const popupReady = await waitForPredicate(
         cdp,
@@ -413,11 +418,14 @@ async function runE2E() {
           readyState: document.readyState,
           hasMinPxSelect: Boolean(document.getElementById('minImagePxSelect')),
           hasExtSelect: Boolean(document.getElementById('imageExtFilterSelect')),
+          hasOrientationSelect: Boolean(document.getElementById('imageOrientationFilterSelect')),
           hasScaleSelect: Boolean(document.getElementById('imageScaleSelect')),
           hasZipBtn: Boolean(document.getElementById('downloadZipBtn')),
           hasTabCaptureBtn: Boolean(document.getElementById('tabCaptureBtn')),
           hasLightbox: Boolean(document.getElementById('imageLightbox')),
           hasLightboxToolbar: Boolean(document.getElementById('lightboxBgLightBtn') && document.getElementById('lightboxCopyBtn') && document.getElementById('lightboxDownloadBtn')),
+          hasLightboxPalette: Boolean(document.getElementById('lightboxPaletteBar') && document.getElementById('lightboxCurrentColorBtn')),
+          orientationOptions: document.getElementById('imageOrientationFilterSelect') ? document.getElementById('imageOrientationFilterSelect').options.length : 0,
           scaleOptions: document.getElementById('imageScaleSelect') ? document.getElementById('imageScaleSelect').options.length : 0
         })`,
         returnByValue: true
@@ -425,11 +433,14 @@ async function runE2E() {
       const popupState = JSON.parse(popupCheck.result.value);
       assert.equal(popupState.hasMinPxSelect, true, popupCheck.result.value);
       assert.equal(popupState.hasExtSelect, true, popupCheck.result.value);
+      assert.equal(popupState.hasOrientationSelect, true, popupCheck.result.value);
       assert.equal(popupState.hasScaleSelect, true, popupCheck.result.value);
       assert.equal(popupState.hasZipBtn, true, popupCheck.result.value);
       assert.equal(popupState.hasTabCaptureBtn, true, popupCheck.result.value);
       assert.equal(popupState.hasLightbox, true, popupCheck.result.value);
       assert.equal(popupState.hasLightboxToolbar, true, popupCheck.result.value);
+      assert.equal(popupState.hasLightboxPalette, true, popupCheck.result.value);
+      assert.equal(popupState.orientationOptions, 4, popupCheck.result.value);
       assert.equal(popupState.scaleOptions, 4, popupCheck.result.value);
 
       const lightboxToggleCheck = await cdp.send('Runtime.evaluate', {
@@ -472,6 +483,25 @@ async function runE2E() {
       assert.equal(mediaCheck.result.value.hasSvg, true, JSON.stringify(mediaCheck.result.value));
       assert.equal(mediaCheck.result.value.hasCanvasPng, true, JSON.stringify(mediaCheck.result.value));
       assert.ok(mediaCheck.result.value.count >= 3, JSON.stringify(mediaCheck.result.value));
+
+      // 4. Verify stream_saver.html + vendored muxjs.Transmuxer availability in extension runtime
+      const { sessionId: saverSessionId } = await createTargetSession(
+        cdp,
+        `chrome-extension://${extensionId}/src/saver/stream_saver.html`
+      );
+      const saverReady = await waitForPredicate(
+        cdp,
+        saverSessionId,
+        'document.readyState === "complete" && Boolean(document.getElementById("startBtn"))'
+      );
+      assert.equal(saverReady, true, 'stream_saver.html did not initialize within timeout');
+      const saverCheck = await cdp.send('Runtime.evaluate', {
+        expression: '({ hasStart: Boolean(document.getElementById("startBtn")), hasMuxjs: typeof globalThis.muxjs === "object" && typeof globalThis.muxjs.Transmuxer === "function" })',
+        returnByValue: true
+      }, saverSessionId);
+      assert.equal(saverCheck.result.value.hasStart, true);
+      assert.equal(saverCheck.result.value.hasMuxjs, true);
+
       console.log(`Chromium MV3 E2E passed (extension loaded: ${extensionId}, detected ${mediaCheck.result.value.count} media items).`);
     } else {
       console.log('Chromium E2E passed (DOM & Canvas checks OK; --load-extension disabled on branded Chrome build).');

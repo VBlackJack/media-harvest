@@ -2,6 +2,17 @@
 
 All notable engineering changes to Media Harvest are documented in this file.
 
+## [1.2.0] - 2026-11-15
+
+### Added
+- Compact WebCodecs Ogg/Opus browser audio extraction (`src/shared/ogg_opus_muxer.js`, RFC 3533/7845 framing with 48 kHz resampling in `src/offscreen/offscreen.js` and automatic PCM `.wav` fallback).
+- Incremental MPEG-TS to MP4 transmuxing in the direct File System Access disk writer (`src/saver/stream_saver.html`, `src/saver/stream_saver.js`) alongside oversized (`>512` MB) direct save support on large progressive HTTP videos in `src/popup/media_card.js`.
+- Lightbox Pro SVG color palette extraction and live interactive color-picker recoloring plus one-click `currentColor` conversion (`normalizeSvgColor`, `extractSvgPalette`, `replaceSvgColor`, `convertSvgToCurrentColor` in `src/shared/svg_utils.js`, wired into `src/popup/popup.js`).
+- Imageye++ image orientation quick filter (`all`, `landscape`, `portrait`, `square` in `#imageOrientationFilterSelect` with persisted UI state) and configurable maximum image resize width (`maxImageResizePx`, `0` - `3840` px) applied during single-image and ZIP batch conversions.
+- Configurable Tab Capture `MediaRecorder` video bitrate (`tabCaptureBitrateMbps`, `1` - `16` Mbps, default `5` Mbps) in Options (`src/options/options.html`, `src/options/options.js`).
+- Bilingual Chrome Web Store submission, privacy policy, and permission justification guides ([docs/CHROME_WEB_STORE.md](docs/CHROME_WEB_STORE.md), [docs/fr/CHROME_WEB_STORE.md](docs/fr/CHROME_WEB_STORE.md)).
+- Expanded test suite to 134 automated unit/integration tests (`86.53%` line coverage) and strengthened `scripts/e2e_chromium.mjs` with orientation, SVG palette, and `stream_saver.html` runtime checks.
+
 ## [1.1.0] - 2026-11-15
 
 ### Added

@@ -180,4 +180,10 @@ test('matchesImageQuickFilters filters images by pixel size and extension while 
   assert.equal(matchesImageQuickFilters(thumb, { imageExt: 'jpg' }), false);
   assert.equal(matchesImageQuickFilters(svg, { imageExt: 'svg' }), true);
   assert.equal(matchesImageQuickFilters(video, { minImagePx: 800, imageExt: 'png' }), true);
+
+  assert.equal(matchesImageQuickFilters(photo, { orientation: 'landscape' }), true);
+  assert.equal(matchesImageQuickFilters(photo, { orientation: 'portrait' }), false);
+  assert.equal(matchesImageQuickFilters(thumb, { orientation: 'square' }), true);
+  assert.equal(matchesImageQuickFilters({ type: 'image', ext: 'png', width: 400, height: 900 }, { orientation: 'portrait' }), true);
+  assert.equal(matchesImageQuickFilters(video, { orientation: 'landscape' }), true);
 });

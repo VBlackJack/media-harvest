@@ -54,9 +54,25 @@ test('normalizeSettings validates enums and clamps numeric thresholds safely', (
   assert.equal(normalized.audioExportFormat, AUDIO_EXPORT_FORMATS.WAV);
   assert.equal(normalized.enableXOverlay, false);
 
-  const overQuality = normalizeSettings({ jpgQualityPercent: 180, audioExportFormat: 'ogg' });
+  const overQuality = normalizeSettings({
+    jpgQualityPercent: 180,
+    audioExportFormat: 'opus',
+    maxImageResizePx: 1920,
+    tabCaptureBitrateMbps: 99
+  });
   assert.equal(overQuality.jpgQualityPercent, 100);
-  assert.equal(overQuality.audioExportFormat, AUDIO_EXPORT_FORMATS.M4A);
+  assert.equal(overQuality.audioExportFormat, AUDIO_EXPORT_FORMATS.OPUS);
+  assert.equal(overQuality.maxImageResizePx, 1920);
+  assert.equal(overQuality.tabCaptureBitrateMbps, 16);
+
+  const invalidLot7 = normalizeSettings({
+    audioExportFormat: 'flac',
+    maxImageResizePx: 9999,
+    tabCaptureBitrateMbps: 0
+  });
+  assert.equal(invalidLot7.audioExportFormat, AUDIO_EXPORT_FORMATS.M4A);
+  assert.equal(invalidLot7.maxImageResizePx, 3840);
+  assert.equal(invalidLot7.tabCaptureBitrateMbps, 1);
 });
 
 test('applyFilenameTemplate formats default, host_stem, and date_stem consistently', () => {

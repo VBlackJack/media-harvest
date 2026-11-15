@@ -78,12 +78,32 @@
       </div>
 
       <div class="field">
+        <label for="maxImageResizePx" data-i18n="options_max_image_resize_label"></label>
+        <select id="maxImageResizePx" name="maxImageResizePx" aria-describedby="maxImageResizeHint">
+          <option value="0" data-i18n="options_max_image_resize_original"></option>
+          <option value="512">512 px</option>
+          <option value="1024">1024 px</option>
+          <option value="1920">1920 px</option>
+          <option value="2560">2560 px</option>
+          <option value="3840">3840 px</option>
+        </select>
+        <p id="maxImageResizeHint" class="field-hint" data-i18n="options_max_image_resize_hint"></p>
+      </div>
+
+      <div class="field">
         <label for="audioExportFormat" data-i18n="options_audio_format_label"></label>
         <select id="audioExportFormat" name="audioExportFormat" aria-describedby="audioExportFormatHint">
           <option value="m4a" data-i18n="options_audio_format_m4a"></option>
+          <option value="opus" data-i18n="options_audio_format_opus"></option>
           <option value="wav" data-i18n="options_audio_format_wav"></option>
         </select>
         <p id="audioExportFormatHint" class="field-hint" data-i18n="options_audio_format_hint"></p>
+      </div>
+
+      <div class="field">
+        <label for="tabCaptureBitrateMbps" data-i18n="options_tab_capture_bitrate_label"></label>
+        <input id="tabCaptureBitrateMbps" name="tabCaptureBitrateMbps" type="number" min="1" max="16" step="1" aria-describedby="tabCaptureBitrateHint" required>
+        <p id="tabCaptureBitrateHint" class="field-hint" data-i18n="options_tab_capture_bitrate_hint"></p>
       </div>
 
       <label class="checkbox-field" for="enableXOverlay">

@@ -84,9 +84,21 @@ export function normalizeSettings(raw) {
       LIMITS.JPG_QUALITY_MIN_PERCENT,
       LIMITS.JPG_QUALITY_MAX_PERCENT
     ),
+    maxImageResizePx: clampInteger(
+      src.maxImageResizePx,
+      DEFAULT_SETTINGS.maxImageResizePx,
+      0,
+      LIMITS.MAX_IMAGE_RESIZE_MAX_PX
+    ),
     audioExportFormat: VALID_AUDIO_FORMATS.has(src.audioExportFormat)
       ? src.audioExportFormat
       : DEFAULT_SETTINGS.audioExportFormat,
+    tabCaptureBitrateMbps: clampInteger(
+      src.tabCaptureBitrateMbps,
+      DEFAULT_SETTINGS.tabCaptureBitrateMbps,
+      LIMITS.TAB_CAPTURE_BITRATE_MIN_MBPS,
+      LIMITS.TAB_CAPTURE_BITRATE_MAX_MBPS
+    ),
     enableXOverlay: typeof src.enableXOverlay === 'boolean'
       ? src.enableXOverlay
       : DEFAULT_SETTINGS.enableXOverlay,

@@ -1426,6 +1426,7 @@ async function startImageConversionDownload(payload, rawStem, requestId) {
       height: Number.isFinite(payload.height) ? payload.height : 0,
       rasterSizePx: Number.isFinite(payload.rasterSizePx) ? payload.rasterSizePx : 0,
       jpgQualityPercent: settings.jpgQualityPercent,
+      maxImageResizePx: settings.maxImageResizePx,
       symbolId: typeof payload.svgSymbolId === 'string' ? payload.svgSymbolId : ''
     })
   });
@@ -1475,11 +1476,12 @@ async function startDirectAudioWavDownload(payload, rawStem, requestId) {
     allowFolders: Boolean(payload.allowFolders),
     tabId: typeof payload.tabId === 'number' ? payload.tabId : -1,
     referer: typeof payload.referer === 'string' ? payload.referer : '',
-    buildOffscreenMessage: () => ({
+    buildOffscreenMessage: (settings) => ({
       target: 'offscreen',
       type: MESSAGE_TYPES.OFFSCREEN_DECODE_WAV,
       requestId,
-      targetUrl: payload.url
+      targetUrl: payload.url,
+      audioFormat: settings.audioExportFormat
     })
   });
 }
@@ -1537,7 +1539,8 @@ async function handleStartTabCapture(payload) {
       type: MESSAGE_TYPES.OFFSCREEN_START_TAB_CAPTURE,
       requestId,
       streamId,
-      originalUrl: tabUrl
+      originalUrl: tabUrl,
+      tabCaptureBitrateMbps: settings.tabCaptureBitrateMbps
     })
   });
 }
@@ -1574,6 +1577,7 @@ async function handleExportBatchZip(payload) {
       items,
       concurrency: settings.hlsFetchConcurrency,
       jpgQualityPercent: settings.jpgQualityPercent,
+      maxImageResizePx: settings.maxImageResizePx,
       renameMode: payload.renameMode === ZIP_RENAME_MODES.SEQUENTIAL
         ? ZIP_RENAME_MODES.SEQUENTIAL
         : ZIP_RENAME_MODES.ORIGINAL

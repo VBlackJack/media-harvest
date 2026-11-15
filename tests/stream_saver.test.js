@@ -253,3 +253,76 @@ test('createStreamSaverController handles missing job, unsupported picker, and f
   assert.deepEqual(Array.from(writable.chunks[0]), [10, 20, 30, 40]);
   assert.equal(okCtrl.els.statusText.classList.contains('is-done'), true);
 });
+
+test('streamPlaylistToWritable transmuxes MPEG-TS HLS segments incrementally into MP4 when Transmuxer is provided', async () => {
+  const tsPlaylist = [
+    '#EXTM3U',
+    '#EXT-X-TARGETDURATION:4',
+    '#EXTINF:4.0,',
+    'https://cdn.example.com/seg0.ts',
+    '#EXTINF:4.0,',
+    'https://cdn.example.com/seg1.ts',
+    '#EXT-X-ENDLIST'
+  ].join('\n');
+
+  const writable = createMemoryWritable();
+  const progressEvents = [];
+  class FakeTransmuxer {
+    constructor() {
+      this._handlers = [];
+    }
+    on(event, fn) {
+      if (event === 'data') {
+        this._handlers.push(fn);
+      }
+    }
+    push(chunk) {
+      this._pending = chunk;
+    }
+    flush() {
+      if (this._pending) {
+        const segment = {
+          initSegment: new Uint8Array([0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70]),
+          data: new Uint8Array([0x6d, 0x64, this._pending[0]])
+        };
+        for (const fn of this._handlers) {
+          fn(segment);
+        }
+        this._pending = null;
+      }
+    }
+    dispose() {}
+  }
+
+  const res = await streamPlaylistToWritable(
+    {
+      url: 'https://cdn.example.com/index.m3u8',
+      playlistUrl: 'https://cdn.example.com/index.m3u8',
+      isStream: true,
+      concurrency: 1
+    },
+    writable,
+    {
+      TransmuxerCtor: FakeTransmuxer,
+      fetchFn: async (url) => {
+        if (url.endsWith('.m3u8')) {
+          return { ok: true, status: 200, text: async () => tsPlaylist };
+        }
+        const byteVal = url.endsWith('seg0.ts') ? 0xaa : 0xbb;
+        return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array([byteVal]).buffer };
+      },
+      onProgress: (done, total, bytes, isTransmuxed) => {
+        progressEvents.push({ done, total, bytes, isTransmuxed });
+      }
+    }
+  );
+
+  assert.ok(res > 0);
+  assert.equal(progressEvents.length, 2);
+  assert.equal(progressEvents.every((p) => p.isTransmuxed === true), true);
+  // initSegment emitted once (on seg0), plus both mdat-prefixed data segments
+  assert.equal(writable.chunks.length, 3);
+  assert.deepEqual(Array.from(writable.chunks[0]), [0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70]);
+  assert.deepEqual(Array.from(writable.chunks[1]), [0x6d, 0x64, 0xaa]);
+  assert.deepEqual(Array.from(writable.chunks[2]), [0x6d, 0x64, 0xbb]);
+});

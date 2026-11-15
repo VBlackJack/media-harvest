@@ -1110,5 +1110,85 @@
         "example": "Network error"
       }
     }
+  },
+  "popup_filter_orientation_label": {
+    "message": "Image orientation filter",
+    "description": "Accessible label for image aspect-ratio orientation filter."
+  },
+  "popup_filter_orientation_all": {
+    "message": "All shapes",
+    "description": "Show images regardless of aspect ratio."
+  },
+  "popup_filter_orientation_landscape": {
+    "message": "Landscape",
+    "description": "Show landscape images where width exceeds height."
+  },
+  "popup_filter_orientation_portrait": {
+    "message": "Portrait",
+    "description": "Show portrait images where height exceeds width."
+  },
+  "popup_filter_orientation_square": {
+    "message": "Square",
+    "description": "Show square images where width matches height."
+  },
+  "popup_lightbox_palette_label": {
+    "message": "SVG colors",
+    "description": "Label before extracted SVG palette swatches inside the Lightbox preview."
+  },
+  "popup_lightbox_current_color": {
+    "message": "Use currentColor",
+    "description": "Button to convert all explicit SVG colors into currentColor."
+  },
+  "popup_lightbox_recolor_title": {
+    "message": "Click to replace color $COLOR$",
+    "description": "Tooltip on a Lightbox SVG color swatch.",
+    "placeholders": {
+      "color": {
+        "content": "$1",
+        "example": "#0369a1"
+      }
+    }
+  },
+  "options_audio_format_opus": {
+    "message": "Compact Ogg/Opus (.opus - WebCodecs 128 kbps)",
+    "description": "Option to encode browser audio extractions into compressed Ogg/Opus."
+  },
+  "options_max_image_resize_label": {
+    "message": "Max width when converting images (px)",
+    "description": "Label for optional maximum output width when converting raster images."
+  },
+  "options_max_image_resize_hint": {
+    "message": "Set to 0 to keep original pixel dimensions during PNG/JPG conversions.",
+    "description": "Hint explaining maxImageResizePx option."
+  },
+  "options_max_image_resize_original": {
+    "message": "Original size (no resize)",
+    "description": "Option value keeping original width when converting raster images."
+  },
+  "options_tab_capture_bitrate_label": {
+    "message": "Tab capture bitrate (Mbps)",
+    "description": "Label for chrome.tabCapture MediaRecorder video bitrate setting."
+  },
+  "options_tab_capture_bitrate_hint": {
+    "message": "Video bitrate for live Capture tab recordings (1 to 16 Mbps; default 5 Mbps).",
+    "description": "Hint explaining tabCaptureBitrateMbps bounds."
+  },
+  "saver_status_transmuxing": {
+    "message": "Transmuxing & writing $DONE$/$TOTAL$ ($BYTES$ written)",
+    "description": "Progress text when stream_saver transmuxes MPEG-TS HLS segments to MP4 on the fly.",
+    "placeholders": {
+      "done": {
+        "content": "$1",
+        "example": "10"
+      },
+      "total": {
+        "content": "$2",
+        "example": "100"
+      },
+      "bytes": {
+        "content": "$3",
+        "example": "95.2 MB"
+      }
+    }
   }
 }

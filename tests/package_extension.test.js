@@ -20,9 +20,10 @@ import fs from 'node:fs';
 import { packageExtension } from '../scripts/package_extension.mjs';
 
 test('packageExtension builds a valid distributable zip archive with correct metadata', () => {
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   const result = packageExtension();
 
-  assert.equal(result.version, '1.1.0');
+  assert.equal(result.version, pkg.version);
   assert.ok(result.fileCount >= 30, `Expected at least 30 files in extension package, got ${result.fileCount}`);
   assert.ok(result.byteLength > 10000, `Expected zip byteLength > 10KB, got ${result.byteLength}`);
   assert.match(result.sha256, /^[a-f0-9]{64}$/);

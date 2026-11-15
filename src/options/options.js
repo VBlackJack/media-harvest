@@ -33,7 +33,9 @@ export function collectOptionElements(doc) {
     hlsFetchConcurrency: doc.getElementById('hlsFetchConcurrency'),
     largeStreamWarningMb: doc.getElementById('largeStreamWarningMb'),
     jpgQualityPercent: doc.getElementById('jpgQualityPercent'),
+    maxImageResizePx: doc.getElementById('maxImageResizePx'),
     audioExportFormat: doc.getElementById('audioExportFormat'),
+    tabCaptureBitrateMbps: doc.getElementById('tabCaptureBitrateMbps'),
     enableXOverlay: doc.getElementById('enableXOverlay'),
     enableSocialOverlay: doc.getElementById('enableSocialOverlay'),
     enableGenericVideoOverlay: doc.getElementById('enableGenericVideoOverlay'),
@@ -74,6 +76,10 @@ export function applyInputBounds(els) {
   if (els.jpgQualityPercent) {
     els.jpgQualityPercent.min = String(LIMITS.JPG_QUALITY_MIN_PERCENT);
     els.jpgQualityPercent.max = String(LIMITS.JPG_QUALITY_MAX_PERCENT);
+  }
+  if (els.tabCaptureBitrateMbps) {
+    els.tabCaptureBitrateMbps.min = String(LIMITS.TAB_CAPTURE_BITRATE_MIN_MBPS);
+    els.tabCaptureBitrateMbps.max = String(LIMITS.TAB_CAPTURE_BITRATE_MAX_MBPS);
   }
 }
 
@@ -227,8 +233,14 @@ export function createOptionsController(deps = {}) {
     if (els.jpgQualityPercent) {
       els.jpgQualityPercent.value = String(settings.jpgQualityPercent);
     }
+    if (els.maxImageResizePx) {
+      els.maxImageResizePx.value = String(settings.maxImageResizePx);
+    }
     if (els.audioExportFormat) {
       els.audioExportFormat.value = settings.audioExportFormat;
+    }
+    if (els.tabCaptureBitrateMbps) {
+      els.tabCaptureBitrateMbps.value = String(settings.tabCaptureBitrateMbps);
     }
     els.enableXOverlay.checked = Boolean(settings.enableXOverlay);
     if (els.enableSocialOverlay) {
@@ -262,7 +274,11 @@ export function createOptionsController(deps = {}) {
       hlsFetchConcurrency: els.hlsFetchConcurrency.value,
       largeStreamWarningMb: els.largeStreamWarningMb.value,
       jpgQualityPercent: els.jpgQualityPercent ? els.jpgQualityPercent.value : DEFAULT_SETTINGS.jpgQualityPercent,
+      maxImageResizePx: els.maxImageResizePx ? els.maxImageResizePx.value : DEFAULT_SETTINGS.maxImageResizePx,
       audioExportFormat: els.audioExportFormat ? els.audioExportFormat.value : DEFAULT_SETTINGS.audioExportFormat,
+      tabCaptureBitrateMbps: els.tabCaptureBitrateMbps
+        ? els.tabCaptureBitrateMbps.value
+        : DEFAULT_SETTINGS.tabCaptureBitrateMbps,
       enableXOverlay: els.enableXOverlay.checked,
       enableSocialOverlay: els.enableSocialOverlay ? els.enableSocialOverlay.checked : true,
       enableGenericVideoOverlay: els.enableGenericVideoOverlay ? els.enableGenericVideoOverlay.checked : true,

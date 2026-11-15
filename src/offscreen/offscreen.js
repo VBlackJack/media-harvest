@@ -62,6 +62,7 @@ import {
 } from '../shared/svg_utils.js';
 import { transmuxTsSegmentsToMp4Parts } from '../shared/ts_transmuxer.js';
 import { encodePcmWav } from '../shared/wav_encoder.js';
+import { muxOpusPacketsToOgg } from '../shared/ogg_opus_muxer.js';
 import { buildZipBlobAsync, resolveZipEntryFilename } from '../shared/zip_builder.js';
 
 const activeBlobUrls = new Set();
@@ -792,9 +793,13 @@ async function buildStreamBlob(payload) {
 
     let finalBlob;
     let finalExtension = outputExtension;
-    if (audioOnly && payload.audioFormat === AUDIO_EXPORT_FORMATS.WAV) {
-      finalBlob = await decodeMediaPartsToWavBlob(outputParts);
-      finalExtension = DEFAULT_FILENAMES.AUDIO_WAV_EXT;
+    if (
+      audioOnly
+      && (payload.audioFormat === AUDIO_EXPORT_FORMATS.WAV || payload.audioFormat === AUDIO_EXPORT_FORMATS.OPUS)
+    ) {
+      const decodedResult = await decodeMediaPartsToAudioBlob(outputParts, payload.audioFormat);
+      finalBlob = decodedResult.blob;
+      finalExtension = decodedResult.extension;
     } else {
       finalBlob = new Blob(outputParts, { type: mimeType });
     }
@@ -1473,6 +1478,7 @@ function resolveRasterSizePx(rawSize) {
  * @param {number} hintHeight
  * @param {boolean} isSvg
  * @param {number} [rasterSizePx=0]
+ * @param {number} [maxImageResizePx=0]
  * @returns {{ width: number, height: number }}
  */
 function resolveConvertDimensions(
@@ -1481,7 +1487,8 @@ function resolveConvertDimensions(
   hintWidth,
   hintHeight,
   isSvg,
-  rasterSizePx = 0
+  rasterSizePx = 0,
+  maxImageResizePx = 0
 ) {
   let width = Math.round(naturalWidth || hintWidth || LIMITS.DEFAULT_SVG_RASTER_SIZE_PX);
   let height = Math.round(naturalHeight || hintHeight || LIMITS.DEFAULT_SVG_RASTER_SIZE_PX);
@@ -1500,16 +1507,113 @@ function resolveConvertDimensions(
       width = Math.max(1, Math.round(width * scale));
       height = Math.max(1, Math.round(height * scale));
     }
+  } else {
+    const maxPx = Number(maxImageResizePx) > 0 ? Math.round(Number(maxImageResizePx)) : 0;
+    if (maxPx > 0 && width > maxPx) {
+      height = Math.max(1, Math.round((height * maxPx) / width));
+      width = maxPx;
+    }
   }
   return { width, height };
 }
 
 /**
- * Decodes assembled or fetched media bytes via Web Audio and encodes PCM 16-bit WAV.
- * @param {Array<ArrayBuffer | Uint8Array>} mediaParts
+ * Resamples a decoded AudioBuffer to 48 kHz when needed for Opus WebCodecs encoding.
+ * @param {AudioBuffer} audioBuffer
+ * @returns {Promise<AudioBuffer>}
+ */
+async function resampleAudioBufferTo48k(audioBuffer) {
+  if (audioBuffer.sampleRate === 48000 || typeof OfflineAudioContext !== 'function') {
+    return audioBuffer;
+  }
+  const targetLength = Math.max(1, Math.ceil((audioBuffer.length * 48000) / audioBuffer.sampleRate));
+  const offline = new OfflineAudioContext(audioBuffer.numberOfChannels, targetLength, 48000);
+  const source = offline.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(offline.destination);
+  source.start(0);
+  return offline.startRendering();
+}
+
+/**
+ * Encodes a decoded AudioBuffer into compressed Ogg/Opus via WebCodecs AudioEncoder.
+ * @param {AudioBuffer} audioBuffer
  * @returns {Promise<Blob>}
  */
-async function decodeMediaPartsToWavBlob(mediaParts) {
+async function encodeDecodedAudioToOpusBlob(audioBuffer) {
+  if (typeof AudioEncoder !== 'function' || typeof AudioData !== 'function') {
+    throw new Error('OPUS_ENCODER_UNAVAILABLE');
+  }
+  const prepared = await resampleAudioBufferTo48k(audioBuffer);
+  const channels = Math.min(2, Math.max(1, prepared.numberOfChannels || 2));
+  const totalFrames = prepared.length;
+  const sampleRate = prepared.sampleRate || 48000;
+  const packets = [];
+  let encodeError = null;
+
+  const encoder = new AudioEncoder({
+    output: (chunk) => {
+      const bytes = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(bytes);
+      packets.push({
+        data: bytes,
+        durationUs: chunk.duration || 20000,
+        timestampUs: chunk.timestamp || 0
+      });
+    },
+    error: (err) => {
+      encodeError = err || new Error('OPUS_ENCODE_FAILED');
+    }
+  });
+
+  encoder.configure({
+    codec: 'opus',
+    sampleRate,
+    numberOfChannels: channels,
+    bitrate: 128000
+  });
+
+  const blockSize = 4800;
+  const channelArrays = Array.from({ length: channels }, (_, ch) => prepared.getChannelData(ch));
+  for (let offset = 0; offset < totalFrames; offset += blockSize) {
+    if (encodeError) {
+      break;
+    }
+    const count = Math.min(blockSize, totalFrames - offset);
+    const planar = new Float32Array(count * channels);
+    for (let ch = 0; ch < channels; ch += 1) {
+      planar.set(channelArrays[ch].subarray(offset, offset + count), ch * count);
+    }
+    const audioData = new AudioData({
+      format: 'f32-planar',
+      sampleRate,
+      numberOfFrames: count,
+      numberOfChannels: channels,
+      timestamp: Math.round((offset * 1000000) / sampleRate),
+      data: planar
+    });
+    encoder.encode(audioData);
+    audioData.close();
+  }
+
+  await encoder.flush();
+  encoder.close();
+  if (encodeError || packets.length === 0) {
+    throw encodeError || new Error('OPUS_EMPTY_FRAMES');
+  }
+
+  const oggBytes = muxOpusPacketsToOgg(packets, { channels, sampleRate });
+  return new Blob([oggBytes], { type: 'audio/ogg;codecs=opus' });
+}
+
+/**
+ * Decodes assembled or fetched media bytes via Web Audio into either Ogg/Opus or PCM 16-bit WAV.
+ * Falls back transparently to PCM WAV if Opus WebCodecs encoding is unavailable.
+ * @param {Array<ArrayBuffer | Uint8Array>} mediaParts
+ * @param {string} [targetFormat='wav']
+ * @returns {Promise<{ blob: Blob, extension: string }>}
+ */
+async function decodeMediaPartsToAudioBlob(mediaParts, targetFormat = AUDIO_EXPORT_FORMATS.WAV) {
   const AudioCtx = globalThis.AudioContext || globalThis.webkitAudioContext;
   if (typeof AudioCtx !== 'function') {
     throw new Error('NO_AUDIO_TRACK');
@@ -1519,8 +1623,16 @@ async function decodeMediaPartsToWavBlob(mediaParts) {
   const audioCtx = new AudioCtx();
   try {
     const decoded = await audioCtx.decodeAudioData(rawBuffer);
+    if (targetFormat === AUDIO_EXPORT_FORMATS.OPUS) {
+      try {
+        const opusBlob = await encodeDecodedAudioToOpusBlob(decoded);
+        return { blob: opusBlob, extension: DEFAULT_FILENAMES.AUDIO_OPUS_EXT };
+      } catch {
+        // Fallback to PCM WAV when AudioEncoder/Opus is unavailable
+      }
+    }
     const wavBytes = encodePcmWav(decoded);
-    return new Blob([wavBytes], { type: 'audio/wav' });
+    return { blob: new Blob([wavBytes], { type: 'audio/wav' }), extension: DEFAULT_FILENAMES.AUDIO_WAV_EXT };
   } catch {
     throw new Error('NO_AUDIO_TRACK');
   } finally {
@@ -1531,8 +1643,18 @@ async function decodeMediaPartsToWavBlob(mediaParts) {
 }
 
 /**
- * Fetches a direct HTTP media URL and decodes its audio track to PCM WAV.
- * @param {{ targetUrl: string, requestId: string }} payload
+ * Decodes assembled or fetched media bytes via Web Audio and encodes PCM 16-bit WAV.
+ * @param {Array<ArrayBuffer | Uint8Array>} mediaParts
+ * @returns {Promise<Blob>}
+ */
+async function decodeMediaPartsToWavBlob(mediaParts) {
+  const { blob } = await decodeMediaPartsToAudioBlob(mediaParts, AUDIO_EXPORT_FORMATS.WAV);
+  return blob;
+}
+
+/**
+ * Fetches a direct HTTP media URL and decodes its audio track to PCM WAV or compact Ogg/Opus.
+ * @param {{ targetUrl: string, audioFormat?: string, requestId: string }} payload
  * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number }>}
  */
 async function decodeDirectMediaToWav(payload) {
@@ -1540,7 +1662,10 @@ async function decodeDirectMediaToWav(payload) {
   if (!isHttpUrl(targetUrl)) {
     throw new Error('INVALID_URL');
   }
-  const requestId = payload.requestId || `wav_${Date.now()}`;
+  const targetFormat = payload.audioFormat === AUDIO_EXPORT_FORMATS.OPUS
+    ? AUDIO_EXPORT_FORMATS.OPUS
+    : AUDIO_EXPORT_FORMATS.WAV;
+  const requestId = payload.requestId || `aud_${Date.now()}`;
   const buildController = new AbortController();
   activeBuildControllers.set(requestId, buildController);
   try {
@@ -1550,13 +1675,13 @@ async function decodeDirectMediaToWav(payload) {
       byteTracker: { bytes: 0 },
       retries: LIMITS.SEGMENT_FETCH_RETRIES
     });
-    const wavBlob = await decodeMediaPartsToWavBlob([buf]);
-    const blobUrl = URL.createObjectURL(wavBlob);
+    const { blob, extension } = await decodeMediaPartsToAudioBlob([buf], targetFormat);
+    const blobUrl = URL.createObjectURL(blob);
     activeBlobUrls.add(blobUrl);
     return {
       blobUrl,
-      outputExtension: DEFAULT_FILENAMES.AUDIO_WAV_EXT,
-      byteLength: wavBlob.size
+      outputExtension: extension,
+      byteLength: blob.size
     };
   } finally {
     activeBuildControllers.delete(requestId);
@@ -1640,7 +1765,8 @@ async function rasterizeImageToBlob(
   rasterSizePx,
   cancelSignal,
   jpgQualityPercent = LIMITS.DEFAULT_JPG_QUALITY_PERCENT,
-  symbolIdHint = ''
+  symbolIdHint = '',
+  maxImageResizePx = 0
 ) {
   const { symbolId: urlSymbolId } = splitSvgSpriteUrl(targetUrl);
   const effectiveSymbolId = symbolIdHint || urlSymbolId;
@@ -1673,7 +1799,8 @@ async function rasterizeImageToBlob(
     hintWidth || 0,
     hintHeight || 0,
     isSvg,
-    rasterSizePx || 0
+    rasterSizePx || 0,
+    maxImageResizePx || 0
   );
 
   const canvas = typeof document !== 'undefined' && typeof document.createElement === 'function'
@@ -1748,7 +1875,8 @@ async function convertImageBlob(payload) {
       payload.rasterSizePx || 0,
       buildController.signal,
       payload.jpgQualityPercent,
-      payload.symbolId || ''
+      payload.symbolId || '',
+      payload.maxImageResizePx || 0
     );
 
     const blobUrl = URL.createObjectURL(outBlob);
@@ -1788,6 +1916,12 @@ async function buildZipBlobArchive(payload) {
     LIMITS.DEFAULT_JPG_QUALITY_PERCENT,
     LIMITS.JPG_QUALITY_MIN_PERCENT,
     LIMITS.JPG_QUALITY_MAX_PERCENT
+  );
+  const maxImageResizePx = clampInteger(
+    payload.maxImageResizePx,
+    LIMITS.DEFAULT_MAX_IMAGE_RESIZE_PX,
+    0,
+    LIMITS.MAX_IMAGE_RESIZE_MAX_PX
   );
   const renameMode = payload.renameMode === ZIP_RENAME_MODES.SEQUENTIAL
     ? ZIP_RENAME_MODES.SEQUENTIAL
@@ -1839,7 +1973,8 @@ async function buildZipBlobArchive(payload) {
             item.rasterSizePx || 0,
             buildController.signal,
             jpgQualityPercent,
-            effectiveSymbolId
+            effectiveSymbolId,
+            maxImageResizePx
           );
           const buf = await convertedBlob.arrayBuffer();
           if (byteTracker.bytes + buf.byteLength > LIMITS.MAX_HLS_BUFFER_BYTES) {
@@ -1957,7 +2092,7 @@ function releaseTabCaptureMedia(session) {
  * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number }>}
  */
 async function startTabCaptureRecording(payload) {
-  const { streamId, originalUrl = '', requestId } = payload || {};
+  const { streamId, originalUrl = '', requestId, tabCaptureBitrateMbps } = payload || {};
   if (
     !streamId ||
     typeof navigator === 'undefined' ||
@@ -2000,13 +2135,23 @@ async function startTabCaptureRecording(payload) {
   }
 
   const mimeType = selectTabCaptureMimeType();
+  const bitrateMbps = clampInteger(
+    tabCaptureBitrateMbps,
+    LIMITS.DEFAULT_TAB_CAPTURE_BITRATE_MBPS,
+    LIMITS.TAB_CAPTURE_BITRATE_MIN_MBPS,
+    LIMITS.TAB_CAPTURE_BITRATE_MAX_MBPS
+  );
+  const recorderOptions = {
+    ...(mimeType ? { mimeType } : {}),
+    videoBitsPerSecond: bitrateMbps * 1000 * 1000
+  };
   const outputExtension = mimeType.includes('mp4')
     ? DEFAULT_FILENAMES.HLS_FMP4_EXT
     : DEFAULT_FILENAMES.WEBM_EXT;
 
   let recorder;
   try {
-    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    recorder = new MediaRecorder(stream, recorderOptions);
   } catch {
     releaseTabCaptureMedia({ stream, audioCtx });
     throw new Error('TAB_CAPTURE_FAILED');
@@ -2220,21 +2365,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       && mseResult.blobUrl
       && message.action === 'finalize'
       && message.audioOnly
-      && message.audioFormat === AUDIO_EXPORT_FORMATS.WAV
+      && (message.audioFormat === AUDIO_EXPORT_FORMATS.WAV || message.audioFormat === AUDIO_EXPORT_FORMATS.OPUS)
     ) {
       fetch(mseResult.blobUrl)
         .then((res) => res.arrayBuffer())
-        .then((buf) => decodeMediaPartsToWavBlob([buf]))
-        .then((wavBlob) => {
+        .then((buf) => decodeMediaPartsToAudioBlob([buf], message.audioFormat))
+        .then(({ blob: outAudioBlob, extension }) => {
           URL.revokeObjectURL(mseResult.blobUrl);
           activeBlobUrls.delete(mseResult.blobUrl);
-          const wavBlobUrl = URL.createObjectURL(wavBlob);
-          activeBlobUrls.add(wavBlobUrl);
+          const audioBlobUrl = URL.createObjectURL(outAudioBlob);
+          activeBlobUrls.add(audioBlobUrl);
           sendResponse({
             ok: true,
-            blobUrl: wavBlobUrl,
-            outputExtension: DEFAULT_FILENAMES.AUDIO_WAV_EXT,
-            byteLength: wavBlob.size
+            blobUrl: audioBlobUrl,
+            outputExtension: extension,
+            byteLength: outAudioBlob.size
           });
         })
         .catch((err) => sendResponse({ ok: false, error: (err && err.message) || 'NO_AUDIO_TRACK' }));
@@ -2253,6 +2398,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       height: message.height,
       rasterSizePx: message.rasterSizePx,
       jpgQualityPercent: message.jpgQualityPercent,
+      maxImageResizePx: message.maxImageResizePx,
       symbolId: message.symbolId || '',
       requestId
     })
@@ -2274,9 +2420,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === MESSAGE_TYPES.OFFSCREEN_DECODE_WAV) {
-    const requestId = message.requestId || `wav_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const requestId = message.requestId || `aud_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     decodeDirectMediaToWav({
       targetUrl: message.targetUrl,
+      audioFormat: message.audioFormat,
       requestId
     })
       .then((result) => sendResponse({ ok: true, ...result }))
@@ -2290,6 +2437,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       items: message.items,
       concurrency: message.concurrency,
       jpgQualityPercent: message.jpgQualityPercent,
+      maxImageResizePx: message.maxImageResizePx,
       renameMode: message.renameMode,
       requestId
     })
@@ -2303,6 +2451,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     startTabCaptureRecording({
       streamId: message.streamId,
       originalUrl: message.originalUrl || '',
+      tabCaptureBitrateMbps: message.tabCaptureBitrateMbps,
       requestId
     })
       .then((result) => sendResponse({ ok: true, ...result }))

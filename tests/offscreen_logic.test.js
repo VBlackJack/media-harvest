@@ -751,6 +751,20 @@ test('offscreen converts HTTP images to JPG and upscales SVGs to PNG via canvas'
     assert.equal(svgPngResp.ok, true);
     assert.equal(svgPngResp.outputExtension, 'png');
     assert.deepEqual(drawCalls[1], { x: 0, y: 0, w: 512, h: 512 });
+
+    // Downscaling oversized raster image respects maxImageResizePx aspect ratio
+    loadedNaturalW = 4000;
+    loadedNaturalH = 2000;
+    const resizedResp = await dispatchOffscreenMessage({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_CONVERT_IMAGE,
+      requestId: 'conv-resize-1',
+      targetUrl: 'https://cdn.example.com/photo.webp',
+      targetFormat: 'png',
+      maxImageResizePx: 512
+    });
+    assert.equal(resizedResp.ok, true);
+    assert.deepEqual(drawCalls[2], { x: 0, y: 0, w: 512, h: 256 });
   } finally {
     globalThis.Image = prevImage;
     globalThis.document = prevDocument;
@@ -1141,11 +1155,13 @@ test('offscreen extracts autonomous .m4a audio from muxed fMP4 HLS & MSE and cap
       audioCtxClosed = true;
     }
   };
+  let recorderVideoBits = 0;
   globalThis.MediaRecorder = class FakeMediaRecorder {
     static isTypeSupported(mime) {
       return mime === 'video/webm;codecs=vp9,opus';
     }
     constructor(_stream, opts) {
+      recorderVideoBits = opts && opts.videoBitsPerSecond ? opts.videoBitsPerSecond : 0;
       this.mimeType = opts && opts.mimeType ? opts.mimeType : 'video/webm';
       this.state = 'inactive';
       this.ondataavailable = null;
@@ -1186,11 +1202,13 @@ test('offscreen extracts autonomous .m4a audio from muxed fMP4 HLS & MSE and cap
       type: MESSAGE_TYPES.OFFSCREEN_START_TAB_CAPTURE,
       requestId: 'tab-cap-1',
       streamId: 'tab_stream_abc',
-      originalUrl: 'https://example.com/live'
+      originalUrl: 'https://example.com/live',
+      tabCaptureBitrateMbps: 12
     });
     assert.equal(capResp.ok, true);
     assert.equal(capResp.outputExtension, 'webm');
     assert.equal(capResp.byteLength, 5);
+    assert.equal(recorderVideoBits, 12000000);
     assert.equal(stoppedTracks, 1);
     assert.equal(audioCtxClosed, true);
     assert.ok(capProgress.some((m) => m.isTabCapture && m.bytes === 5));
@@ -1269,6 +1287,69 @@ test('offscreen handles OFFSCREEN_EXTRACT_SVG_SYMBOL and OFFSCREEN_DECODE_WAV na
     assert.equal(wavRes.outputExtension, 'wav');
     assert.equal(wavRes.byteLength, 44 + 4 * 2);
     assert.equal(closedWavCtx, true);
+
+    // WebCodecs AudioEncoder -> Ogg/Opus export when audioExportFormat is 'opus'
+    const prevAudioEncoder = globalThis.AudioEncoder;
+    const prevAudioData = globalThis.AudioData;
+    const prevOfflineAudioContext = globalThis.OfflineAudioContext;
+    globalThis.OfflineAudioContext = class FakeOfflineAudioContext {
+      constructor(ch, len, sr) {
+        this.channels = ch;
+        this.len = len;
+        this.sr = sr;
+        this.destination = {};
+      }
+      createBufferSource() {
+        return { buffer: null, connect: () => {}, start: () => {} };
+      }
+      async startRendering() {
+        return {
+          numberOfChannels: this.channels,
+          length: 4,
+          sampleRate: this.sr,
+          getChannelData: () => new Float32Array([0, 0.25, -0.25, 0])
+        };
+      }
+    };
+    globalThis.AudioData = class FakeAudioData {
+      constructor(init) {
+        this.init = init;
+      }
+      close() {}
+    };
+    globalThis.AudioEncoder = class FakeAudioEncoder {
+      constructor({ output }) {
+        this._output = output;
+      }
+      configure() {}
+      encode() {
+        this._output({
+          byteLength: 16,
+          duration: 20000,
+          copyTo: (dest) => new Uint8Array(dest.buffer, dest.byteOffset, 16).fill(0x42)
+        });
+      }
+      async flush() {}
+      close() {}
+    };
+    try {
+      const opusRes = await dispatchOffscreenMessage({
+        target: 'offscreen',
+        type: MESSAGE_TYPES.OFFSCREEN_DECODE_WAV,
+        requestId: 'opus-1',
+        targetUrl: 'https://cdn.example.com/clip.mp4',
+        audioFormat: 'opus'
+      });
+      assert.equal(opusRes.ok, true);
+      assert.equal(opusRes.outputExtension, 'opus');
+      const opusBlob = createdBlobs.get(opusRes.blobUrl);
+      const opusBytes = new Uint8Array(await opusBlob.arrayBuffer());
+      assert.equal(String.fromCharCode(...opusBytes.slice(0, 4)), 'OggS');
+    } finally {
+      globalThis.AudioEncoder = prevAudioEncoder;
+      globalThis.AudioData = prevAudioData;
+      globalThis.OfflineAudioContext = prevOfflineAudioContext;
+    }
   } finally {
     globalThis.fetch = prevFetch;
     globalThis.AudioContext = prevAudioCtx;

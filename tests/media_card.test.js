@@ -798,4 +798,31 @@ test('createMediaCard supports HLS subtitles, live stream blocking, audio previe
   assert.equal(directMp4Card.audioExtractBtn.classList.contains('hidden'), false);
   await directMp4Card.audioExtractBtn.dispatchEvent({ type: 'click' });
   assert.deepEqual(wavDirectCalls, [{ chosenUrl: 'https://cdn.example.com/clip.mp4', chosenAudioUrl: '', useCompanion: false }]);
+
+  // Opus export setting also unlocks browser audio extraction, and oversized (>512 MB) progressive MP4 exposes direct saver
+  const largeDirectCalls = [];
+  const hugeProgressiveCard = createMediaCard(
+    {
+      url: 'https://cdn.example.com/huge_raw.mp4',
+      type: 'video',
+      ext: 'mp4',
+      isStream: false,
+      isMse: false,
+      sizeBytes: 600 * 1024 * 1024,
+      source: 'network',
+      suggestedFilename: 'huge_raw.mp4'
+    },
+    {
+      documentRef: doc,
+      translateFn: (k) => k,
+      hlsMetaByUrl: metaMap,
+      getSettings: () => ({ ...DEFAULT_SETTINGS, audioExportFormat: 'opus' }),
+      isCompanionAvailable: () => false,
+      onSaveLargeStream: (_entry, chosenUrl) => largeDirectCalls.push(chosenUrl)
+    }
+  );
+  assert.equal(hugeProgressiveCard.audioExtractBtn.classList.contains('hidden'), false);
+  assert.equal(hugeProgressiveCard.saveLargeBtn.classList.contains('hidden'), false);
+  await hugeProgressiveCard.saveLargeBtn.dispatchEvent({ type: 'click' });
+  assert.deepEqual(largeDirectCalls, ['https://cdn.example.com/huge_raw.mp4']);
 });

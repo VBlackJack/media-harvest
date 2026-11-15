@@ -1110,5 +1110,85 @@
         "example": "Erreur réseau"
       }
     }
+  },
+  "popup_filter_orientation_label": {
+    "message": "Filtrer par orientation d'image",
+    "description": "Libellé accessible du filtre d'orientation d'image."
+  },
+  "popup_filter_orientation_all": {
+    "message": "Tous formats",
+    "description": "Affiche les images quelle que soit leur orientation."
+  },
+  "popup_filter_orientation_landscape": {
+    "message": "Paysage",
+    "description": "Affiche les images dont la largeur dépasse la hauteur."
+  },
+  "popup_filter_orientation_portrait": {
+    "message": "Portrait",
+    "description": "Affiche les images dont la hauteur dépasse la largeur."
+  },
+  "popup_filter_orientation_square": {
+    "message": "Carré",
+    "description": "Affiche les images carrées."
+  },
+  "popup_lightbox_palette_label": {
+    "message": "Couleurs SVG",
+    "description": "Libellé précédant les pastilles de couleurs SVG dans la visionneuse."
+  },
+  "popup_lightbox_current_color": {
+    "message": "Passer en currentColor",
+    "description": "Bouton convertissant les couleurs SVG explicites vers currentColor."
+  },
+  "popup_lightbox_recolor_title": {
+    "message": "Cliquer pour remplacer la couleur $COLOR$",
+    "description": "Infobulle sur une pastille de couleur SVG dans la visionneuse.",
+    "placeholders": {
+      "color": {
+        "content": "$1",
+        "example": "#0369a1"
+      }
+    }
+  },
+  "options_audio_format_opus": {
+    "message": "Ogg/Opus compact (.opus - WebCodecs 128 kbps)",
+    "description": "Option pour compresser les extractions audio en Ogg/Opus dans le navigateur."
+  },
+  "options_max_image_resize_label": {
+    "message": "Largeur maximale lors de la conversion d'images (px)",
+    "description": "Libellé du redimensionnement maximal en largeur lors des conversions d'images."
+  },
+  "options_max_image_resize_hint": {
+    "message": "Laisser sur 0 pour conserver les dimensions d'origine en PNG/JPG.",
+    "description": "Indication sur la largeur maximale lors de la conversion."
+  },
+  "options_max_image_resize_original": {
+    "message": "Taille d'origine (sans redimensionner)",
+    "description": "Valeur conservant la largeur d'origine lors des conversions d'images."
+  },
+  "options_tab_capture_bitrate_label": {
+    "message": "Débit capture d'onglet (Mbps)",
+    "description": "Libellé du débit vidéo pour chrome.tabCapture."
+  },
+  "options_tab_capture_bitrate_hint": {
+    "message": "Débit vidéo pour l'enregistrement Capture onglet (1 à 16 Mbps ; défaut 5 Mbps).",
+    "description": "Indication sur les bornes du débit vidéo de capture d'onglet."
+  },
+  "saver_status_transmuxing": {
+    "message": "Transmuxage et écriture $DONE$/$TOTAL$ ($BYTES$ écrits)",
+    "description": "Progression affichée pendant le transmuxage MPEG-TS vers MP4 directement sur disque.",
+    "placeholders": {
+      "done": {
+        "content": "$1",
+        "example": "10"
+      },
+      "total": {
+        "content": "$2",
+        "example": "100"
+      },
+      "bytes": {
+        "content": "$3",
+        "example": "95.2 Mo"
+      }
+    }
   }
 }

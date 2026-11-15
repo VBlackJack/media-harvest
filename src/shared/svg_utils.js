@@ -126,3 +126,116 @@ export function extractSymbolFromSvgSprite(spriteXml, symbolId) {
   const standalone = `<svg xmlns="${SVG_XML_NS}"${viewBoxAttr}>${defsBlock}${innerBody}</svg>`;
   return optimizeSvgMarkup(standalone);
 }
+
+const SKIP_SVG_COLORS = new Set(['none', 'transparent', 'currentcolor', 'inherit', 'initial', 'unset']);
+
+/**
+ * Normalizes a CSS/SVG hex or rgb() color string to lowercase `#rrggbb` when possible.
+ * Returns empty string for non-paint keywords (`none`, `transparent`, `currentColor`, `url(...)`).
+ * @param {string} rawColor
+ * @returns {string}
+ */
+export function normalizeSvgColor(rawColor) {
+  if (typeof rawColor !== 'string') {
+    return '';
+  }
+  const clean = rawColor.trim().toLowerCase();
+  if (!clean || SKIP_SVG_COLORS.has(clean) || clean.startsWith('url(') || clean.startsWith('var(')) {
+    return '';
+  }
+  const hexMatch = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(clean);
+  if (hexMatch) {
+    const digits = hexMatch[1];
+    if (digits.length === 3 || digits.length === 4) {
+      return `#${digits[0]}${digits[0]}${digits[1]}${digits[1]}${digits[2]}${digits[2]}`;
+    }
+    return `#${digits.slice(0, 6)}`;
+  }
+  const rgbMatch = /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*[,/]\s*[\d.]+%?)?\s*\)$/i.exec(clean);
+  if (rgbMatch) {
+    const toHex = (n) => Math.min(255, Math.max(0, Number(n))).toString(16).padStart(2, '0');
+    return `#${toHex(rgbMatch[1])}${toHex(rgbMatch[2])}${toHex(rgbMatch[3])}`;
+  }
+  return clean;
+}
+
+/**
+ * Extracts a deduplicated ordered color palette (`#rrggbb` / CSS named colors) from SVG markup.
+ * Inspects `fill`, `stroke`, `stop-color`, and inline `style` paint declarations.
+ * @param {string} svgXml
+ * @returns {string[]}
+ */
+export function extractSvgPalette(svgXml) {
+  if (typeof svgXml !== 'string' || !svgXml) {
+    return [];
+  }
+  const seen = new Set();
+  const attrRegex = /\b(?:fill|stroke|stop-color)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
+  let match;
+  while ((match = attrRegex.exec(svgXml)) !== null) {
+    const norm = normalizeSvgColor(match[1] ?? match[2] ?? '');
+    if (norm) {
+      seen.add(norm);
+    }
+  }
+
+  const styleRegex = /\b(?:fill|stroke|stop-color)\s*:\s*([^;}"']+)/gi;
+  while ((match = styleRegex.exec(svgXml)) !== null) {
+    const norm = normalizeSvgColor(match[1] || '');
+    if (norm) {
+      seen.add(norm);
+    }
+  }
+  return Array.from(seen);
+}
+
+/**
+ * Replaces occurrences of `targetColor` inside SVG paint attributes and inline CSS styles.
+ * @param {string} svgXml
+ * @param {string} targetColor
+ * @param {string} newColor
+ * @returns {string}
+ */
+export function replaceSvgColor(svgXml, targetColor, newColor) {
+  if (typeof svgXml !== 'string' || !svgXml || !targetColor || !newColor) {
+    return svgXml || '';
+  }
+  const normalizedTarget = normalizeSvgColor(targetColor);
+  if (!normalizedTarget) {
+    return svgXml;
+  }
+  const cleanReplacement = String(newColor).trim();
+
+  let updated = svgXml.replace(
+    /(\b(?:fill|stroke|stop-color)\s*=\s*)(?:"([^"]*)"|'([^']*)')/gi,
+    (full, prefix, dq, sq) => {
+      const val = dq ?? sq ?? '';
+      return normalizeSvgColor(val) === normalizedTarget ? `${prefix}"${cleanReplacement}"` : full;
+    }
+  );
+
+  updated = updated.replace(
+    /(\b(?:fill|stroke|stop-color)\s*:\s*)([^;}"']+)/gi,
+    (full, prefix, val) => (
+      normalizeSvgColor(val) === normalizedTarget ? `${prefix}${cleanReplacement}` : full
+    )
+  );
+
+  return updated;
+}
+
+/**
+ * Converts all explicit paint colors in SVG markup to `currentColor`.
+ * @param {string} svgXml
+ * @returns {string}
+ */
+export function convertSvgToCurrentColor(svgXml) {
+  if (typeof svgXml !== 'string' || !svgXml) {
+    return svgXml || '';
+  }
+  let updated = svgXml;
+  for (const color of extractSvgPalette(svgXml)) {
+    updated = replaceSvgColor(updated, color, 'currentColor');
+  }
+  return updated;
+}

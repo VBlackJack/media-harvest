@@ -57,7 +57,9 @@ function createFakeDocument() {
     ['hlsFetchConcurrency', createFakeElement({ value: '4' })],
     ['largeStreamWarningMb', createFakeElement({ value: '250' })],
     ['jpgQualityPercent', createFakeElement({ value: '90' })],
+    ['maxImageResizePx', createFakeElement({ value: '0' })],
     ['audioExportFormat', createFakeElement({ value: 'm4a' })],
+    ['tabCaptureBitrateMbps', createFakeElement({ value: '5' })],
     ['enableXOverlay', createFakeElement({ checked: true })],
     ['enableSocialOverlay', createFakeElement({ checked: true })],
     ['enableGenericVideoOverlay', createFakeElement({ checked: true })],
@@ -124,12 +126,16 @@ test('options controller syncs LIMITS bounds, confirms resets, keeps errors visi
   controller.els.hlsFetchConcurrency.value = '99';
   controller.els.largeStreamWarningMb.value = '2048';
   controller.els.jpgQualityPercent.value = '10';
-  controller.els.audioExportFormat.value = 'wav';
+  controller.els.maxImageResizePx.value = '1920';
+  controller.els.audioExportFormat.value = 'opus';
+  controller.els.tabCaptureBitrateMbps.value = '40';
   await controller.handleSubmit({ preventDefault: () => {} });
   assert.equal(stored.hlsFetchConcurrency, LIMITS.MAX_HLS_CONCURRENCY);
   assert.equal(stored.largeStreamWarningMb, LIMITS.LARGE_STREAM_WARNING_MAX_MB);
   assert.equal(stored.jpgQualityPercent, LIMITS.JPG_QUALITY_MIN_PERCENT);
-  assert.equal(stored.audioExportFormat, 'wav');
+  assert.equal(stored.maxImageResizePx, 1920);
+  assert.equal(stored.audioExportFormat, 'opus');
+  assert.equal(stored.tabCaptureBitrateMbps, LIMITS.TAB_CAPTURE_BITRATE_MAX_MBPS);
   assert.equal(controller.els.statusBanner.textContent, 'options_status_saved');
   assert.equal(controller.els.statusBanner.classList.contains('status-error'), false);
 

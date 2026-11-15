@@ -14,7 +14,13 @@
  * limitations under the License.
  */
 
-import { LIMITS, MEDIA_TYPES, SORT_MODES, UNIT_CONVERSIONS } from '../config/constants.js';
+import {
+  IMAGE_ORIENTATION_FILTERS,
+  LIMITS,
+  MEDIA_TYPES,
+  SORT_MODES,
+  UNIT_CONVERSIONS
+} from '../config/constants.js';
 import { runWithConcurrency } from '../shared/fetch_utils.js';
 import { t } from '../shared/i18n.js';
 
@@ -136,7 +142,7 @@ export function matchesFilter(item, filter) {
 export function getEstimatedStreamBytes(entry, metaByUrl) {
   const meta = metaByUrl ? metaByUrl.get(entry.item.url) : null;
   if (!meta || !Array.isArray(meta.variants) || meta.variants.length === 0) {
-    return entry.item.estimatedBytes || 0;
+    return entry.item.estimatedBytes || entry.item.sizeBytes || 0;
   }
   const selectedUrl = entry.qualitySelect && !entry.qualitySelect.classList.contains('hidden')
     ? entry.qualitySelect.value
@@ -146,13 +152,16 @@ export function getEstimatedStreamBytes(entry, metaByUrl) {
 }
 
 /**
- * Checks whether an image item passes quick pixel-size and format filters.
+ * Checks whether an image item passes quick pixel-size, extension, and orientation filters.
  * Non-image items pass through unchanged.
  * @param {object} item
- * @param {{ minImagePx?: number, imageExt?: string }} [options={}]
+ * @param {{ minImagePx?: number, imageExt?: string, orientation?: string }} [options={}]
  * @returns {boolean}
  */
-export function matchesImageQuickFilters(item, { minImagePx = 0, imageExt = '' } = {}) {
+export function matchesImageQuickFilters(
+  item,
+  { minImagePx = 0, imageExt = '', orientation = IMAGE_ORIENTATION_FILTERS.ALL } = {}
+) {
   if (!item || item.type !== MEDIA_TYPES.IMAGE) {
     return true;
   }
@@ -167,9 +176,29 @@ export function matchesImageQuickFilters(item, { minImagePx = 0, imageExt = '' }
   if (normalizedTarget) {
     const itemExt = (item.ext || '').toLowerCase();
     if (normalizedTarget === 'jpg') {
-      return itemExt === 'jpg' || itemExt === 'jpeg';
+      if (itemExt !== 'jpg' && itemExt !== 'jpeg') {
+        return false;
+      }
+    } else if (itemExt !== normalizedTarget) {
+      return false;
     }
-    return itemExt === normalizedTarget;
+  }
+  const normalizedOrientation = typeof orientation === 'string' ? orientation.trim().toLowerCase() : '';
+  if (normalizedOrientation && normalizedOrientation !== IMAGE_ORIENTATION_FILTERS.ALL) {
+    const w = Number(item.width) || 0;
+    const h = Number(item.height) || 0;
+    if (w <= 0 || h <= 0) {
+      return false;
+    }
+    if (normalizedOrientation === IMAGE_ORIENTATION_FILTERS.LANDSCAPE && !(w > h)) {
+      return false;
+    }
+    if (normalizedOrientation === IMAGE_ORIENTATION_FILTERS.PORTRAIT && !(h > w)) {
+      return false;
+    }
+    if (normalizedOrientation === IMAGE_ORIENTATION_FILTERS.SQUARE && w !== h) {
+      return false;
+    }
   }
   return true;
 }

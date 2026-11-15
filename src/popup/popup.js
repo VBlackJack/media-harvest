@@ -20,6 +20,7 @@ import {
   DEFAULT_SETTINGS,
   IMAGE_CONVERT_FORMATS,
   IMAGE_EXTENSIONS,
+  IMAGE_ORIENTATION_FILTERS,
   LIGHTBOX_BG_MODES,
   LIMITS,
   MEDIA_TYPES,
@@ -32,6 +33,11 @@ import {
 import { applyTranslations, getUiLanguage, t } from '../shared/i18n.js';
 import { isSvgDataUrl } from '../shared/media_classifier.js';
 import { isFolderFilenameTemplate, loadSettings, normalizeSettings } from '../shared/settings.js';
+import {
+  convertSvgToCurrentColor,
+  extractSvgPalette,
+  replaceSvgColor
+} from '../shared/svg_utils.js';
 import {
   applyStreamMetadata,
   createMediaCard,
@@ -74,6 +80,7 @@ export function collectPopupElements(doc) {
     imageFiltersBar: doc.getElementById('imageFiltersBar'),
     minImagePxSelect: doc.getElementById('minImagePxSelect'),
     imageExtFilterSelect: doc.getElementById('imageExtFilterSelect'),
+    imageOrientationFilterSelect: doc.getElementById('imageOrientationFilterSelect'),
     imageScaleSelect: doc.getElementById('imageScaleSelect'),
     imageConvertSelect: doc.getElementById('imageConvertSelect'),
     zipRenameSelect: doc.getElementById('zipRenameSelect'),
@@ -94,6 +101,9 @@ export function collectPopupElements(doc) {
     lightboxCopyBtn: doc.getElementById('lightboxCopyBtn'),
     lightboxDownloadBtn: doc.getElementById('lightboxDownloadBtn'),
     lightboxCloseBtn: doc.getElementById('lightboxCloseBtn'),
+    lightboxPaletteBar: doc.getElementById('lightboxPaletteBar'),
+    lightboxPaletteSwatches: doc.getElementById('lightboxPaletteSwatches'),
+    lightboxCurrentColorBtn: doc.getElementById('lightboxCurrentColorBtn'),
     downloadAllBtn: doc.getElementById('downloadAllBtn'),
     companionPageBtn: doc.getElementById('companionPageBtn'),
     stopBatchBtn: doc.getElementById('stopBatchBtn'),
@@ -148,11 +158,13 @@ export function createPopupController(deps = {}) {
     zipRenameMode: ZIP_RENAME_MODES.ORIGINAL,
     minImagePx: 0,
     imageExtFilter: '',
+    imageOrientation: IMAGE_ORIENTATION_FILTERS.ALL,
     imageScalePx: LIMITS.DEFAULT_SVG_RASTER_SIZE_PX,
     activeZipRequestId: '',
     activeTabCapture: null,
     lightboxEntry: null,
     lightboxBg: LIGHTBOX_BG_MODES.CHECKER,
+    lightboxSvgMarkup: '',
     items: [],
     hasBlobVideo: false,
     settings: { ...DEFAULT_SETTINGS },
@@ -219,6 +231,7 @@ export function createPopupController(deps = {}) {
   const VALID_SVG_SCALES = new Set(LIMITS.SVG_RASTER_SIZES);
   const QUICK_IMAGE_EXTENSIONS = IMAGE_EXTENSIONS.filter((ext) => ext !== 'jpeg');
   const VALID_IMAGE_EXTS = new Set(['', ...QUICK_IMAGE_EXTENSIONS]);
+  const VALID_IMAGE_ORIENTATIONS = new Set(Object.values(IMAGE_ORIENTATION_FILTERS));
   const VALID_ZIP_RENAME_MODES = new Set(Object.values(ZIP_RENAME_MODES));
 
   /**
@@ -255,6 +268,24 @@ export function createPopupController(deps = {}) {
         els.imageScaleSelect.appendChild(opt);
       }
     }
+    if (
+      els.imageOrientationFilterSelect
+      && els.imageOrientationFilterSelect.options
+      && els.imageOrientationFilterSelect.options.length === 0
+    ) {
+      const orientationOptions = [
+        [IMAGE_ORIENTATION_FILTERS.ALL, 'popup_filter_orientation_all'],
+        [IMAGE_ORIENTATION_FILTERS.LANDSCAPE, 'popup_filter_orientation_landscape'],
+        [IMAGE_ORIENTATION_FILTERS.PORTRAIT, 'popup_filter_orientation_portrait'],
+        [IMAGE_ORIENTATION_FILTERS.SQUARE, 'popup_filter_orientation_square']
+      ];
+      for (const [value, key] of orientationOptions) {
+        const opt = doc.createElement('option');
+        opt.value = value;
+        opt.textContent = translateFn(key);
+        els.imageOrientationFilterSelect.appendChild(opt);
+      }
+    }
   }
 
   /**
@@ -270,6 +301,9 @@ export function createPopupController(deps = {}) {
     }
     if (els.imageExtFilterSelect) {
       els.imageExtFilterSelect.value = state.imageExtFilter || '';
+    }
+    if (els.imageOrientationFilterSelect) {
+      els.imageOrientationFilterSelect.value = state.imageOrientation || IMAGE_ORIENTATION_FILTERS.ALL;
     }
     if (els.imageScaleSelect) {
       els.imageScaleSelect.value = String(state.imageScalePx || LIMITS.DEFAULT_SVG_RASTER_SIZE_PX);
@@ -303,6 +337,9 @@ export function createPopupController(deps = {}) {
       }
       if (typeof saved.imageExtFilter === 'string' && VALID_IMAGE_EXTS.has(saved.imageExtFilter)) {
         state.imageExtFilter = saved.imageExtFilter;
+      }
+      if (typeof saved.imageOrientation === 'string' && VALID_IMAGE_ORIENTATIONS.has(saved.imageOrientation)) {
+        state.imageOrientation = saved.imageOrientation;
       }
       if (Number.isFinite(saved.imageScalePx) && VALID_SVG_SCALES.has(saved.imageScalePx)) {
         state.imageScalePx = saved.imageScalePx;
@@ -339,6 +376,7 @@ export function createPopupController(deps = {}) {
           viewMode: state.viewMode,
           minImagePx: state.minImagePx,
           imageExtFilter: state.imageExtFilter,
+          imageOrientation: state.imageOrientation,
           imageScalePx: state.imageScalePx,
           zipRenameMode: state.zipRenameMode
         }
@@ -507,7 +545,8 @@ export function createPopupController(deps = {}) {
         && matchesSearch(item, state.searchQuery)
         && (!useQuickImageFilters || matchesImageQuickFilters(item, {
           minImagePx: state.minImagePx,
-          imageExt: state.imageExtFilter
+          imageExt: state.imageExtFilter,
+          orientation: state.imageOrientation
         }))
     );
     return sortMediaItems(filtered, state.sortBy, state.hlsMetaByUrl);
@@ -819,9 +858,12 @@ export function createPopupController(deps = {}) {
         audioFormat: DEFAULT_FILENAMES.AUDIO_MP3_EXT
       });
     }
-    const audioExt = state.settings.audioExportFormat === AUDIO_EXPORT_FORMATS.WAV
-      ? DEFAULT_FILENAMES.AUDIO_WAV_EXT
-      : DEFAULT_FILENAMES.AUDIO_M4A_EXT;
+    let audioExt = DEFAULT_FILENAMES.AUDIO_M4A_EXT;
+    if (state.settings.audioExportFormat === AUDIO_EXPORT_FORMATS.WAV) {
+      audioExt = DEFAULT_FILENAMES.AUDIO_WAV_EXT;
+    } else if (state.settings.audioExportFormat === AUDIO_EXPORT_FORMATS.OPUS) {
+      audioExt = DEFAULT_FILENAMES.AUDIO_OPUS_EXT;
+    }
     return triggerDownload(entry, selectedPlaylistUrl, selectedAudioUrl, {
       audioOnly: true,
       filenameOverride: `${baseStem}_audio.${audioExt}`
@@ -1508,6 +1550,101 @@ export function createPopupController(deps = {}) {
   }
 
   /**
+   * Determines whether a lightbox item represents editable SVG markup.
+   * @param {object} item
+   * @returns {boolean}
+   */
+  function isSvgItemEntry(item) {
+    return Boolean(
+      item
+      && (
+        item.svgMarkup
+        || (item.ext || '').toLowerCase() === DEFAULT_FILENAMES.SVG_EXT
+        || isSvgDataUrl(item.url)
+      )
+    );
+  }
+
+  /**
+   * Applies updated SVG markup to the active lightbox entry, preview image, and card thumbnail.
+   * @param {string} updatedSvg
+   */
+  function applyRecoloredSvgToLightbox(updatedSvg) {
+    if (!state.lightboxEntry || !state.lightboxEntry.item || !updatedSvg) {
+      return;
+    }
+    state.lightboxSvgMarkup = updatedSvg;
+    const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(updatedSvg)}`;
+    state.lightboxEntry.item.svgMarkup = updatedSvg;
+    state.lightboxEntry.item.svgSymbolId = '';
+    state.lightboxEntry.item.url = dataUrl;
+    if (els.lightboxImg) {
+      els.lightboxImg.src = dataUrl;
+    }
+    if (state.lightboxEntry.thumbEl) {
+      state.lightboxEntry.thumbEl.src = dataUrl;
+    }
+    renderLightboxPalette(updatedSvg);
+  }
+
+  /**
+   * Renders interactive SVG palette swatches and recolor controls inside the lightbox toolbar.
+   * @param {string} svgMarkup
+   */
+  function renderLightboxPalette(svgMarkup) {
+    if (!els.lightboxPaletteBar || !els.lightboxPaletteSwatches) {
+      return;
+    }
+    const colors = svgMarkup ? extractSvgPalette(svgMarkup) : [];
+    els.lightboxPaletteSwatches.replaceChildren();
+    if (!svgMarkup || colors.length === 0) {
+      els.lightboxPaletteBar.classList.add('hidden');
+      return;
+    }
+    for (const color of colors) {
+      const swatch = doc.createElement('label');
+      swatch.className = 'lightbox-swatch-item';
+      swatch.title = translateFn('popup_lightbox_recolor_title', [color]);
+
+      const dot = doc.createElement('span');
+      dot.className = 'lightbox-swatch-dot';
+      if (dot.style) {
+        dot.style.backgroundColor = color;
+      }
+
+      const code = doc.createElement('span');
+      code.textContent = color;
+
+      const input = doc.createElement('input');
+      input.type = 'color';
+      input.className = 'lightbox-swatch-input';
+      input.setAttribute('aria-label', translateFn('popup_lightbox_recolor_title', [color]));
+      if (/^#[0-9a-f]{6}$/i.test(color)) {
+        input.value = color;
+      }
+      input.addEventListener('change', () => {
+        if (!state.lightboxSvgMarkup || !input.value) {
+          return;
+        }
+        const recolored = replaceSvgColor(state.lightboxSvgMarkup, color, input.value);
+        applyRecoloredSvgToLightbox(recolored);
+      });
+
+      swatch.appendChild(dot);
+      swatch.appendChild(code);
+      swatch.appendChild(input);
+      els.lightboxPaletteSwatches.appendChild(swatch);
+    }
+    if (els.lightboxCurrentColorBtn) {
+      els.lightboxCurrentColorBtn.classList.toggle(
+        'hidden',
+        colors.every((c) => c === 'currentcolor')
+      );
+    }
+    els.lightboxPaletteBar.classList.remove('hidden');
+  }
+
+  /**
    * Copies SVG markup or media URL for the currently open lightbox entry.
    */
   async function copyLightboxContent() {
@@ -1515,15 +1652,11 @@ export function createPopupController(deps = {}) {
       return;
     }
     const { item } = state.lightboxEntry;
-    const isSvgItem = Boolean(
-      item.svgMarkup
-      || (item.ext || '').toLowerCase() === DEFAULT_FILENAMES.SVG_EXT
-      || isSvgDataUrl(item.url)
-    );
+    const isSvgItem = isSvgItemEntry(item);
     let payloadText = item.url || '';
     if (isSvgItem) {
       try {
-        payloadText = (await resolveSvgMarkup(item)) || payloadText;
+        payloadText = state.lightboxSvgMarkup || (await resolveSvgMarkup(item)) || payloadText;
       } catch {
         payloadText = item.url || '';
       }
@@ -1552,6 +1685,7 @@ export function createPopupController(deps = {}) {
     }
     const { item } = entry;
     state.lightboxEntry = entry;
+    state.lightboxSvgMarkup = '';
     els.lightboxImg.src = item.url || '';
     els.lightboxImg.alt = item.suggestedFilename || '';
     if (els.lightboxTitle) {
@@ -1568,15 +1702,27 @@ export function createPopupController(deps = {}) {
       els.lightboxMeta.textContent = parts.join(' - ');
       els.lightboxMeta.classList.toggle('hidden', parts.length === 0);
     }
+    const isSvgItem = isSvgItemEntry(item);
     if (els.lightboxCopyBtn) {
-      const isSvgItem = Boolean(
-        item.svgMarkup
-        || (item.ext || '').toLowerCase() === DEFAULT_FILENAMES.SVG_EXT
-        || isSvgDataUrl(item.url)
-      );
       els.lightboxCopyBtn.textContent = translateFn(
         isSvgItem ? 'popup_lightbox_copy_svg' : 'popup_lightbox_copy_url'
       );
+    }
+    renderLightboxPalette('');
+    if (isSvgItem) {
+      if (item.svgMarkup) {
+        state.lightboxSvgMarkup = item.svgMarkup;
+        renderLightboxPalette(item.svgMarkup);
+      } else {
+        resolveSvgMarkup(item)
+          .then((markup) => {
+            if (state.lightboxEntry === entry && markup) {
+              state.lightboxSvgMarkup = markup;
+              renderLightboxPalette(markup);
+            }
+          })
+          .catch(() => {});
+      }
     }
     applyLightboxBg(state.lightboxBg);
     els.imageLightbox.classList.remove('hidden');
@@ -1593,6 +1739,8 @@ export function createPopupController(deps = {}) {
       return;
     }
     state.lightboxEntry = null;
+    state.lightboxSvgMarkup = '';
+    renderLightboxPalette('');
     els.imageLightbox.classList.add('hidden');
     if (els.lightboxImg) {
       els.lightboxImg.src = '';
@@ -1845,6 +1993,18 @@ export function createPopupController(deps = {}) {
       });
     }
 
+    if (els.imageOrientationFilterSelect) {
+      els.imageOrientationFilterSelect.addEventListener('change', () => {
+        const val = (els.imageOrientationFilterSelect.value || '').toLowerCase();
+        state.imageOrientation = VALID_IMAGE_ORIENTATIONS.has(val)
+          ? val
+          : IMAGE_ORIENTATION_FILTERS.ALL;
+        hideBatchConfirm();
+        persistPopupUiState();
+        renderList();
+      });
+    }
+
     if (els.imageScaleSelect) {
       els.imageScaleSelect.addEventListener('change', () => {
         const parsed = Number(els.imageScaleSelect.value);
@@ -1872,6 +2032,15 @@ export function createPopupController(deps = {}) {
     }
     if (els.lightboxCopyBtn) {
       els.lightboxCopyBtn.addEventListener('click', copyLightboxContent);
+    }
+    if (els.lightboxCurrentColorBtn) {
+      els.lightboxCurrentColorBtn.addEventListener('click', () => {
+        if (!state.lightboxSvgMarkup) {
+          return;
+        }
+        const converted = convertSvgToCurrentColor(state.lightboxSvgMarkup);
+        applyRecoloredSvgToLightbox(converted);
+      });
     }
     if (els.lightboxDownloadBtn) {
       els.lightboxDownloadBtn.addEventListener('click', () => {

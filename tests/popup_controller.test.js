@@ -46,6 +46,7 @@ function createFakeNode(tagName, id = '', initialClasses = []) {
     loading: '',
     disabled: false,
     dataset: {},
+    style: {},
     parentNode: null,
     children,
     get isConnected() {
@@ -198,6 +199,7 @@ function createFakePopupDocument() {
   makeTracked('div', 'imageFiltersBar', ['hidden']);
   makeTracked('select', 'minImagePxSelect');
   makeTracked('select', 'imageExtFilterSelect');
+  makeTracked('select', 'imageOrientationFilterSelect');
   makeTracked('select', 'imageScaleSelect');
   makeTracked('select', 'imageConvertSelect', ['hidden']);
   makeTracked('select', 'zipRenameSelect', ['hidden']);
@@ -218,6 +220,9 @@ function createFakePopupDocument() {
   makeTracked('button', 'lightboxCopyBtn');
   makeTracked('button', 'lightboxDownloadBtn');
   makeTracked('button', 'lightboxCloseBtn');
+  makeTracked('div', 'lightboxPaletteBar', ['hidden']);
+  makeTracked('div', 'lightboxPaletteSwatches');
+  makeTracked('button', 'lightboxCurrentColorBtn');
   makeTracked('button', 'downloadAllBtn', ['hidden']);
   makeTracked('button', 'stopBatchBtn', ['hidden']);
   makeTracked('div', 'batchConfirmBar', ['hidden']);
@@ -1145,4 +1150,116 @@ test('popup controller manages Tab Capture REC toggle/recovery and Lightbox Pro 
   assert.ok(saverMsg);
   assert.equal(saverMsg.payload.playlistUrl, 'https://cdn.example.com/huge_4k.m3u8');
   assert.equal(saverMsg.payload.isStream, true);
+});
+
+test('popup controller filters by orientation, recolors SVGs in Lightbox Pro, and exports _audio.opus', async () => {
+  const doc = createFakePopupDocument();
+  const svgCode = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#ff0000" d="M2 2h20v20H2z"/></svg>';
+  const items = [
+    {
+      url: 'https://cdn.example.com/logo.svg',
+      type: 'image',
+      ext: 'svg',
+      width: 64,
+      height: 64,
+      svgMarkup: svgCode,
+      source: 'dom',
+      suggestedFilename: 'logo.svg'
+    },
+    {
+      url: 'https://cdn.example.com/banner.jpg',
+      type: 'image',
+      ext: 'jpg',
+      width: 1600,
+      height: 900,
+      source: 'dom',
+      suggestedFilename: 'banner.jpg'
+    },
+    {
+      url: 'https://cdn.example.com/story.mp4',
+      type: 'video',
+      ext: 'mp4',
+      isStream: false,
+      isMse: false,
+      source: 'network',
+      suggestedFilename: 'story.mp4'
+    }
+  ];
+  const copiedTexts = [];
+  const sentMessages = [];
+  const savedUiStates = [];
+
+  const controller = createPopupController({
+    documentRef: doc,
+    windowRef: { addEventListener: () => {} },
+    chromeApi: {
+      tabs: { query: async () => [{ id: 9, url: 'https://example.com/post', title: 'Post' }] },
+      runtime: {
+        sendMessage: async (msg) => {
+          sentMessages.push(msg);
+          if (msg.type === MESSAGE_TYPES.GET_MEDIA_FOR_TAB) {
+            return { ok: true, items };
+          }
+          if (msg.type === MESSAGE_TYPES.DOWNLOAD_MEDIA) {
+            return { ok: true, downloadId: 501 };
+          }
+          return { ok: true };
+        }
+      },
+      storage: {
+        local: {
+          get: async () => ({}),
+          set: async (obj) => savedUiStates.push(obj)
+        },
+        sync: { get: async () => ({}) }
+      }
+    },
+    loadSettingsFn: async () => ({ ...DEFAULT_SETTINGS, audioExportFormat: 'opus' }),
+    translateFn: (k, args = []) => (args.length ? `${k}:${args.join(',')}` : k),
+    getUiLanguageFn: () => 'en',
+    applyTranslationsFn: () => {},
+    writeClipboardFn: async (text) => copiedTexts.push(text)
+  });
+
+  await controller.init();
+
+  // Switch to images filter and apply landscape orientation filter
+  await controller.els.filterBtns[2].dispatchEvent({ type: 'click' });
+  controller.els.imageOrientationFilterSelect.value = 'landscape';
+  await controller.els.imageOrientationFilterSelect.dispatchEvent({ type: 'change' });
+  assert.equal(controller.state.cardsByUrl.get('https://cdn.example.com/banner.jpg').card.classList.contains('hidden'), false);
+  assert.equal(controller.state.cardsByUrl.get('https://cdn.example.com/logo.svg').card.classList.contains('hidden'), true);
+  assert.equal(controller.state.cardsByUrl.get('https://cdn.example.com/story.mp4').card.classList.contains('hidden'), true);
+  assert.ok(savedUiStates.some((u) => u[STORAGE_KEYS.POPUP_UI_STATE] && u[STORAGE_KEYS.POPUP_UI_STATE].imageOrientation === 'landscape'));
+
+  // Reset orientation filter to 'all' and open SVG lightbox palette
+  controller.els.imageOrientationFilterSelect.value = 'all';
+  await controller.els.imageOrientationFilterSelect.dispatchEvent({ type: 'change' });
+  const svgEntry = controller.state.cardsByUrl.get('https://cdn.example.com/logo.svg');
+  await svgEntry.thumbEl.dispatchEvent({ type: 'click' });
+  assert.equal(controller.els.lightboxPaletteBar.classList.contains('hidden'), false);
+  assert.equal(controller.els.lightboxPaletteSwatches.children.length, 1);
+
+  // Recolor via swatch input and verify SVG markup/URL updates across preview, clipboard, and download
+  const colorInput = controller.els.lightboxPaletteSwatches.children[0].children[2];
+  colorInput.value = '#00aa55';
+  await colorInput.dispatchEvent({ type: 'change' });
+  assert.ok(controller.els.lightboxImg.src.includes('%2300aa55'));
+  await controller.els.lightboxCopyBtn.dispatchEvent({ type: 'click' });
+  assert.ok(copiedTexts[0].includes('fill="#00aa55"'));
+
+  // Convert SVG colors to currentColor
+  await controller.els.lightboxCurrentColorBtn.dispatchEvent({ type: 'click' });
+  assert.equal(controller.els.lightboxPaletteBar.classList.contains('hidden'), true);
+  assert.ok(controller.state.lightboxSvgMarkup.includes('fill="currentColor"'));
+  controller.closeLightbox();
+
+  // Audio extraction with 'opus' setting triggers .opus filename on video card
+  await controller.els.filterBtns[0].dispatchEvent({ type: 'click' });
+  const videoEntry = controller.state.cardsByUrl.get('https://cdn.example.com/story.mp4');
+  assert.ok(videoEntry.audioExtractBtn);
+  await videoEntry.audioExtractBtn.dispatchEvent({ type: 'click' });
+  const opusDl = sentMessages.find((m) => m.type === MESSAGE_TYPES.DOWNLOAD_MEDIA && m.payload.audioOnly);
+  assert.ok(opusDl);
+  assert.equal(opusDl.payload.filename, 'story_audio.opus');
 });

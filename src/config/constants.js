@@ -201,6 +201,12 @@ export const LIMITS = Object.freeze({
   MAX_ZIP_ITEMS: 150,
   MIN_RASTER_DATA_URI_LENGTH: 200,
   TAB_CAPTURE_TIMESLICE_MS: 1000,
+  DEFAULT_TAB_CAPTURE_BITRATE_MBPS: 5,
+  TAB_CAPTURE_BITRATE_MIN_MBPS: 1,
+  TAB_CAPTURE_BITRATE_MAX_MBPS: 16,
+  DEFAULT_MAX_IMAGE_RESIZE_PX: 0,
+  MAX_IMAGE_RESIZE_MAX_PX: 3840,
+  MAX_IMAGE_RESIZE_OPTIONS: Object.freeze([0, 512, 1024, 1920, 2560, 3840]),
   JPEG_EXPORT_QUALITY: 0.92,
   LIVE_RECORD_POLL_MIN_MS: 1500,
   LIVE_RECORD_POLL_MAX_MS: 5000,
@@ -289,8 +295,16 @@ export const ZIP_RENAME_MODES = Object.freeze({
   SEQUENTIAL: 'sequential'
 });
 
+export const IMAGE_ORIENTATION_FILTERS = Object.freeze({
+  ALL: 'all',
+  LANDSCAPE: 'landscape',
+  PORTRAIT: 'portrait',
+  SQUARE: 'square'
+});
+
 export const AUDIO_EXPORT_FORMATS = Object.freeze({
   M4A: 'm4a',
+  OPUS: 'opus',
   WAV: 'wav'
 });
 
@@ -309,7 +323,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
   hlsFetchConcurrency: LIMITS.HLS_FETCH_CONCURRENCY,
   largeStreamWarningMb: LIMITS.DEFAULT_LARGE_STREAM_WARNING_MB,
   jpgQualityPercent: LIMITS.DEFAULT_JPG_QUALITY_PERCENT,
+  maxImageResizePx: LIMITS.DEFAULT_MAX_IMAGE_RESIZE_PX,
   audioExportFormat: AUDIO_EXPORT_FORMATS.M4A,
+  tabCaptureBitrateMbps: LIMITS.DEFAULT_TAB_CAPTURE_BITRATE_MBPS,
   enableXOverlay: true,
   enableSocialOverlay: true,
   enableGenericVideoOverlay: true,
@@ -350,6 +366,7 @@ export const DEFAULT_FILENAMES = Object.freeze({
   HLS_FMP4_EXT: 'mp4',
   HLS_TS_EXT: 'ts',
   AUDIO_M4A_EXT: 'm4a',
+  AUDIO_OPUS_EXT: 'opus',
   AUDIO_WAV_EXT: 'wav',
   AUDIO_MP3_EXT: 'mp3',
   SUBTITLE_EXT: 'vtt',
