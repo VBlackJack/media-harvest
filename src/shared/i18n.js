@@ -61,4 +61,18 @@ export function applyTranslations(root = document) {
       el.setAttribute('aria-label', value);
     }
   }
+
+  for (const el of root.querySelectorAll('[data-i18n-aria]')) {
+    const key = el.getAttribute('data-i18n-aria');
+    if (key) {
+      el.setAttribute('aria-label', t(key));
+    }
+  }
+
+  for (const el of root.querySelectorAll('[data-i18n-placeholder]')) {
+    const key = el.getAttribute('data-i18n-placeholder');
+    if (key) {
+      el.setAttribute('placeholder', t(key));
+    }
+  }
 }

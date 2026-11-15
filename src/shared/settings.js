@@ -25,8 +25,6 @@ import {
 
 const VALID_QUALITIES = new Set(Object.values(QUALITY_PREFERENCES));
 const VALID_TEMPLATES = new Set(Object.values(FILENAME_TEMPLATES));
-const MAX_MIN_IMAGE_DIMENSION_PX = 2000;
-const MAX_LARGE_STREAM_WARNING_MB = 2048;
 
 /**
  * Clamps an integer setting within [min, max], falling back when invalid.
@@ -36,8 +34,10 @@ const MAX_LARGE_STREAM_WARNING_MB = 2048;
  * @param {number} max
  * @returns {number}
  */
-function clampInteger(raw, fallback, min, max) {
-  const num = Number.parseInt(raw, 10);
+export function clampInteger(raw, fallback, min, max) {
+  const num = typeof raw === 'number'
+    ? (Number.isFinite(raw) ? Math.trunc(raw) : Number.NaN)
+    : Number.parseInt(String(raw), 10);
   if (!Number.isFinite(num)) {
     return fallback;
   }
@@ -61,8 +61,8 @@ export function normalizeSettings(raw) {
     minImageDimensionPx: clampInteger(
       src.minImageDimensionPx,
       DEFAULT_SETTINGS.minImageDimensionPx,
-      0,
-      MAX_MIN_IMAGE_DIMENSION_PX
+      LIMITS.MIN_IMAGE_DIMENSION_MIN_PX,
+      LIMITS.MIN_IMAGE_DIMENSION_MAX_PX
     ),
     hlsFetchConcurrency: clampInteger(
       src.hlsFetchConcurrency,
@@ -73,45 +73,94 @@ export function normalizeSettings(raw) {
     largeStreamWarningMb: clampInteger(
       src.largeStreamWarningMb,
       DEFAULT_SETTINGS.largeStreamWarningMb,
-      0,
-      MAX_LARGE_STREAM_WARNING_MB
+      LIMITS.LARGE_STREAM_WARNING_MIN_MB,
+      LIMITS.LARGE_STREAM_WARNING_MAX_MB
     ),
     enableXOverlay: typeof src.enableXOverlay === 'boolean'
       ? src.enableXOverlay
-      : DEFAULT_SETTINGS.enableXOverlay
+      : DEFAULT_SETTINGS.enableXOverlay,
+    enableSocialOverlay: typeof src.enableSocialOverlay === 'boolean'
+      ? src.enableSocialOverlay
+      : DEFAULT_SETTINGS.enableSocialOverlay,
+    enableGenericVideoOverlay: typeof src.enableGenericVideoOverlay === 'boolean'
+      ? src.enableGenericVideoOverlay
+      : DEFAULT_SETTINGS.enableGenericVideoOverlay,
+    enableMseCapture: typeof src.enableMseCapture === 'boolean'
+      ? src.enableMseCapture
+      : DEFAULT_SETTINGS.enableMseCapture,
+    enableCompanionCookies: typeof src.enableCompanionCookies === 'boolean'
+      ? src.enableCompanionCookies
+      : DEFAULT_SETTINGS.enableCompanionCookies,
+    promptSaveAs: typeof src.promptSaveAs === 'boolean'
+      ? src.promptSaveAs
+      : DEFAULT_SETTINGS.promptSaveAs
   };
 }
 
 /**
+ * Extracts normalized hostname (without leading www.) from context URLs.
+ * @param {{ pageUrl?: string, mediaUrl?: string }} context
+ * @returns {string}
+ */
+function extractTemplateHost(context) {
+  const rawHostUrl = (context && (context.pageUrl || context.mediaUrl)) || '';
+  if (!rawHostUrl) {
+    return '';
+  }
+  try {
+    return new URL(rawHostUrl).hostname.replace(/^www\./i, '');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Formats YYYY-MM-DD date string from context clock.
+ * @param {{ now?: Date }} context
+ * @returns {string}
+ */
+function formatTemplateDate(context) {
+  const date = context && context.now instanceof Date ? context.now : new Date();
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+/**
  * Applies a filename template to a derived stem and source URL context.
+ * Folder templates produce "<folder>/<stem>" using forward slashes for Chrome downloads.
  * @param {string} template
  * @param {{ stem: string, pageUrl?: string, mediaUrl?: string, now?: Date }} context
  * @returns {string}
  */
 export function applyFilenameTemplate(template, context) {
   const stem = (context && context.stem) || DEFAULT_FILENAMES.BASE;
-  if (template === FILENAME_TEMPLATES.HOST_STEM) {
-    const rawHostUrl = (context && (context.pageUrl || context.mediaUrl)) || '';
-    try {
-      const host = new URL(rawHostUrl).hostname.replace(/^www\./i, '');
-      if (host) {
-        return `${host}_${stem}`;
-      }
-    } catch {
-      // Fall through to plain stem
+  if (template === FILENAME_TEMPLATES.HOST_STEM || template === FILENAME_TEMPLATES.HOST_FOLDER) {
+    const host = extractTemplateHost(context);
+    if (!host) {
+      return stem;
     }
-    return stem;
+    const separator = template === FILENAME_TEMPLATES.HOST_FOLDER ? '/' : '_';
+    return `${host}${separator}${stem}`;
   }
 
-  if (template === FILENAME_TEMPLATES.DATE_STEM) {
-    const date = context && context.now instanceof Date ? context.now : new Date();
-    const yyyy = date.getFullYear();
-    const mm = String(date.getMonth() + 1).padStart(2, '0');
-    const dd = String(date.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}_${stem}`;
+  if (template === FILENAME_TEMPLATES.DATE_STEM || template === FILENAME_TEMPLATES.DATE_FOLDER) {
+    const dateStr = formatTemplateDate(context);
+    const separator = template === FILENAME_TEMPLATES.DATE_FOLDER ? '/' : '_';
+    return `${dateStr}${separator}${stem}`;
   }
 
   return stem;
+}
+
+/**
+ * Returns true if the filename template produces a subfolder prefix.
+ * @param {string} template
+ * @returns {boolean}
+ */
+export function isFolderFilenameTemplate(template) {
+  return template === FILENAME_TEMPLATES.HOST_FOLDER || template === FILENAME_TEMPLATES.DATE_FOLDER;
 }
 
 /**

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "__MSG_ext_manifest_name__",
   "description": "__MSG_ext_manifest_description__",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "default_locale": "en",
   "permissions": [
     "downloads",
@@ -10,8 +10,14 @@
     "activeTab",
     "scripting",
     "storage",
-    "offscreen"
+    "offscreen",
+    "sidePanel",
+    "declarativeNetRequest",
+    "nativeMessaging"
   ],
+  "side_panel": {
+    "default_path": "src/popup/popup.html"
+  },
   "host_permissions": [
     "<all_urls>"
   ],
@@ -22,6 +28,27 @@
   "content_scripts": [
     {
       "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "src/content/mse_hook.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "src/content/mse_bridge.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": [
         "https://x.com/*",
         "https://twitter.com/*"
       ],
@@ -30,6 +57,22 @@
       ],
       "css": [
         "src/content/x_overlay.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "exclude_matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "src/content/site_overlay.js"
+      ],
+      "css": [
+        "src/content/site_overlay.css"
       ],
       "run_at": "document_idle"
     }
@@ -51,5 +94,14 @@
     "16": "assets/icons/icon16.png",
     "48": "assets/icons/icon48.png",
     "128": "assets/icons/icon128.png"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+M",
+        "mac": "Alt+Shift+M"
+      },
+      "description": "__MSG_ext_command_open_popup__"
+    }
   }
 }

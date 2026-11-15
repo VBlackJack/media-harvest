@@ -20,11 +20,16 @@
    * Configuration values are injected by the caller to avoid hardcoded thresholds.
    * @param {{
    *   minImageDimensionPx: number,
-   *   mediaTypes: { VIDEO: string, IMAGE: string, AUDIO: string },
+   *   previewMaxWidthPx: number,
+   *   previewFrameQuality: number,
+   *   mediaTypes: { VIDEO: string, IMAGE: string, AUDIO: string, SUBTITLE?: string },
    *   sourceTag: string,
-   *   directExtensions: Array<string>
+   *   directExtensions: Array<string>,
+   *   subtitleExtensions?: Array<string>,
+   *   maxJsonLdNodes?: number,
+   *   maxCssBgElements?: number
    * }} config
-   * @returns {{ pageTitle: string, pageUrl: string, hasBlobVideo: boolean, items: Array<object> }}
+   * @returns {{ pageTitle: string, pageUrl: string, hasBlobVideo: boolean, videoElements: Array<object>, items: Array<object> }}
    */
   window.__mediaHarvestScan = function scanPageMedia(config) {
     const {
@@ -33,13 +38,20 @@
       previewFrameQuality,
       mediaTypes,
       sourceTag,
-      directExtensions
+      directExtensions,
+      subtitleExtensions = [],
+      maxJsonLdNodes = 50,
+      maxCssBgElements = 250
     } = config;
     const extSet = new Set(directExtensions);
+    const subtitleExtSet = new Set(subtitleExtensions);
     const seen = new Set();
     const items = [];
     const videoElements = [];
     let hasBlobVideo = false;
+
+    const isSafeHttpUrl = (url) => typeof url === 'string'
+      && (url.startsWith('http://') || url.startsWith('https://'));
 
     const captureVideoFrame = (video) => {
       if (!video.videoWidth || !video.videoHeight || video.readyState < 2) {
@@ -73,6 +85,54 @@
       }
     };
 
+    const parseBestSrcsetCandidate = (rawSrcset) => {
+      if (!rawSrcset || typeof rawSrcset !== 'string') {
+        return { url: '', score: -1 };
+      }
+      let best = { url: '', score: -1 };
+      let cursor = 0;
+      const len = rawSrcset.length;
+      while (cursor < len) {
+        while (cursor < len && /[\s,]/.test(rawSrcset[cursor])) {
+          cursor += 1;
+        }
+        if (cursor >= len) {
+          break;
+        }
+        const urlStart = cursor;
+        while (cursor < len && !/\s/.test(rawSrcset[cursor])) {
+          cursor += 1;
+        }
+        let candidateUrl = rawSrcset.slice(urlStart, cursor);
+        while (cursor < len && /\s/.test(rawSrcset[cursor])) {
+          cursor += 1;
+        }
+        let descriptor = '';
+        if (candidateUrl.endsWith(',')) {
+          candidateUrl = candidateUrl.slice(0, -1);
+        } else if (cursor < len) {
+          const descStart = cursor;
+          while (cursor < len && rawSrcset[cursor] !== ',') {
+            cursor += 1;
+          }
+          descriptor = rawSrcset.slice(descStart, cursor).trim();
+        }
+        let score = 1;
+        const wMatch = /^(\d+(?:\.\d+)?)w$/i.exec(descriptor);
+        const xMatch = /^(\d+(?:\.\d+)?)x$/i.exec(descriptor);
+        if (wMatch) {
+          score = Number.parseFloat(wMatch[1]);
+        } else if (xMatch) {
+          score = Number.parseFloat(xMatch[1]) * 1000;
+        }
+        const resolved = toAbsoluteUrl(candidateUrl);
+        if (isSafeHttpUrl(resolved) && score > best.score) {
+          best = { url: resolved, score };
+        }
+      }
+      return best;
+    };
+
     const addItem = (url, type, meta = {}) => {
       if (!url) {
         return;
@@ -102,8 +162,44 @@
       });
     };
 
-    for (const video of document.querySelectorAll('video')) {
-      const posterUrl = toAbsoluteUrl(video.getAttribute('poster'));
+    const collectRoots = () => {
+      const roots = [document];
+      const visited = new Set([document]);
+      for (let i = 0; i < roots.length && roots.length < 250; i += 1) {
+        const root = roots[i];
+        if (!root || typeof root.querySelectorAll !== 'function') {
+          continue;
+        }
+        const candidates = root.querySelectorAll('*') || [];
+        for (let j = 0; j < candidates.length && roots.length < 250; j += 1) {
+          const sr = candidates[j].shadowRoot;
+          if (sr && !visited.has(sr)) {
+            visited.add(sr);
+            roots.push(sr);
+          }
+        }
+      }
+      return roots;
+    };
+
+    const domRoots = collectRoots();
+    const queryAllRoots = (selector) => {
+      const results = [];
+      for (const root of domRoots) {
+        if (typeof root.querySelectorAll !== 'function') {
+          continue;
+        }
+        const matched = root.querySelectorAll(selector) || [];
+        for (const el of matched) {
+          results.push(el);
+        }
+      }
+      return results;
+    };
+
+    for (const video of queryAllRoots('video')) {
+      const rawPosterUrl = toAbsoluteUrl(video.getAttribute('poster'));
+      const posterUrl = isSafeHttpUrl(rawPosterUrl) ? rawPosterUrl : '';
       const frameDataUrl = posterUrl ? '' : captureVideoFrame(video);
       const duration = Number.isFinite(video.duration) ? Math.round(video.duration) : 0;
       const directSrc = toAbsoluteUrl(video.currentSrc || video.getAttribute('src'));
@@ -141,27 +237,53 @@
       }
     }
 
-    for (const audio of document.querySelectorAll('audio')) {
+    for (const audio of queryAllRoots('audio')) {
       addItem(toAbsoluteUrl(audio.currentSrc || audio.getAttribute('src')), mediaTypes.AUDIO);
       for (const sourceEl of audio.querySelectorAll('source')) {
         addItem(toAbsoluteUrl(sourceEl.getAttribute('src')), mediaTypes.AUDIO);
       }
     }
 
-    for (const img of document.querySelectorAll('img')) {
+    if (mediaTypes.SUBTITLE) {
+      for (const track of queryAllRoots('track[src]')) {
+        const trackUrl = toAbsoluteUrl(track.getAttribute('src'));
+        const label = (track.getAttribute('label') || '').trim();
+        const lang = (track.getAttribute('srclang') || '').trim();
+        const trackTitle = [label, lang].filter(Boolean).join(' - ') || document.title || '';
+        addItem(trackUrl, mediaTypes.SUBTITLE, { title: trackTitle });
+      }
+    }
+
+    for (const img of queryAllRoots('img')) {
       const width = img.naturalWidth || img.width || 0;
       const height = img.naturalHeight || img.height || 0;
       if (width > 0 && height > 0 && (width < minImageDimensionPx || height < minImageDimensionPx)) {
         continue;
       }
+      const title = img.getAttribute('alt') || document.title || '';
+      let bestCandidate = parseBestSrcsetCandidate(img.getAttribute('srcset'));
+      if (typeof img.closest === 'function') {
+        const picture = img.closest('picture');
+        if (picture && typeof picture.querySelectorAll === 'function') {
+          for (const sourceEl of picture.querySelectorAll('source[srcset]')) {
+            const candidate = parseBestSrcsetCandidate(sourceEl.getAttribute('srcset'));
+            if (candidate.score > bestCandidate.score) {
+              bestCandidate = candidate;
+            }
+          }
+        }
+      }
+      if (bestCandidate.url) {
+        addItem(bestCandidate.url, mediaTypes.IMAGE, { width, height, title });
+      }
       addItem(toAbsoluteUrl(img.currentSrc || img.getAttribute('src')), mediaTypes.IMAGE, {
         width,
         height,
-        title: img.getAttribute('alt') || document.title || ''
+        title
       });
     }
 
-    for (const anchor of document.querySelectorAll('a[href]')) {
+    for (const anchor of queryAllRoots('a[href]')) {
       const href = toAbsoluteUrl(anchor.getAttribute('href'));
       if (!href.startsWith('http://') && !href.startsWith('https://')) {
         continue;
@@ -170,13 +292,139 @@
         const pathname = new URL(href).pathname;
         const dotIdx = pathname.lastIndexOf('.');
         const ext = dotIdx > 0 ? pathname.slice(dotIdx + 1).toLowerCase() : '';
-        if (ext && extSet.has(ext)) {
-          addItem(href, mediaTypes.VIDEO, {
+        if (ext && (extSet.has(ext) || (mediaTypes.SUBTITLE && subtitleExtSet.has(ext)))) {
+          const anchorType = mediaTypes.SUBTITLE && subtitleExtSet.has(ext)
+            ? mediaTypes.SUBTITLE
+            : mediaTypes.VIDEO;
+          addItem(href, anchorType, {
             title: (anchor.textContent || '').trim() || document.title || ''
           });
         }
       } catch {
         // Ignore malformed anchor URLs
+      }
+    }
+
+    const metaMediaSpec = [
+      { key: 'og:video:secure_url', type: mediaTypes.VIDEO },
+      { key: 'og:video:url', type: mediaTypes.VIDEO },
+      { key: 'og:video', type: mediaTypes.VIDEO },
+      { key: 'twitter:player:stream', type: mediaTypes.VIDEO },
+      { key: 'og:audio:secure_url', type: mediaTypes.AUDIO },
+      { key: 'og:audio', type: mediaTypes.AUDIO },
+      { key: 'og:image:secure_url', type: mediaTypes.IMAGE },
+      { key: 'og:image:url', type: mediaTypes.IMAGE },
+      { key: 'og:image', type: mediaTypes.IMAGE },
+      { key: 'twitter:image:src', type: mediaTypes.IMAGE },
+      { key: 'twitter:image', type: mediaTypes.IMAGE }
+    ];
+    const metaKeyMap = new Map(metaMediaSpec.map((entry) => [entry.key, entry.type]));
+    const ogTitleNodes = document.querySelectorAll('meta[property="og:title"], meta[name="twitter:title"]') || [];
+    const ogTitleEl = ogTitleNodes[0] || null;
+    const metaTitle = (ogTitleEl && ogTitleEl.getAttribute('content')) || document.title || '';
+
+    for (const metaEl of (document.querySelectorAll('meta[property], meta[name]') || [])) {
+      const prop = (metaEl.getAttribute('property') || metaEl.getAttribute('name') || '').toLowerCase().trim();
+      const targetType = metaKeyMap.get(prop);
+      if (!targetType) {
+        continue;
+      }
+      const rawContent = metaEl.getAttribute('content');
+      const absUrl = toAbsoluteUrl(rawContent);
+      if (isSafeHttpUrl(absUrl)) {
+        addItem(absUrl, targetType, { title: metaTitle });
+      }
+    }
+
+    const ldStack = [];
+    for (const scriptEl of (document.querySelectorAll('script[type="application/ld+json"]') || [])) {
+      const rawJson = (scriptEl.textContent || '').trim();
+      if (!rawJson) {
+        continue;
+      }
+      try {
+        ldStack.push(JSON.parse(rawJson));
+      } catch {
+        // Ignore invalid JSON-LD payloads
+      }
+    }
+    let inspectedLdNodes = 0;
+    while (ldStack.length > 0 && inspectedLdNodes < maxJsonLdNodes) {
+      const node = ldStack.pop();
+      inspectedLdNodes += 1;
+      if (Array.isArray(node)) {
+        for (const child of node) {
+          if (child && typeof child === 'object') {
+            ldStack.push(child);
+          }
+        }
+        continue;
+      }
+      if (!node || typeof node !== 'object') {
+        continue;
+      }
+      const rawLdType = Array.isArray(node['@type']) ? node['@type'][0] : node['@type'];
+      const ldType = typeof rawLdType === 'string' ? rawLdType.toLowerCase() : '';
+      const nodeTitle = (typeof node.name === 'string' && node.name.trim()) || metaTitle;
+      const pushUrlField = (value, type) => {
+        if (typeof value === 'string') {
+          const absUrl = toAbsoluteUrl(value);
+          if (isSafeHttpUrl(absUrl)) {
+            addItem(absUrl, type, { title: nodeTitle });
+          }
+        } else if (value && typeof value === 'object' && typeof value.url === 'string') {
+          const absUrl = toAbsoluteUrl(value.url);
+          if (isSafeHttpUrl(absUrl)) {
+            addItem(absUrl, type, { title: nodeTitle });
+          }
+        }
+      };
+      if (ldType === 'videoobject') {
+        pushUrlField(node.contentUrl, mediaTypes.VIDEO);
+        pushUrlField(node.thumbnailUrl, mediaTypes.IMAGE);
+      } else if (ldType === 'audioobject') {
+        pushUrlField(node.contentUrl, mediaTypes.AUDIO);
+      } else if (ldType === 'imageobject') {
+        pushUrlField(node.contentUrl || node.url, mediaTypes.IMAGE);
+      }
+      for (const value of Object.values(node)) {
+        if (value && typeof value === 'object') {
+          ldStack.push(value);
+        }
+      }
+    }
+
+    if (typeof window.getComputedStyle === 'function') {
+      const cssUrlRegex = /url\(\s*(['"]?)([^'")]+)\1\s*\)/gi;
+      const bgCandidates = queryAllRoots('div, section, article, figure, span, a');
+      const inspectLimit = Math.min(bgCandidates.length, maxCssBgElements);
+      for (let i = 0; i < inspectLimit; i += 1) {
+        const el = bgCandidates[i];
+        const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+        if (rect && (rect.width < minImageDimensionPx || rect.height < minImageDimensionPx)) {
+          continue;
+        }
+        let bgImage = '';
+        try {
+          bgImage = window.getComputedStyle(el).backgroundImage || '';
+        } catch {
+          continue;
+        }
+        if (!bgImage || bgImage === 'none' || !bgImage.includes('url(')) {
+          continue;
+        }
+        cssUrlRegex.lastIndex = 0;
+        let match;
+        while ((match = cssUrlRegex.exec(bgImage)) !== null) {
+          const candidate = toAbsoluteUrl(match[2]);
+          if (isSafeHttpUrl(candidate)) {
+            addItem(candidate, mediaTypes.IMAGE, {
+              width: rect ? Math.round(rect.width) : 0,
+              height: rect ? Math.round(rect.height) : 0,
+              title: document.title || ''
+            });
+          }
+        }
       }
     }
 

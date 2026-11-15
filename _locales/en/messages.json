@@ -7,6 +7,10 @@
     "message": "Detect and download videos, streams, images, and audio from the current page.",
     "description": "Extension description shown in Chrome extensions page."
   },
+  "ext_command_open_popup": {
+    "message": "Open Media Harvest popup",
+    "description": "Keyboard shortcut command description."
+  },
   "popup_header_title": {
     "message": "Media Harvest",
     "description": "Popup header title."
@@ -44,7 +48,7 @@
     "description": "Button label to download a single media item."
   },
   "popup_action_download_all": {
-    "message": "Download visible ($COUNT$)",
+    "message": "Download direct ($COUNT$)",
     "description": "Button label to batch download visible direct media items.",
     "placeholders": {
       "count": {
@@ -150,7 +154,7 @@
     "description": "Default quality option."
   },
   "popup_action_refresh": {
-    "message": "Refresh",
+    "message": "Rescan",
     "description": "Button label to rescan the active page."
   },
   "popup_action_reload_tab": {
@@ -290,5 +294,409 @@
   "options_status_reset": {
     "message": "Defaults restored.",
     "description": "Confirmation when settings are reset."
+  },
+  "options_error_save_failed": {
+    "message": "Unable to save settings.",
+    "description": "Error shown when saving settings fails."
+  },
+  "popup_filter_nav_label": {
+    "message": "Media categories",
+    "description": "Accessible label for the category filter bar."
+  },
+  "popup_confirm_download_all": {
+    "message": "Start $COUNT$ direct downloads?",
+    "description": "Confirmation prompt before launching a large batch of downloads.",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "12"
+      }
+    }
+  },
+  "popup_action_confirm_batch": {
+    "message": "Start",
+    "description": "Confirm button for batch downloads."
+  },
+  "popup_action_cancel_batch": {
+    "message": "Cancel",
+    "description": "Dismiss button for batch confirmation."
+  },
+  "popup_action_stop_batch": {
+    "message": "Stop batch",
+    "description": "Button to stop an ongoing batch download."
+  },
+  "popup_error_empty_playlist": {
+    "message": "No playable segments found in this stream.",
+    "description": "Shown when an HLS or DASH manifest has no downloadable segments."
+  },
+  "popup_error_live_stream": {
+    "message": "Live streams are not supported.",
+    "description": "Shown when attempting to download a live dynamic stream."
+  },
+  "popup_error_fetch_timeout": {
+    "message": "Timed out while downloading stream data.",
+    "description": "Shown when a network request exceeds the timeout."
+  },
+  "popup_error_invalid_url": {
+    "message": "Only HTTP and HTTPS URLs are supported.",
+    "description": "Shown when a media URL scheme is invalid."
+  },
+  "popup_error_invalid_manifest": {
+    "message": "Could not read stream manifest.",
+    "description": "Shown when an HLS or DASH manifest is malformed."
+  },
+  "popup_error_play_first": {
+    "message": "Play the video once before downloading.",
+    "description": "Shown when a video stream has not yet been captured on the page."
+  },
+  "popup_error_clear_failed": {
+    "message": "Could not clear captured media.",
+    "description": "Shown when clearing the tab media list fails."
+  },
+  "options_prompt_save_as": {
+    "message": "Ask where to save each file (Save As, single downloads)",
+    "description": "Toggle in options to trigger Chrome's Save As dialog for single downloads."
+  },
+  "popup_audio_select_label": {
+    "message": "Audio track",
+    "description": "Accessible label for stream audio track selector."
+  },
+  "popup_badge_video_only": {
+    "message": "Video only (WebM)",
+    "description": "Warning badge shown when a WebM DASH stream excludes separate audio tracks."
+  },
+  "popup_badge_exceeds_limit": {
+    "message": "Exceeds $LIMIT_MB$ MB cap",
+    "description": "Warning badge when estimated stream size exceeds the offscreen assembly limit.",
+    "placeholders": {
+      "limit_mb": {
+        "content": "$1",
+        "example": "512"
+      }
+    }
+  },
+  "popup_warning_exceeds_limit": {
+    "message": "Estimated size exceeds the $LIMIT_MB$ MB limit; download may abort.",
+    "description": "Inline warning on a stream card whose estimated size exceeds MAX_HLS_BUFFER_BYTES.",
+    "placeholders": {
+      "limit_mb": {
+        "content": "$1",
+        "example": "512"
+      }
+    }
+  },
+  "popup_action_retry_inspect": {
+    "message": "Retry info",
+    "description": "Button to retry stream manifest inspection after a failure."
+  },
+  "popup_search_placeholder": {
+    "message": "Filter by name or URL...",
+    "description": "Placeholder text for the popup search input."
+  },
+  "popup_search_label": {
+    "message": "Search media",
+    "description": "Accessible label for the popup search input."
+  },
+  "popup_sort_label": {
+    "message": "Sort media",
+    "description": "Accessible label for the popup sort selector."
+  },
+  "popup_sort_default": {
+    "message": "Detected order",
+    "description": "Default sort order option."
+  },
+  "popup_sort_size": {
+    "message": "Largest first",
+    "description": "Sort option ordering by largest file or estimated size first."
+  },
+  "popup_sort_resolution": {
+    "message": "Highest resolution",
+    "description": "Sort option ordering by highest video/image resolution first."
+  },
+  "popup_sort_duration": {
+    "message": "Longest duration",
+    "description": "Option ordering by longest media duration first."
+  },
+  "popup_error_invalid_fmp4": {
+    "message": "Stream initialization segment is invalid or unsupported.",
+    "description": "Error when an fMP4 init box cannot be parsed."
+  },
+  "popup_error_missing_audio": {
+    "message": "Selected audio track could not be merged into the video.",
+    "description": "Error when separate audio track muxing fails."
+  },
+  "popup_error_transmux_failed": {
+    "message": "Could not convert video stream segments to MP4.",
+    "description": "Error when MPEG-TS transmuxing fails or produces no output."
+  },
+  "popup_error_build_aborted": {
+    "message": "Stream assembly was interrupted.",
+    "description": "Error when stream assembly aborts unexpectedly."
+  },
+  "popup_error_stream_failed": {
+    "message": "Unable to process this stream.",
+    "description": "Fallback error when offscreen stream build fails."
+  },
+  "popup_error_generic_download": {
+    "message": "Browser refused or interrupted the download.",
+    "description": "Error when chrome.downloads fails."
+  },
+  "popup_error_inspect_failed": {
+    "message": "Could not load stream qualities ($REASON$).",
+    "description": "Error shown beside Retry info when manifest inspection fails.",
+    "placeholders": {
+      "reason": {
+        "content": "$1",
+        "example": "HTTP 403"
+      }
+    }
+  },
+  "popup_status_batch_progress": {
+    "message": "Starting downloads ($DONE$/$TOTAL$)...",
+    "description": "Progress shown while queuing batch downloads.",
+    "placeholders": {
+      "done": {
+        "content": "$1",
+        "example": "3"
+      },
+      "total": {
+        "content": "$2",
+        "example": "12"
+      }
+    }
+  },
+  "popup_status_batch_partial": {
+    "message": "$STARTED$ started, $FAILED$ failed: $REASON$",
+    "description": "Summary shown when a batch download has partial failures.",
+    "placeholders": {
+      "started": {
+        "content": "$1",
+        "example": "10"
+      },
+      "failed": {
+        "content": "$2",
+        "example": "2"
+      },
+      "reason": {
+        "content": "$3",
+        "example": "Only HTTP and HTTPS URLs are supported."
+      }
+    }
+  },
+  "popup_status_filter_empty": {
+    "message": "No media matches the current filter or search.",
+    "description": "Empty state shown when active filters or search hide all detected media."
+  },
+  "popup_action_reset_filters": {
+    "message": "Reset filters",
+    "description": "Button to clear active search and category filter."
+  },
+  "options_confirm_reset": {
+    "message": "Restore all settings to their default values?",
+    "description": "Confirmation prompt before resetting options."
+  },
+  "options_action_confirm_reset": {
+    "message": "Restore",
+    "description": "Confirm button for resetting options."
+  },
+  "options_action_cancel_reset": {
+    "message": "Cancel",
+    "description": "Cancel button for resetting options."
+  },
+  "options_min_image_px_hint": {
+    "message": "Default: 64 px. Images smaller on either side are ignored (0 includes all images).",
+    "description": "Helper text under minimum image size input."
+  },
+  "options_hls_concurrency_hint": {
+    "message": "Default: 4. Higher values speed up segments but may trigger server rate limits.",
+    "description": "Helper text under parallel segment downloads input."
+  },
+  "options_large_stream_mb_hint": {
+    "message": "Default: 250 MB. Maximum browser assembly cap is 512 MB (0 disables the badge).",
+    "description": "Helper text under large stream threshold input."
+  },
+  "x_btn_encrypted": {
+    "message": "DRM protected",
+    "description": "Inline X button error when stream is encrypted."
+  },
+  "x_btn_too_large": {
+    "message": "Over 512 MB",
+    "description": "Inline X button error when stream exceeds 512 MB limit."
+  },
+  "x_btn_timeout": {
+    "message": "Timed out",
+    "description": "Inline X button error on request timeout."
+  },
+  "x_btn_cancelled": {
+    "message": "Cancelled",
+    "description": "Inline X button label after cancelling stream download."
+  },
+  "x_btn_progress": {
+    "message": "$DONE$/$TOTAL$ - Cancel",
+    "description": "Inline X button progress and cancel prompt during stream assembly.",
+    "placeholders": {
+      "done": {
+        "content": "$1",
+        "example": "3"
+      },
+      "total": {
+        "content": "$2",
+        "example": "12"
+      }
+    }
+  },
+  "x_btn_muxing": {
+    "message": "Merging... - Cancel",
+    "description": "Inline X button label while muxing video and audio with cancel option."
+  },
+  "popup_badge_live": {
+    "message": "Live",
+    "description": "Warning badge shown on live HLS or DASH streams."
+  },
+  "popup_badge_subtitles": {
+    "message": "Subtitles",
+    "description": "Badge shown when an HLS stream includes subtitle tracks."
+  },
+  "popup_header_sidepanel_title": {
+    "message": "Open in side panel",
+    "description": "Tooltip and accessible label for the Chrome Side Panel button."
+  },
+  "popup_filter_subtitles": {
+    "message": "Subtitles",
+    "description": "Filter pill for subtitle tracks."
+  },
+  "popup_action_select_all": {
+    "message": "Select all",
+    "description": "Button label to select all visible downloadable items."
+  },
+  "popup_action_deselect_all": {
+    "message": "Deselect all",
+    "description": "Button label to clear selection of visible items."
+  },
+  "popup_action_download_selected": {
+    "message": "Download selected ($COUNT$)",
+    "description": "Button label to download all checked items.",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "3"
+      }
+    }
+  },
+  "popup_card_select_aria": {
+    "message": "Select item for batch download",
+    "description": "Accessible checkbox label on each media card."
+  },
+  "popup_subtitle_select_label": {
+    "message": "Subtitle track",
+    "description": "Accessible label for stream subtitle track selector."
+  },
+  "popup_action_download_subtitle": {
+    "message": "Subtitles",
+    "description": "Button label to download the selected HLS subtitle track."
+  },
+  "options_template_host_folder": {
+    "message": "Site folder ({host}/{name}.{ext})",
+    "description": "Filename template grouped into a subfolder by hostname."
+  },
+  "options_template_date_folder": {
+    "message": "Date folder ({YYYY-MM-DD}/{name}.{ext})",
+    "description": "Filename template grouped into a subfolder by ISO date."
+  },
+  "site_btn_aria_download": {
+    "message": "Download video from this player",
+    "description": "Accessible label for the floating video download overlay button on supported social sites."
+  },
+  "popup_badge_mse": {
+    "message": "MSE",
+    "description": "Badge shown on media captured from browser MediaSource buffers."
+  },
+  "popup_badge_mse_capped": {
+    "message": "Buffer cap",
+    "description": "Warning badge when an MSE stream reached the capture memory limit."
+  },
+  "popup_action_companion_item": {
+    "message": "yt-dlp",
+    "description": "Card action button to download the item via the optional local yt-dlp companion."
+  },
+  "popup_action_companion_page": {
+    "message": "Download page with yt-dlp",
+    "description": "Toolbar action button to delegate the active page URL to the local companion."
+  },
+  "popup_status_companion_started": {
+    "message": "Sent to local yt-dlp companion...",
+    "description": "Status message shown while the local companion downloads a URL."
+  },
+  "popup_status_companion_done": {
+    "message": "Companion download completed in Downloads/MediaHarvest.",
+    "description": "Status message shown when the local companion finishes a download."
+  },
+  "popup_error_mse_failed": {
+    "message": "MSE capture buffer unavailable. Reload or play the video again.",
+    "description": "Error when exporting an MSE captured stream fails or has expired."
+  },
+  "popup_error_companion_unavailable": {
+    "message": "Local yt-dlp companion is not installed or unavailable.",
+    "description": "Error when Chrome Native Messaging host cannot be reached."
+  },
+  "popup_error_companion_failed": {
+    "message": "Local companion download failed.",
+    "description": "Error returned when the local yt-dlp companion fails to download a URL."
+  },
+  "options_enable_social_overlay": {
+    "message": "Show video download button on social sites (YouTube, Instagram, TikTok, Reddit, Twitch...)",
+    "description": "Toggle in options to enable or disable the inline video button on supported social platforms."
+  },
+  "options_enable_mse_capture": {
+    "message": "Capture MSE (MediaSource) streams as fallback (up to 150 MB per video)",
+    "description": "Toggle in options to enable universal MediaSource buffer capture."
+  },
+  "options_companion_title": {
+    "message": "Optional Windows Companion (yt-dlp + ffmpeg)",
+    "description": "Section title for Native Messaging companion integration."
+  },
+  "options_companion_desc": {
+    "message": "Adds native yt-dlp + ffmpeg support for heavy (>512 MB), encrypted/DRM-free multi-codec, or adaptive streams.",
+    "description": "Description of the optional Windows Native Messaging companion."
+  },
+  "options_companion_check": {
+    "message": "Check status",
+    "description": "Button to test whether the local Native Messaging companion responds."
+  },
+  "options_companion_connected": {
+    "message": "Connected (yt-dlp $VERSION$)",
+    "description": "Status shown when the Native Messaging companion is reachable.",
+    "placeholders": {
+      "version": {
+        "content": "$1",
+        "example": "2025.01.15"
+      }
+    }
+  },
+  "options_companion_not_connected": {
+    "message": "Not installed or not registered yet.",
+    "description": "Status shown when the Native Messaging companion is not connected."
+  },
+  "options_companion_install_hint": {
+    "message": "Run in PowerShell from the extension folder (requires Python 3, yt-dlp, and optionally ffmpeg):",
+    "description": "Instruction before the PowerShell companion install command."
+  },
+  "options_enable_generic_overlay": {
+    "message": "Show video download button on other websites (any embedded HTML5 player)",
+    "description": "Toggle in options to enable or disable the inline video download button on non-social sites."
+  },
+  "options_enable_companion_cookies": {
+    "message": "Pass Chrome browser cookies to the local yt-dlp companion (for logged-in pages)",
+    "description": "Opt-in toggle in options to allow yt-dlp to read Chrome cookies."
+  },
+  "popup_status_companion_progress": {
+    "message": "Local yt-dlp companion downloading ($PERCENT$%)...",
+    "description": "Live percentage status while the local companion downloads a URL.",
+    "placeholders": {
+      "percent": {
+        "content": "$1",
+        "example": "42"
+      }
+    }
   }
 }

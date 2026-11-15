@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { DEFAULT_FILENAMES, HLS_TAGS } from '../config/constants.js';
+import { DEFAULT_FILENAMES, HLS_PLAYLIST_TYPES, HLS_TAGS } from '../config/constants.js';
 
 /**
  * Parses comma-separated HLS attribute lists (e.g. BANDWIDTH=800000,URI="...").
@@ -37,8 +37,8 @@ export function parseHlsAttributes(rawAttributes) {
 }
 
 /**
- * Resolves a possibly relative HLS URI against the playlist URL.
- * Returns an empty string if the URI cannot be resolved.
+ * Resolves a possibly relative HLS URI against the playlist URL, restricting to HTTP(S).
+ * Returns an empty string if the URI cannot be resolved or uses a non-HTTP scheme.
  * @param {string} uri
  * @param {string} baseUrl
  * @returns {string}
@@ -48,7 +48,11 @@ export function resolveHlsUrl(uri, baseUrl) {
     return '';
   }
   try {
-    return new URL(uri.trim(), baseUrl).href;
+    const resolved = new URL(uri.trim(), baseUrl);
+    if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') {
+      return '';
+    }
+    return resolved.href;
   } catch {
     return '';
   }
@@ -92,6 +96,66 @@ export function parseByteRangeSpec(spec, defaultOffset = 0) {
 }
 
 /**
+ * Inspects an EXT-X-KEY or EXT-X-SESSION-KEY tag line for encryption method.
+ * @param {string} line
+ * @returns {{ encrypted: boolean, encryptionMethod: string } | null}
+ */
+function parseEncryptionTag(line) {
+  const tagLength = line.startsWith(HLS_TAGS.SESSION_KEY)
+    ? HLS_TAGS.SESSION_KEY.length
+    : HLS_TAGS.KEY.length;
+  const attrs = parseHlsAttributes(line.slice(tagLength));
+  const method = (attrs.METHOD || 'NONE').toUpperCase();
+  if (method === 'NONE') {
+    return null;
+  }
+  return { encrypted: true, encryptionMethod: method };
+}
+
+/**
+ * Parses an `#EXT-X-MEDIA:` tag for AUDIO or SUBTITLES rendition groups.
+ * @param {string} line
+ * @param {string} baseUrl
+ * @returns {{ trackType: 'AUDIO' | 'SUBTITLES', track: { groupId: string, name: string, language: string, url: string, isDefault: boolean } } | null}
+ */
+function parseMediaTrackTag(line, baseUrl) {
+  const attrs = parseHlsAttributes(line.slice(HLS_TAGS.MEDIA.length));
+  const resolvedTrackUrl = attrs.URI ? resolveHlsUrl(attrs.URI, baseUrl) : '';
+  if ((attrs.TYPE !== 'AUDIO' && attrs.TYPE !== 'SUBTITLES') || !resolvedTrackUrl) {
+    return null;
+  }
+  const fallbackName = attrs.TYPE === 'SUBTITLES' ? 'subtitles' : 'audio';
+  return {
+    trackType: attrs.TYPE,
+    track: {
+      groupId: attrs['GROUP-ID'] || '',
+      name: attrs.NAME || attrs.LANGUAGE || fallbackName,
+      language: attrs.LANGUAGE || '',
+      url: resolvedTrackUrl,
+      isDefault: attrs.DEFAULT === 'YES'
+    }
+  };
+}
+
+/**
+ * Builds a master playlist variant descriptor from pending EXT-X-STREAM-INF attributes.
+ * @param {Record<string, string>} streamAttrs
+ * @param {string} resolvedUrl
+ * @returns {object}
+ */
+function buildVariantEntry(streamAttrs, resolvedUrl) {
+  const { width, height } = parseResolution(streamAttrs.RESOLUTION);
+  return {
+    bandwidth: Number.parseInt(streamAttrs.BANDWIDTH, 10) || 0,
+    width,
+    height,
+    resolution: streamAttrs.RESOLUTION || '',
+    audioGroup: streamAttrs.AUDIO || '',
+    url: resolvedUrl
+  };
+}
+
+/**
  * Parses an HLS playlist text, handling both master playlists and media playlists.
  * Supports EXT-X-KEY, EXT-X-SESSION-KEY, EXT-X-MAP (with optional BYTERANGE), and EXT-X-BYTERANGE.
  * @param {string} text
@@ -114,6 +178,8 @@ export function parseHlsPlaylist(text, baseUrl) {
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const variants = [];
   const audioTracks = [];
+  const subtitles = [];
+  const seenSubtitleUrls = new Set();
   const segments = [];
   const prevByteRangeEndByUrl = new Map();
 
@@ -124,31 +190,38 @@ export function parseHlsPlaylist(text, baseUrl) {
   let pendingByteRangeSpec = null;
   let encrypted = false;
   let encryptionMethod = 'NONE';
+  let hasEndList = false;
+  let playlistType = '';
 
   for (const line of lines) {
     if (line.startsWith(HLS_TAGS.KEY) || line.startsWith(HLS_TAGS.SESSION_KEY)) {
-      const tagLength = line.startsWith(HLS_TAGS.SESSION_KEY)
-        ? HLS_TAGS.SESSION_KEY.length
-        : HLS_TAGS.KEY.length;
-      const attrs = parseHlsAttributes(line.slice(tagLength));
-      const method = (attrs.METHOD || 'NONE').toUpperCase();
-      if (method !== 'NONE') {
-        encrypted = true;
-        encryptionMethod = method;
+      const enc = parseEncryptionTag(line);
+      if (enc) {
+        encrypted = enc.encrypted;
+        encryptionMethod = enc.encryptionMethod;
       }
       continue;
     }
 
+    if (line === HLS_TAGS.ENDLIST || line.startsWith(HLS_TAGS.ENDLIST)) {
+      hasEndList = true;
+      continue;
+    }
+
+    if (line.startsWith(HLS_TAGS.PLAYLIST_TYPE)) {
+      playlistType = line.slice(HLS_TAGS.PLAYLIST_TYPE.length).trim().toUpperCase();
+      continue;
+    }
+
     if (line.startsWith(HLS_TAGS.MEDIA)) {
-      const attrs = parseHlsAttributes(line.slice(HLS_TAGS.MEDIA.length));
-      const resolvedAudioUrl = attrs.URI ? resolveHlsUrl(attrs.URI, baseUrl) : '';
-      if (attrs.TYPE === 'AUDIO' && resolvedAudioUrl) {
-        audioTracks.push({
-          groupId: attrs['GROUP-ID'] || '',
-          name: attrs.NAME || attrs.LANGUAGE || 'audio',
-          language: attrs.LANGUAGE || '',
-          url: resolvedAudioUrl
-        });
+      const parsedMedia = parseMediaTrackTag(line, baseUrl);
+      if (parsedMedia) {
+        if (parsedMedia.trackType === 'AUDIO') {
+          audioTracks.push(parsedMedia.track);
+        } else if (!seenSubtitleUrls.has(parsedMedia.track.url)) {
+          seenSubtitleUrls.add(parsedMedia.track.url);
+          subtitles.push(parsedMedia.track);
+        }
       }
       continue;
     }
@@ -160,12 +233,10 @@ export function parseHlsPlaylist(text, baseUrl) {
 
     if (line.startsWith(HLS_TAGS.MAP)) {
       const attrs = parseHlsAttributes(line.slice(HLS_TAGS.MAP.length));
-      if (attrs.URI) {
-        const resolvedMapUrl = resolveHlsUrl(attrs.URI, baseUrl);
-        if (resolvedMapUrl) {
-          initSegmentUrl = resolvedMapUrl;
-          initSegmentByteRange = attrs.BYTERANGE ? parseByteRangeSpec(attrs.BYTERANGE, 0) : null;
-        }
+      const resolvedMapUrl = attrs.URI ? resolveHlsUrl(attrs.URI, baseUrl) : '';
+      if (resolvedMapUrl) {
+        initSegmentUrl = resolvedMapUrl;
+        initSegmentByteRange = attrs.BYTERANGE ? parseByteRangeSpec(attrs.BYTERANGE, 0) : null;
       }
       continue;
     }
@@ -176,8 +247,7 @@ export function parseHlsPlaylist(text, baseUrl) {
     }
 
     if (line.startsWith(HLS_TAGS.EXTINF)) {
-      const durationStr = line.slice(HLS_TAGS.EXTINF.length).split(',')[0];
-      pendingSegmentDuration = Number.parseFloat(durationStr) || 0;
+      pendingSegmentDuration = Number.parseFloat(line.slice(HLS_TAGS.EXTINF.length).split(',')[0]) || 0;
       continue;
     }
 
@@ -193,59 +263,48 @@ export function parseHlsPlaylist(text, baseUrl) {
       continue;
     }
     if (pendingStreamAttrs) {
-      const { width, height } = parseResolution(pendingStreamAttrs.RESOLUTION);
-      variants.push({
-        bandwidth: Number.parseInt(pendingStreamAttrs.BANDWIDTH, 10) || 0,
-        width,
-        height,
-        resolution: pendingStreamAttrs.RESOLUTION || '',
-        audioGroup: pendingStreamAttrs.AUDIO || '',
-        url: resolvedUrl
-      });
+      variants.push(buildVariantEntry(pendingStreamAttrs, resolvedUrl));
       pendingStreamAttrs = null;
       continue;
     }
 
     let byteRange = null;
     if (pendingByteRangeSpec) {
-      const prevEnd = prevByteRangeEndByUrl.get(resolvedUrl) ?? 0;
-      byteRange = parseByteRangeSpec(pendingByteRangeSpec, prevEnd);
+      byteRange = parseByteRangeSpec(pendingByteRangeSpec, prevByteRangeEndByUrl.get(resolvedUrl) ?? 0);
       if (byteRange) {
         prevByteRangeEndByUrl.set(resolvedUrl, byteRange.offset + byteRange.length);
       }
       pendingByteRangeSpec = null;
     }
 
-    segments.push({
-      url: resolvedUrl,
-      duration: pendingSegmentDuration,
-      byteRange
-    });
+    segments.push({ url: resolvedUrl, duration: pendingSegmentDuration, byteRange });
     pendingSegmentDuration = 0;
   }
 
   variants.sort((a, b) => (b.width * b.height - a.width * a.height) || (b.bandwidth - a.bandwidth));
 
+  const totalDurationSec = Math.round(segments.reduce((acc, seg) => acc + (seg.duration || 0), 0));
   const isMaster = variants.length > 0;
-  const totalDurationSec = Math.round(
-    segments.reduce((acc, seg) => acc + (seg.duration || 0), 0)
-  );
-  const outputExtension = initSegmentUrl
-    ? DEFAULT_FILENAMES.HLS_FMP4_EXT
-    : DEFAULT_FILENAMES.HLS_TS_EXT;
-
+  const isDynamic = !isMaster &&
+    segments.length > 0 &&
+    !hasEndList &&
+    (playlistType === HLS_PLAYLIST_TYPES.EVENT || playlistType !== HLS_PLAYLIST_TYPES.VOD);
   return {
     format: 'hls',
     isMaster,
+    isDynamic,
+    hasEndList,
+    playlistType,
     encrypted,
     encryptionMethod,
     variants,
     audioTracks,
+    subtitles,
     initSegmentUrl,
     initSegmentByteRange,
     segments,
     totalDurationSec,
-    outputExtension
+    outputExtension: initSegmentUrl ? DEFAULT_FILENAMES.HLS_FMP4_EXT : DEFAULT_FILENAMES.HLS_TS_EXT
   };
 }
 

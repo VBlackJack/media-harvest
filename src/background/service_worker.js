@@ -23,22 +23,42 @@ import {
   MEDIA_SOURCES,
   MEDIA_TYPES,
   MESSAGE_TYPES,
+  MSE_CONSTANTS,
+  NATIVE_HOST,
   OFFSCREEN_DOCUMENT_PATH,
   STORAGE_KEYS,
+  SUBTITLE_EXTENSIONS,
   VIDEO_EXTENSIONS
 } from '../config/constants.js';
 import { parseDashManifest } from '../shared/dash_parser.js';
+import {
+  fetchWithManagedTimeout,
+  isDashDescriptor,
+  looksLikeDashXml
+} from '../shared/fetch_utils.js';
 import { estimateHlsBytes, parseHlsPlaylist } from '../shared/hls_parser.js';
 import {
   classifyMedia,
+  classifyMseMime,
   deduplicateMedia,
   deriveFilenameStem,
-  extractUrlExtension,
   isHttpUrl,
+  isMseUrl,
   sanitizeFilename
 } from '../shared/media_classifier.js';
 import { attachVideoPreviews, extractMediaId } from '../shared/preview_matcher.js';
-import { applyFilenameTemplate, loadSettings } from '../shared/settings.js';
+import {
+  addTemporaryRefererRule,
+  attachDownloadDnrRule,
+  detachDownloadDnrRule,
+  removeTemporaryRefererRule,
+  withTemporaryRefererRule
+} from './dnr_manager.js';
+import {
+  applyFilenameTemplate,
+  isFolderFilenameTemplate,
+  loadSettings
+} from '../shared/settings.js';
 
 const tabWriteQueues = new Map();
 const activeBuilds = new Map();
@@ -93,6 +113,15 @@ function tabRouteStorageKey(tabId) {
 }
 
 /**
+ * Builds the session storage key for MSE captured streams on a tab.
+ * @param {number} tabId
+ * @returns {string}
+ */
+function tabMseStorageKey(tabId) {
+  return `${STORAGE_KEYS.TAB_MSE_PREFIX}${tabId}`;
+}
+
+/**
  * Builds the session storage key mapping a download ID to its offscreen Blob URL.
  * @param {number} downloadId
  * @returns {string}
@@ -108,6 +137,17 @@ function downloadBlobKey(downloadId) {
  */
 async function getTabNetworkMedia(tabId) {
   const key = tabStorageKey(tabId);
+  const stored = await chrome.storage.session.get(key);
+  return Array.isArray(stored[key]) ? stored[key] : [];
+}
+
+/**
+ * Reads captured MSE stream items for a tab from session storage.
+ * @param {number} tabId
+ * @returns {Promise<Array<object>>}
+ */
+async function getTabMseMedia(tabId) {
+  const key = tabMseStorageKey(tabId);
   const stored = await chrome.storage.session.get(key);
   return Array.isArray(stored[key]) ? stored[key] : [];
 }
@@ -157,6 +197,7 @@ async function updateTabBadge(tabId, items) {
  */
 async function clearTabMediaUnlocked(tabId) {
   await chrome.storage.session.remove(tabStorageKey(tabId));
+  await chrome.storage.session.remove(tabMseStorageKey(tabId));
   await updateTabBadge(tabId, []);
 }
 
@@ -195,7 +236,8 @@ function recordNetworkMedia(tabId, entry) {
     filtered.unshift(entry);
     const capped = filtered.slice(0, LIMITS.MAX_CAPTURED_PER_TAB);
     await chrome.storage.session.set({ [tabStorageKey(tabId)]: capped });
-    await updateTabBadge(tabId, capped);
+    const mseItems = await getTabMseMedia(tabId);
+    await updateTabBadge(tabId, [...capped, ...mseItems]);
     chrome.runtime.sendMessage({
       type: MESSAGE_TYPES.MEDIA_UPDATED,
       tabId
@@ -204,6 +246,62 @@ function recordNetworkMedia(tabId, entry) {
     });
   }).catch(() => {
     // Session storage write failed or tab was closed
+  });
+}
+
+/**
+ * Records or updates a captured MSE media stream entry for its tab.
+ * @param {number} tabId
+ * @param {number} frameId
+ * @param {object} stream
+ */
+function recordMseMedia(tabId, frameId, stream) {
+  if (typeof tabId !== 'number' || tabId < 0 || !stream || !stream.mseId) {
+    return;
+  }
+  enqueueTabWrite(tabId, async () => {
+    const settings = await loadSettings();
+    if (!settings.enableMseCapture) {
+      return;
+    }
+    const classified = classifyMseMime(stream.mimeType || stream.videoMime || stream.audioMime);
+    const entry = {
+      url: stream.url || `${MSE_CONSTANTS.URL_PREFIX}${stream.mseId}`,
+      type: classified.type,
+      ext: classified.ext,
+      isStream: false,
+      isMse: true,
+      mseId: stream.mseId,
+      frameId: typeof frameId === 'number' ? frameId : 0,
+      source: MEDIA_SOURCES.DOM,
+      mimeType: stream.mimeType || '',
+      videoMime: stream.videoMime || '',
+      audioMime: stream.audioMime || '',
+      sizeBytes: stream.totalBytes || 0,
+      duration: stream.duration || 0,
+      width: 0,
+      height: 0,
+      title: stream.title || '',
+      referer: stream.pageUrl || '',
+      blobUrl: typeof stream.blobUrl === 'string' ? stream.blobUrl : '',
+      capped: Boolean(stream.capped),
+      capturedAt: Date.now()
+    };
+    const existing = await getTabMseMedia(tabId);
+    const filtered = existing.filter((item) => item.mseId !== entry.mseId);
+    filtered.unshift(entry);
+    const cappedList = filtered.slice(0, LIMITS.MAX_CAPTURED_PER_TAB);
+    await chrome.storage.session.set({ [tabMseStorageKey(tabId)]: cappedList });
+    const networkItems = await getTabNetworkMedia(tabId);
+    await updateTabBadge(tabId, [...networkItems, ...cappedList]);
+    chrome.runtime.sendMessage({
+      type: MESSAGE_TYPES.MEDIA_UPDATED,
+      tabId
+    }).catch(() => {
+      // Popup is not open
+    });
+  }).catch(() => {
+    // Ignore write failure on closed tab
   });
 }
 
@@ -248,6 +346,7 @@ chrome.webRequest.onHeadersReceived.addListener(
       sizeBytes,
       width: 0,
       height: 0,
+      referer: details.documentUrl || details.initiator || '',
       capturedAt: Date.now()
     });
   },
@@ -286,7 +385,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   enqueueTabWrite(tabId, async () => {
-    await chrome.storage.session.remove([tabStorageKey(tabId), tabRouteStorageKey(tabId)]);
+    await chrome.storage.session.remove([
+      tabStorageKey(tabId),
+      tabRouteStorageKey(tabId),
+      tabMseStorageKey(tabId)
+    ]);
   }).catch(() => {});
 });
 
@@ -320,8 +423,10 @@ async function maybeCloseOffscreenDocument() {
   if (activeOffscreenBuilds > 0) {
     return;
   }
-  const allSession = await chrome.storage.session.get(null);
-  const hasPendingBlobs = Object.keys(allSession).some((key) =>
+  const sessionKeys = typeof chrome.storage.session.getKeys === 'function'
+    ? await chrome.storage.session.getKeys()
+    : Object.keys(await chrome.storage.session.get(null));
+  const hasPendingBlobs = sessionKeys.some((key) =>
     key.startsWith(STORAGE_KEYS.DOWNLOAD_BLOB_PREFIX)
   );
   if (hasPendingBlobs) {
@@ -380,26 +485,19 @@ chrome.downloads.onChanged.addListener((delta) => {
   if (state !== 'complete' && state !== 'interrupted') {
     return;
   }
+  detachDownloadDnrRule(delta.id).catch(() => {});
   cleanupDownloadBlob(delta.id).catch(() => {});
 });
 
 /**
- * Scans the active tab DOM and combines results with captured network media.
+ * Injects or reuses the DOM media scanner across all frames in a tab and merges results.
  * @param {number} tabId
  * @param {string} tabUrl
+ * @param {object} settings
  * @returns {Promise<object>}
  */
-async function collectMediaForTab(tabId, tabUrl) {
-  if (typeof tabId !== 'number' || tabId < 0) {
-    throw new Error('NO_ACTIVE_TAB');
-  }
-  if (!isHttpUrl(tabUrl)) {
-    throw new Error('RESTRICTED_PAGE');
-  }
-
-  const settings = await loadSettings();
-  const networkItems = await getTabNetworkMedia(tabId);
-  let domResult = {
+async function scanTabDom(tabId, tabUrl, settings) {
+  const domResult = {
     pageTitle: '',
     pageUrl: tabUrl,
     hasBlobVideo: false,
@@ -415,10 +513,13 @@ async function collectMediaForTab(tabId, tabUrl) {
       mediaTypes: {
         VIDEO: MEDIA_TYPES.VIDEO,
         IMAGE: MEDIA_TYPES.IMAGE,
-        AUDIO: MEDIA_TYPES.AUDIO
+        AUDIO: MEDIA_TYPES.AUDIO,
+        SUBTITLE: MEDIA_TYPES.SUBTITLE
       },
       sourceTag: MEDIA_SOURCES.DOM,
-      directExtensions: [...VIDEO_EXTENSIONS, ...IMAGE_EXTENSIONS, ...AUDIO_EXTENSIONS]
+      directExtensions: [...VIDEO_EXTENSIONS, ...IMAGE_EXTENSIONS, ...AUDIO_EXTENSIONS],
+      subtitleExtensions: SUBTITLE_EXTENSIONS,
+      maxJsonLdNodes: LIMITS.MAX_JSON_LD_NODES
     };
 
     const runScan = (cfg) => (
@@ -426,29 +527,83 @@ async function collectMediaForTab(tabId, tabUrl) {
     );
 
     let execResults = await chrome.scripting.executeScript({
-      target: { tabId },
+      target: { tabId, allFrames: true },
       func: runScan,
       args: [scanConfig]
     });
 
-    if (!execResults || !execResults[0] || !execResults[0].result) {
+    const missingFrameIds = Array.isArray(execResults)
+      ? execResults.filter((entry) => !entry || !entry.result).map((entry) => entry.frameId).filter((id) => typeof id === 'number')
+      : [];
+
+    if (!execResults || execResults.length === 0 || missingFrameIds.length > 0) {
+      const injectTarget = missingFrameIds.length > 0
+        ? { tabId, frameIds: missingFrameIds }
+        : { tabId, allFrames: true };
       await chrome.scripting.executeScript({
-        target: { tabId },
+        target: injectTarget,
         files: ['src/content/dom_scanner.js']
-      });
+      }).catch(() => {});
       execResults = await chrome.scripting.executeScript({
-        target: { tabId },
+        target: { tabId, allFrames: true },
         func: runScan,
         args: [scanConfig]
       });
     }
 
-    if (execResults && execResults[0] && execResults[0].result) {
-      domResult = execResults[0].result;
+    if (Array.isArray(execResults)) {
+      for (const frameExec of execResults) {
+        const res = frameExec && frameExec.result;
+        if (!res) {
+          continue;
+        }
+        if (!domResult.pageTitle && res.pageTitle) {
+          domResult.pageTitle = res.pageTitle;
+        }
+        if (res.hasBlobVideo) {
+          domResult.hasBlobVideo = true;
+        }
+        if (Array.isArray(res.videoElements)) {
+          domResult.videoElements.push(...res.videoElements);
+        }
+        if (Array.isArray(res.items)) {
+          const frameReferer = res.pageUrl || tabUrl;
+          for (const item of res.items) {
+            domResult.items.push({
+              ...item,
+              referer: item.referer || frameReferer
+            });
+          }
+        }
+      }
     }
   } catch {
     // Some pages restrict scripting even on http/https; keep network items
   }
+
+  return domResult;
+}
+
+/**
+ * Scans the active tab DOM and combines results with captured network and MSE media.
+ * @param {number} tabId
+ * @param {string} tabUrl
+ * @returns {Promise<object>}
+ */
+async function collectMediaForTab(tabId, tabUrl) {
+  if (typeof tabId !== 'number' || tabId < 0) {
+    throw new Error('NO_ACTIVE_TAB');
+  }
+  if (!isHttpUrl(tabUrl)) {
+    throw new Error('RESTRICTED_PAGE');
+  }
+
+  const settings = await loadSettings();
+  const [networkItems, mseItems, domResult] = await Promise.all([
+    getTabNetworkMedia(tabId),
+    settings.enableMseCapture ? getTabMseMedia(tabId) : Promise.resolve([]),
+    scanTabDom(tabId, tabUrl, settings)
+  ]);
 
   const normalizedDomItems = domResult.items
     .map((item) => {
@@ -462,7 +617,7 @@ async function collectMediaForTab(tabId, tabUrl) {
     });
 
   const merged = attachVideoPreviews(
-    deduplicateMedia([...networkItems, ...normalizedDomItems]),
+    deduplicateMedia([...networkItems, ...mseItems, ...normalizedDomItems]),
     domResult.videoElements || []
   ).map((item) => {
     const baseStem = deriveFilenameStem(item.url, item.title || domResult.pageTitle, tabUrl);
@@ -486,85 +641,80 @@ async function collectMediaForTab(tabId, tabUrl) {
 }
 
 /**
- * Fetches an HLS playlist text with an explicit timeout.
- * @param {string} url
- * @returns {Promise<string>}
- */
-async function fetchPlaylistText(url) {
-  const controller = new AbortController();
-  const timerId = setTimeout(() => controller.abort(), LIMITS.FETCH_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    return await response.text();
-  } finally {
-    clearTimeout(timerId);
-  }
-}
-
-/**
  * Fetches and parses an HLS or DASH manifest so the UI can list variants, duration, and size.
  * @param {string} url
+ * @param {string} [referer='']
  * @returns {Promise<object>}
  */
-async function inspectHlsStream(url) {
+async function inspectHlsStream(url, referer = '') {
   if (!isHttpUrl(url)) {
     throw new Error('INVALID_URL');
   }
-  const text = await fetchPlaylistText(url);
-  const looksDash = extractUrlExtension(url) === 'mpd' ||
-    /<MPD[\s>]/i.test(text.slice(0, 512));
+  return withTemporaryRefererRule(url, referer, async () => {
+    const text = await fetchWithManagedTimeout(url, { responseMode: 'text' });
+    const looksDash = isDashDescriptor(url) || looksLikeDashXml(text);
 
-  if (looksDash) {
-    const parsed = parseDashManifest(text, url);
-    const durationSec = parsed.totalDurationSec;
+    if (looksDash) {
+      const parsed = parseDashManifest(text, url);
+      const durationSec = parsed.totalDurationSec;
+      const variantsWithEstimate = parsed.variants.map((variant) => ({
+        ...variant,
+        durationSec,
+        estimatedBytes: estimateHlsBytes(variant.bandwidth, durationSec)
+      }));
+      return {
+        ...parsed,
+        streamFormat: 'dash',
+        totalDurationSec: durationSec,
+        variants: variantsWithEstimate
+      };
+    }
+
+    const parsed = parseHlsPlaylist(text, url);
+
+    let durationSec = parsed.totalDurationSec;
+    let sampleDynamic = false;
+    let sampleEncrypted = false;
+    let sampleOutputExtension = parsed.outputExtension;
+    if (parsed.isMaster && parsed.variants.length > 0 && !parsed.encrypted) {
+      try {
+        const sampleText = await fetchWithManagedTimeout(parsed.variants[0].url, {
+          responseMode: 'text'
+        });
+        const sampleParsed = parseHlsPlaylist(sampleText, parsed.variants[0].url);
+        durationSec = sampleParsed.totalDurationSec;
+        sampleDynamic = Boolean(sampleParsed.isDynamic);
+        sampleEncrypted = Boolean(sampleParsed.encrypted);
+        sampleOutputExtension = sampleParsed.outputExtension;
+      } catch {
+        // Duration and sample metadata estimation is best-effort
+      }
+    }
+
     const variantsWithEstimate = parsed.variants.map((variant) => ({
       ...variant,
       durationSec,
       estimatedBytes: estimateHlsBytes(variant.bandwidth, durationSec)
     }));
+
     return {
       ...parsed,
-      streamFormat: 'dash',
+      encrypted: parsed.encrypted || sampleEncrypted,
+      isDynamic: parsed.isDynamic || sampleDynamic,
+      outputExtension: sampleOutputExtension,
+      streamFormat: 'hls',
       totalDurationSec: durationSec,
       variants: variantsWithEstimate
     };
-  }
-
-  const parsed = parseHlsPlaylist(text, url);
-
-  let durationSec = parsed.totalDurationSec;
-  if (parsed.isMaster && parsed.variants.length > 0 && !parsed.encrypted) {
-    try {
-      const sampleText = await fetchPlaylistText(parsed.variants[0].url);
-      const sampleParsed = parseHlsPlaylist(sampleText, parsed.variants[0].url);
-      durationSec = sampleParsed.totalDurationSec;
-    } catch {
-      // Duration estimation is best-effort
-    }
-  }
-
-  const variantsWithEstimate = parsed.variants.map((variant) => ({
-    ...variant,
-    durationSec,
-    estimatedBytes: estimateHlsBytes(variant.bandwidth, durationSec)
-  }));
-
-  return {
-    ...parsed,
-    streamFormat: 'hls',
-    totalDurationSec: durationSec,
-    variants: variantsWithEstimate
-  };
+  });
 }
 
 /**
  * Resolves and downloads the video matching an inline X post click.
  * @param {number} tabId
  * @param {{ mediaId?: string, directSrc?: string, authorHandle?: string, tweetId?: string }} payload
- * @returns {Promise<{ downloadId: number }>}
+ * @param {string} [pageUrl='']
+ * @returns {Promise<{ downloadId: number, requestId: string }>}
  */
 async function handleTweetVideoDownload(tabId, payload, pageUrl = '') {
   const settings = await loadSettings();
@@ -605,7 +755,9 @@ async function handleTweetVideoDownload(tabId, payload, pageUrl = '') {
     playlistUrl: chosen.url,
     isStream: Boolean(chosen.isStream),
     filename,
-    saveAs: false
+    saveAs: Boolean(settings.promptSaveAs),
+    requestId: typeof payload.requestId === 'string' ? payload.requestId : '',
+    tabId
   });
 }
 
@@ -642,43 +794,91 @@ async function cancelDownloadBuild(requestId) {
 }
 
 /**
- * Starts a download either directly or via HLS/DASH offscreen assembly.
- * @param {{ url: string, playlistUrl?: string, isStream?: boolean, filename?: string, saveAs?: boolean, requestId?: string }} payload
+ * Starts a direct browser download for a non-stream media URL.
+ * @param {object} payload
+ * @param {string} rawStem
+ * @param {string} requestId
  * @returns {Promise<{ downloadId: number, requestId: string }>}
  */
-async function handleDownloadMedia(payload) {
-  if (!payload || typeof payload !== 'object' || !isHttpUrl(payload.url)) {
-    throw new Error('INVALID_URL');
-  }
-
-  const rawStem = typeof payload.filename === 'string' && payload.filename
-    ? payload.filename.replace(/\.[^.]+$/, '')
-    : deriveFilenameStem(payload.url, '');
-  const requestId = typeof payload.requestId === 'string' && payload.requestId
-    ? payload.requestId
-    : `dl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-  if (!payload.isStream) {
-    const classified = classifyMedia(payload.url);
-    const fallbackExt = classified ? classified.ext : DEFAULT_FILENAMES.FALLBACK_EXT;
-    const rawName = typeof payload.filename === 'string' ? payload.filename : '';
-    const dotIdx = rawName.lastIndexOf('.');
-    const providedExt = dotIdx > 0 && dotIdx < rawName.length - 1 ? rawName.slice(dotIdx + 1) : '';
-    const directFilename = sanitizeFilename(rawStem, providedExt || fallbackExt);
+async function startDirectDownload(payload, rawStem, requestId) {
+  const settings = await loadSettings();
+  const classified = classifyMedia(payload.url);
+  const fallbackExt = classified ? classified.ext : DEFAULT_FILENAMES.FALLBACK_EXT;
+  const rawName = typeof payload.filename === 'string' ? payload.filename : '';
+  const leafStart = Math.max(rawName.lastIndexOf('/'), rawName.lastIndexOf('\\')) + 1;
+  const leafName = rawName.slice(leafStart);
+  const dotIdx = leafName.lastIndexOf('.');
+  const providedExt = dotIdx > 0 && dotIdx < leafName.length - 1 ? leafName.slice(dotIdx + 1) : '';
+  const allowFolders = Boolean(payload.allowFolders) || isFolderFilenameTemplate(settings.filenameTemplate);
+  const directFilename = sanitizeFilename(rawStem, providedExt || fallbackExt, { allowFolders });
+  const ruleId = await addTemporaryRefererRule(payload.url, payload.referer || '');
+  try {
     const downloadId = await chrome.downloads.download({
       url: payload.url,
       filename: directFilename,
       saveAs: Boolean(payload.saveAs)
     });
+    await attachDownloadDnrRule(downloadId, ruleId);
     return { downloadId, requestId };
+  } catch (err) {
+    await removeTemporaryRefererRule(ruleId);
+    throw err;
   }
+}
 
-  const targetPlaylist = payload.playlistUrl || payload.url;
-  if (!isHttpUrl(targetPlaylist)) {
-    throw new Error('INVALID_URL');
-  }
+/**
+ * Broadcasts stream download completion or failure to open extension UI listeners.
+ * @param {string} requestId
+ * @param {string} url
+ * @param {boolean} ok
+ * @param {string} [error='']
+ */
+function notifyStreamFinished(requestId, url, ok, error = '') {
+  chrome.runtime.sendMessage({
+    type: MESSAGE_TYPES.DOWNLOAD_FINISHED,
+    requestId,
+    url,
+    ok,
+    error
+  }).catch(() => {
+    // Popup may be closed
+  });
+}
 
-  const buildState = { cancelled: false, downloadId: null };
+/**
+ * Shared offscreen blob assembly, Chrome download, cancellation, and cleanup pipeline.
+ * @param {{
+ *   requestId: string,
+ *   targetUrl: string,
+ *   rawStem: string,
+ *   fallbackExt: string,
+ *   saveAs: boolean,
+ *   allowFolders: boolean,
+ *   tabId: number,
+ *   buildOffscreenMessage: (settings: object) => object
+ * }} params
+ * @returns {Promise<{ downloadId: number, requestId: string }>}
+ */
+async function executeOffscreenBlobDownload({
+  requestId,
+  targetUrl,
+  rawStem,
+  fallbackExt,
+  saveAs,
+  allowFolders,
+  tabId,
+  referer = '',
+  buildOffscreenMessage,
+  runOffscreenBuild
+}) {
+  const buildState = {
+    cancelled: false,
+    downloadId: null,
+    url: targetUrl,
+    done: 0,
+    total: 0,
+    tabId
+  };
   activeBuilds.set(requestId, buildState);
   activeOffscreenBuilds += 1;
   let blobUrl = '';
@@ -693,15 +893,10 @@ async function handleDownloadMedia(payload) {
       throw new Error('DOWNLOAD_CANCELLED');
     }
 
-    const result = await chrome.runtime.sendMessage({
-      target: 'offscreen',
-      type: MESSAGE_TYPES.OFFSCREEN_BUILD_HLS_BLOB,
-      requestId,
-      playlistUrl: targetPlaylist,
-      originalUrl: payload.url,
-      concurrency: settings.hlsFetchConcurrency,
-      qualityPreference: settings.defaultQuality
-    });
+    const executeBuild = typeof runOffscreenBuild === 'function'
+      ? () => runOffscreenBuild(settings)
+      : () => chrome.runtime.sendMessage(buildOffscreenMessage(settings));
+    const result = await withTemporaryRefererRule(targetUrl, referer, executeBuild);
 
     if (buildState.cancelled) {
       if (result && result.blobUrl) {
@@ -715,19 +910,32 @@ async function handleDownloadMedia(payload) {
     }
 
     blobUrl = result.blobUrl;
-    const finalFilename = sanitizeFilename(rawStem, result.outputExtension);
+    const allowDownloadFolders = allowFolders || isFolderFilenameTemplate(settings.filenameTemplate);
+    const finalFilename = sanitizeFilename(
+      rawStem,
+      result.outputExtension || fallbackExt,
+      { allowFolders: allowDownloadFolders }
+    );
     const downloadId = await chrome.downloads.download({
       url: blobUrl,
       filename: finalFilename,
-      saveAs: Boolean(payload.saveAs)
+      saveAs: Boolean(saveAs)
     });
     buildState.downloadId = downloadId;
 
     if (buildState.cancelled) {
-      await chrome.downloads.cancel(downloadId).catch(() => {});
-      await cleanupDownloadBlob(downloadId, blobUrl);
+      if (typeof downloadId === 'number') {
+        await chrome.downloads.cancel(downloadId).catch(() => {});
+        await cleanupDownloadBlob(downloadId, blobUrl);
+      } else {
+        await revokeOffscreenBlob(blobUrl);
+      }
       blobUrl = '';
       throw new Error('DOWNLOAD_CANCELLED');
+    }
+
+    if (typeof downloadId !== 'number') {
+      throw new Error('DOWNLOAD_FAILED');
     }
 
     await chrome.storage.session.set({ [downloadBlobKey(downloadId)]: blobUrl });
@@ -735,11 +943,18 @@ async function handleDownloadMedia(payload) {
     if (dlItem && dlItem.state !== 'in_progress') {
       await cleanupDownloadBlob(downloadId, blobUrl);
     }
+    notifyStreamFinished(requestId, targetUrl, true);
     return { downloadId, requestId };
   } catch (err) {
     if (blobUrl) {
       await revokeOffscreenBlob(blobUrl);
     }
+    notifyStreamFinished(
+      requestId,
+      targetUrl,
+      false,
+      err && err.message ? err.message : 'HLS_ERROR'
+    );
     throw err;
   } finally {
     activeBuilds.delete(requestId);
@@ -748,8 +963,387 @@ async function handleDownloadMedia(payload) {
   }
 }
 
+/**
+ * Assembles an HLS or DASH stream in the offscreen document and initiates download.
+ * @param {object} payload
+ * @param {string} rawStem
+ * @param {string} requestId
+ * @returns {Promise<{ downloadId: number, requestId: string }>}
+ */
+async function startStreamDownload(payload, rawStem, requestId) {
+  const targetPlaylist = payload.playlistUrl || payload.url;
+  if (!isHttpUrl(targetPlaylist)) {
+    throw new Error('INVALID_URL');
+  }
+
+  return executeOffscreenBlobDownload({
+    requestId,
+    targetUrl: payload.url,
+    rawStem,
+    fallbackExt: DEFAULT_FILENAMES.HLS_TS_EXT,
+    saveAs: Boolean(payload.saveAs),
+    allowFolders: Boolean(payload.allowFolders),
+    tabId: typeof payload.tabId === 'number' ? payload.tabId : -1,
+    referer: typeof payload.referer === 'string' ? payload.referer : '',
+    buildOffscreenMessage: (settings) => ({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_BUILD_HLS_BLOB,
+      requestId,
+      playlistUrl: targetPlaylist,
+      originalUrl: payload.url,
+      audioUrl: typeof payload.audioUrl === 'string' ? payload.audioUrl : '',
+      concurrency: settings.hlsFetchConcurrency,
+      qualityPreference: settings.defaultQuality
+    })
+  });
+}
+
+/**
+ * Exports a captured MSE stream buffer from the tab's content bridge into offscreen and downloads it.
+ * @param {object} payload
+ * @param {string} rawStem
+ * @param {string} requestId
+ * @returns {Promise<{ downloadId: number, requestId: string }>}
+ */
+async function startMseDownload(payload, rawStem, requestId) {
+  const tabId = typeof payload.tabId === 'number' ? payload.tabId : -1;
+  if (tabId < 0) {
+    throw new Error('NO_ACTIVE_TAB');
+  }
+  const mseId = payload.mseId || payload.url.slice(MSE_CONSTANTS.URL_PREFIX.length);
+  if (!mseId) {
+    throw new Error('MSE_NOT_FOUND');
+  }
+  const frameId = typeof payload.frameId === 'number' ? payload.frameId : undefined;
+  const fallbackExt = payload.ext || DEFAULT_FILENAMES.HLS_FMP4_EXT;
+
+  return executeOffscreenBlobDownload({
+    requestId,
+    targetUrl: payload.url,
+    rawStem,
+    fallbackExt,
+    saveAs: Boolean(payload.saveAs),
+    allowFolders: Boolean(payload.allowFolders),
+    tabId,
+    runOffscreenBuild: () => {
+      const msg = {
+        type: MESSAGE_TYPES.EXPORT_MSE_STREAM,
+        requestId,
+        mseId
+      };
+      if (typeof frameId === 'number') {
+        return chrome.tabs.sendMessage(tabId, msg, { frameId });
+      }
+      return chrome.tabs.sendMessage(tabId, msg);
+    }
+  });
+}
+
+/**
+ * Resolves raw download filename stem without stripping folder dots like "example.com/clip".
+ * @param {string | undefined} rawFilename
+ * @param {string} fallbackUrl
+ * @returns {string}
+ */
+function resolveDownloadStem(rawFilename, fallbackUrl) {
+  if (typeof rawFilename === 'string' && rawFilename) {
+    return rawFilename.replace(/\.[^./\\]+$/, '');
+  }
+  return deriveFilenameStem(fallbackUrl, '');
+}
+
+/**
+ * Downloads an HLS subtitle track (merging segmented WebVTT manifests in offscreen) via Chrome downloads.
+ * @param {{ subtitleUrl: string, filename?: string, saveAs?: boolean, allowFolders?: boolean, requestId?: string }} payload
+ * @returns {Promise<{ downloadId: number, requestId: string }>}
+ */
+async function handleDownloadHlsSubtitle(payload) {
+  if (!payload || typeof payload !== 'object' || !isHttpUrl(payload.subtitleUrl)) {
+    throw new Error('INVALID_URL');
+  }
+
+  const rawStem = resolveDownloadStem(payload.filename, payload.subtitleUrl);
+  const requestId = typeof payload.requestId === 'string' && payload.requestId
+    ? payload.requestId
+    : `sub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+  return executeOffscreenBlobDownload({
+    requestId,
+    targetUrl: payload.subtitleUrl,
+    rawStem,
+    fallbackExt: DEFAULT_FILENAMES.SUBTITLE_EXT,
+    saveAs: Boolean(payload.saveAs),
+    allowFolders: Boolean(payload.allowFolders),
+    tabId: -1,
+    buildOffscreenMessage: (settings) => ({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_BUILD_SUBTITLE_BLOB,
+      requestId,
+      subtitleUrl: payload.subtitleUrl,
+      concurrency: settings.hlsFetchConcurrency
+    })
+  });
+}
+
+/**
+ * Resolves and downloads the best available video stream or capture for a site overlay click.
+ * @param {number} tabId
+ * @param {{ requestId?: string, siteId?: string, pageUrl?: string, title?: string, directVideoUrl?: string, blobUrl?: string }} payload
+ * @param {string} [fallbackPageUrl='']
+ * @returns {Promise<{ downloadId: number, requestId: string }>}
+ */
+async function handleSiteVideoDownload(tabId, payload, fallbackPageUrl = '') {
+  const settings = await loadSettings();
+  const [networkItems, mseItems] = await Promise.all([
+    getTabNetworkMedia(tabId),
+    settings.enableMseCapture ? getTabMseMedia(tabId) : Promise.resolve([])
+  ]);
+
+  const streams = networkItems.filter((item) => item.type === MEDIA_TYPES.STREAM);
+  const directNetworkVideos = networkItems
+    .filter((item) => item.type === MEDIA_TYPES.VIDEO)
+    .sort((a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0));
+  const sortedMseItems = [...mseItems].sort((a, b) => (b.sizeBytes || 0) - (a.sizeBytes || 0));
+
+  const pageUrl = payload.pageUrl || fallbackPageUrl;
+  let exactDirect = null;
+  if (payload.directVideoUrl && isHttpUrl(payload.directVideoUrl)) {
+    const existingDirect = networkItems.find((item) => item.url === payload.directVideoUrl);
+    if (existingDirect) {
+      exactDirect = existingDirect;
+    } else {
+      const classified = classifyMedia(payload.directVideoUrl);
+      exactDirect = {
+        url: payload.directVideoUrl,
+        isStream: classified ? classified.isStream : false,
+        ext: classified ? classified.ext : DEFAULT_FILENAMES.HLS_FMP4_EXT,
+        referer: pageUrl
+      };
+    }
+  }
+
+  const matchedMse = payload.blobUrl
+    ? mseItems.find((item) => item.blobUrl && item.blobUrl === payload.blobUrl) || null
+    : null;
+
+  const preferMatchedMse = Boolean(matchedMse && (streams.length === 0 || mseItems.length > 1));
+  const chosen = exactDirect
+    || (preferMatchedMse ? matchedMse : null)
+    || streams[0]
+    || matchedMse
+    || directNetworkVideos[0]
+    || sortedMseItems[0]
+    || null;
+
+  if (!chosen) {
+    throw new Error('PLAY_FIRST');
+  }
+
+  const baseStem = (payload.title && payload.title.trim())
+    || deriveFilenameStem(chosen.url, chosen.title || '', pageUrl);
+  const templatedStem = applyFilenameTemplate(settings.filenameTemplate, {
+    stem: baseStem,
+    pageUrl: pageUrl || chosen.url
+  });
+  const filename = sanitizeFilename(templatedStem, chosen.ext || DEFAULT_FILENAMES.HLS_FMP4_EXT);
+
+  return handleDownloadMedia({
+    url: chosen.url,
+    playlistUrl: chosen.url,
+    isStream: Boolean(chosen.isStream),
+    isMse: Boolean(chosen.isMse || isMseUrl(chosen.url)),
+    mseId: chosen.mseId || '',
+    frameId: typeof chosen.frameId === 'number' ? chosen.frameId : undefined,
+    ext: chosen.ext || '',
+    referer: chosen.referer || pageUrl,
+    filename,
+    saveAs: Boolean(settings.promptSaveAs),
+    requestId: typeof payload.requestId === 'string' ? payload.requestId : '',
+    tabId
+  });
+}
+
+/**
+ * Queries the optional Windows Native Messaging companion host availability.
+ * @returns {Promise<{ available: boolean, ytDlpVersion: string, ffmpegAvailable: boolean, error: string }>}
+ */
+async function checkCompanionStatus() {
+  if (!chrome.runtime || typeof chrome.runtime.sendNativeMessage !== 'function') {
+    return { available: false, ytDlpVersion: '', ffmpegAvailable: false, error: 'UNAVAILABLE' };
+  }
+  try {
+    const res = await chrome.runtime.sendNativeMessage(NATIVE_HOST.NAME, {
+      action: NATIVE_HOST.ACTION_PING
+    });
+    return {
+      available: Boolean(res && res.ok),
+      ytDlpVersion: (res && res.ytDlpVersion) || '',
+      ffmpegAvailable: Boolean(res && res.ffmpegAvailable),
+      error: (res && res.error) || ''
+    };
+  } catch (err) {
+    return {
+      available: false,
+      ytDlpVersion: '',
+      ffmpegAvailable: false,
+      error: (err && err.message) || 'COMPANION_UNAVAILABLE'
+    };
+  }
+}
+
+/**
+ * Delegates a URL or page URL download to the local yt-dlp/ffmpeg Native Messaging companion.
+ * Uses connectNative for live progress streaming when available, with sendNativeMessage fallback.
+ * @param {{ url: string, referer?: string, filename?: string, quality?: string }} payload
+ * @returns {Promise<object>}
+ */
+async function downloadWithCompanion(payload) {
+  if (!payload || !isHttpUrl(payload.url)) {
+    throw new Error('INVALID_URL');
+  }
+  const hasConnect = Boolean(chrome.runtime && typeof chrome.runtime.connectNative === 'function');
+  const hasSend = Boolean(chrome.runtime && typeof chrome.runtime.sendNativeMessage === 'function');
+  if (!hasConnect && !hasSend) {
+    throw new Error('COMPANION_UNAVAILABLE');
+  }
+  const settings = await loadSettings().catch(() => ({}));
+  const requestPayload = {
+    action: NATIVE_HOST.ACTION_DOWNLOAD,
+    url: payload.url,
+    referer: typeof payload.referer === 'string' ? payload.referer : '',
+    filename: typeof payload.filename === 'string' ? payload.filename : '',
+    quality: typeof payload.quality === 'string' ? payload.quality : 'best',
+    cookiesBrowser: settings && settings.enableCompanionCookies ? 'chrome' : ''
+  };
+
+  if (hasConnect) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let port = null;
+      try {
+        port = chrome.runtime.connectNative(NATIVE_HOST.NAME);
+      } catch (err) {
+        settled = true;
+        reject(new Error((err && err.message) || 'COMPANION_FAILED'));
+        return;
+      }
+
+      const cleanup = () => {
+        if (port && typeof port.disconnect === 'function') {
+          try {
+            port.disconnect();
+          } catch {
+            // Ignore disconnect error
+          }
+        }
+      };
+
+      port.onMessage.addListener((message) => {
+        if (!message || typeof message !== 'object') {
+          return;
+        }
+        if (message.event === NATIVE_HOST.EVENT_PROGRESS) {
+          chrome.runtime.sendMessage({
+            type: MESSAGE_TYPES.COMPANION_PROGRESS,
+            url: payload.url,
+            percent: Number.isFinite(message.percent) ? message.percent : 0
+          }).catch(() => {
+            // Popup may be closed
+          });
+          return;
+        }
+        if (message.event === NATIVE_HOST.EVENT_DONE || typeof message.ok === 'boolean') {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          cleanup();
+          if (message.ok) {
+            resolve(message);
+          } else {
+            reject(new Error(message.error || 'COMPANION_FAILED'));
+          }
+        }
+      });
+
+      port.onDisconnect.addListener(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        const runtimeErr = chrome.runtime && chrome.runtime.lastError && chrome.runtime.lastError.message;
+        reject(new Error(runtimeErr || 'COMPANION_FAILED'));
+      });
+
+      port.postMessage({ ...requestPayload, streamProgress: true });
+    });
+  }
+
+  const res = await chrome.runtime.sendNativeMessage(NATIVE_HOST.NAME, requestPayload);
+  if (!res || !res.ok) {
+    throw new Error((res && res.error) || 'COMPANION_FAILED');
+  }
+  return res;
+}
+
+/**
+ * Starts a download either directly, via MSE export, or via HLS/DASH offscreen assembly.
+ * @param {{ url: string, playlistUrl?: string, isStream?: boolean, isMse?: boolean, filename?: string, saveAs?: boolean, requestId?: string }} payload
+ * @returns {Promise<{ downloadId: number, requestId: string }>}
+ */
+async function handleDownloadMedia(payload) {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('INVALID_URL');
+  }
+  const mseTarget = Boolean(payload.isMse || isMseUrl(payload.url));
+  if (!mseTarget && !isHttpUrl(payload.url)) {
+    throw new Error('INVALID_URL');
+  }
+
+  const rawStem = resolveDownloadStem(payload.filename, payload.url);
+  const requestId = typeof payload.requestId === 'string' && payload.requestId
+    ? payload.requestId
+    : `dl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+  if (mseTarget) {
+    return startMseDownload(payload, rawStem, requestId);
+  }
+  if (!payload.isStream) {
+    return startDirectDownload(payload, rawStem, requestId);
+  }
+  return startStreamDownload(payload, rawStem, requestId);
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.target === 'offscreen') {
+    return false;
+  }
+
+  if (message.type === MESSAGE_TYPES.DOWNLOAD_PROGRESS && message.requestId) {
+    const buildState = activeBuilds.get(message.requestId);
+    if (buildState) {
+      buildState.done = message.done || 0;
+      buildState.total = message.total || 0;
+      if (buildState.tabId >= 0 && chrome.tabs && typeof chrome.tabs.sendMessage === 'function') {
+        chrome.tabs.sendMessage(buildState.tabId, {
+          type: MESSAGE_TYPES.DOWNLOAD_PROGRESS,
+          requestId: message.requestId,
+          done: buildState.done,
+          total: buildState.total
+        }).catch(() => {});
+      }
+    }
+    return false;
+  }
+
+  if (message.type === MESSAGE_TYPES.GET_ACTIVE_BUILDS) {
+    const builds = Array.from(activeBuilds.entries()).map(([requestId, build]) => ({
+      requestId,
+      url: build.url,
+      done: build.done,
+      total: build.total
+    }));
+    sendResponse({ ok: true, builds });
     return false;
   }
 
@@ -772,14 +1366,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === MESSAGE_TYPES.INSPECT_HLS) {
-    inspectHlsStream(message.url)
+    inspectHlsStream(message.url, typeof message.referer === 'string' ? message.referer : '')
       .then((parsed) => sendResponse({ ok: true, ...parsed }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.MSE_STREAM_UPDATED && message.stream) {
+    const tabId = sender && sender.tab ? sender.tab.id : -1;
+    const frameId = sender && typeof sender.frameId === 'number' ? sender.frameId : 0;
+    recordMseMedia(tabId, frameId, message.stream);
+    return false;
+  }
+
+  if (message.type === MESSAGE_TYPES.CHECK_COMPANION) {
+    checkCompanionStatus()
+      .then((status) => sendResponse({ ok: true, ...status }))
+      .catch((err) => sendResponse({ ok: false, available: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.DOWNLOAD_WITH_COMPANION) {
+    downloadWithCompanion(message.payload)
+      .then((res) => sendResponse({ ok: true, ...res }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
   }
 
   if (message.type === MESSAGE_TYPES.DOWNLOAD_MEDIA) {
     handleDownloadMedia(message.payload)
+      .then((res) => sendResponse({ ok: true, ...res }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.DOWNLOAD_HLS_SUBTITLE) {
+    handleDownloadHlsSubtitle(message.payload)
       .then((res) => sendResponse({ ok: true, ...res }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
@@ -800,6 +1422,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     const pageUrl = sender && sender.tab && sender.tab.url ? sender.tab.url : '';
     handleTweetVideoDownload(tabId, message.payload || {}, pageUrl)
+      .then((res) => sendResponse({ ok: true, ...res }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.DOWNLOAD_SITE_VIDEO) {
+    const tabId = sender && sender.tab ? sender.tab.id : -1;
+    if (tabId < 0) {
+      sendResponse({ ok: false, error: 'NO_ACTIVE_TAB' });
+      return false;
+    }
+    const pageUrl = sender && sender.tab && sender.tab.url ? sender.tab.url : '';
+    handleSiteVideoDownload(tabId, message.payload || {}, pageUrl)
       .then((res) => sendResponse({ ok: true, ...res }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;

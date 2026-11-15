@@ -7,6 +7,10 @@
     "message": "Détecte et télécharge les vidéos, flux, images et audios de la page active.",
     "description": "Description de l'extension dans Chrome."
   },
+  "ext_command_open_popup": {
+    "message": "Ouvrir le popup Media Harvest",
+    "description": "Description du raccourci clavier de l'extension."
+  },
   "popup_header_title": {
     "message": "Media Harvest",
     "description": "Titre de l'en-tête."
@@ -44,7 +48,7 @@
     "description": "Bouton de téléchargement unitaire."
   },
   "popup_action_download_all": {
-    "message": "Tout télécharger ($COUNT$)",
+    "message": "Télécharger directs ($COUNT$)",
     "description": "Bouton pour télécharger tous les éléments directs visibles.",
     "placeholders": {
       "count": {
@@ -150,7 +154,7 @@
     "description": "Option de qualité par défaut."
   },
   "popup_action_refresh": {
-    "message": "Actualiser",
+    "message": "Réanalyser",
     "description": "Bouton pour réanalyser la page active."
   },
   "popup_action_reload_tab": {
@@ -290,5 +294,409 @@
   "options_status_reset": {
     "message": "Paramètres par défaut restaurés.",
     "description": "Confirmation après réinitialisation."
+  },
+  "options_error_save_failed": {
+    "message": "Impossible d'enregistrer les paramètres.",
+    "description": "Erreur affichée lorsque la sauvegarde échoue."
+  },
+  "popup_filter_nav_label": {
+    "message": "Catégories de médias",
+    "description": "Libellé accessible pour la barre de filtres."
+  },
+  "popup_confirm_download_all": {
+    "message": "Lancer $COUNT$ téléchargements directs ?",
+    "description": "Demande de confirmation avant un grand lot de téléchargements.",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "12"
+      }
+    }
+  },
+  "popup_action_confirm_batch": {
+    "message": "Lancer",
+    "description": "Bouton de confirmation du téléchargement groupé."
+  },
+  "popup_action_cancel_batch": {
+    "message": "Annuler",
+    "description": "Bouton d'annulation de la confirmation groupée."
+  },
+  "popup_action_stop_batch": {
+    "message": "Arrêter le lot",
+    "description": "Bouton pour interrompre un téléchargement groupé en cours."
+  },
+  "popup_error_empty_playlist": {
+    "message": "Aucun segment lisible trouvé dans ce flux.",
+    "description": "Affiché lorsqu'un manifeste HLS ou DASH ne contient aucun segment."
+  },
+  "popup_error_live_stream": {
+    "message": "Les flux en direct ne sont pas pris en charge.",
+    "description": "Affiché lors d'une tentative sur un flux dynamique en direct."
+  },
+  "popup_error_fetch_timeout": {
+    "message": "Délai dépassé lors de la récupération du flux.",
+    "description": "Affiché lorsqu'une requête réseau expire."
+  },
+  "popup_error_invalid_url": {
+    "message": "Seules les URL HTTP et HTTPS sont prises en charge.",
+    "description": "Affiché lorsque le schéma d'URL est invalide."
+  },
+  "popup_error_invalid_manifest": {
+    "message": "Impossible de lire le manifeste du flux.",
+    "description": "Affiché lorsqu'un manifeste HLS ou DASH est invalide."
+  },
+  "popup_error_play_first": {
+    "message": "Lancez la vidéo une fois avant de télécharger.",
+    "description": "Affiché lorsqu'un flux vidéo n'a pas encore été capturé."
+  },
+  "popup_error_clear_failed": {
+    "message": "Impossible d'effacer la liste des médias.",
+    "description": "Affiché lorsque le nettoyage de la liste échoue."
+  },
+  "options_prompt_save_as": {
+    "message": "Demander où enregistrer chaque fichier (Enregistrer sous, téléchargements unitaires)",
+    "description": "Option pour ouvrir la boîte Enregistrer sous lors d'un téléchargement."
+  },
+  "popup_audio_select_label": {
+    "message": "Piste audio",
+    "description": "Libellé accessible pour le sélecteur de piste audio."
+  },
+  "popup_badge_video_only": {
+    "message": "Vidéo seule (WebM)",
+    "description": "Badge indiquant qu'un flux DASH WebM exclut l'audio séparé."
+  },
+  "popup_badge_exceeds_limit": {
+    "message": "Dépasse $LIMIT_MB$ Mo",
+    "description": "Badge d'alerte lorsque la taille estimée dépasse le plafond mémoire.",
+    "placeholders": {
+      "limit_mb": {
+        "content": "$1",
+        "example": "512"
+      }
+    }
+  },
+  "popup_warning_exceeds_limit": {
+    "message": "La taille estimée dépasse la limite de $LIMIT_MB$ Mo ; le téléchargement risque d'échouer.",
+    "description": "Avertissement affiché lorsqu'un flux estimé dépasse MAX_HLS_BUFFER_BYTES.",
+    "placeholders": {
+      "limit_mb": {
+        "content": "$1",
+        "example": "512"
+      }
+    }
+  },
+  "popup_action_retry_inspect": {
+    "message": "Réessayer",
+    "description": "Bouton pour relancer l'inspection du manifeste après un échec."
+  },
+  "popup_search_placeholder": {
+    "message": "Filtrer par nom ou URL...",
+    "description": "Texte indicatif du champ de recherche de la popup."
+  },
+  "popup_search_label": {
+    "message": "Rechercher un média",
+    "description": "Libellé accessible du champ de recherche."
+  },
+  "popup_sort_label": {
+    "message": "Trier les médias",
+    "description": "Libellé accessible du sélecteur de tri."
+  },
+  "popup_sort_default": {
+    "message": "Ordre de détection",
+    "description": "Option de tri par ordre d'apparition."
+  },
+  "popup_sort_size": {
+    "message": "Plus volumineux",
+    "description": "Option de tri par taille décroissante."
+  },
+  "popup_sort_resolution": {
+    "message": "Meilleure résolution",
+    "description": "Option de tri par résolution décroissante."
+  },
+  "popup_sort_duration": {
+    "message": "Plus longue durée",
+    "description": "Option de tri par durée décroissante."
+  },
+  "popup_error_invalid_fmp4": {
+    "message": "Le segment d'initialisation du flux est invalide ou non pris en charge.",
+    "description": "Erreur si le segment d'initialisation fMP4 est illisible."
+  },
+  "popup_error_missing_audio": {
+    "message": "La piste audio sélectionnée n'a pas pu être fusionnée avec la vidéo.",
+    "description": "Erreur lors de l'échec de fusion de la piste audio."
+  },
+  "popup_error_transmux_failed": {
+    "message": "Impossible de convertir les segments vidéo en MP4.",
+    "description": "Erreur lors du transmuxage MPEG-TS vers MP4."
+  },
+  "popup_error_build_aborted": {
+    "message": "L'assemblage du flux a été interrompu.",
+    "description": "Erreur lorsque l'assemblage du flux est interrompu."
+  },
+  "popup_error_stream_failed": {
+    "message": "Impossible de traiter ce flux.",
+    "description": "Erreur générique d'assemblage de flux."
+  },
+  "popup_error_generic_download": {
+    "message": "Le navigateur a refusé ou interrompu le téléchargement.",
+    "description": "Erreur lorsque chrome.downloads échoue."
+  },
+  "popup_error_inspect_failed": {
+    "message": "Impossible de charger les qualités ($REASON$).",
+    "description": "Erreur affichée à côté du bouton Réessayer après échec d'inspection.",
+    "placeholders": {
+      "reason": {
+        "content": "$1",
+        "example": "HTTP 403"
+      }
+    }
+  },
+  "popup_status_batch_progress": {
+    "message": "Lancement des téléchargements ($DONE$/$TOTAL$)...",
+    "description": "Progression pendant le lancement d'un lot de téléchargements.",
+    "placeholders": {
+      "done": {
+        "content": "$1",
+        "example": "3"
+      },
+      "total": {
+        "content": "$2",
+        "example": "12"
+      }
+    }
+  },
+  "popup_status_batch_partial": {
+    "message": "$STARTED$ lancés, $FAILED$ en échec : $REASON$",
+    "description": "Résumé affiché lorsqu'un lot comporte des échecs partiels.",
+    "placeholders": {
+      "started": {
+        "content": "$1",
+        "example": "10"
+      },
+      "failed": {
+        "content": "$2",
+        "example": "2"
+      },
+      "reason": {
+        "content": "$3",
+        "example": "Seules les URL HTTP et HTTPS sont prises en charge."
+      }
+    }
+  },
+  "popup_status_filter_empty": {
+    "message": "Aucun média ne correspond au filtre ou à la recherche.",
+    "description": "État vide lorsque les filtres ou la recherche masquent tous les médias détectés."
+  },
+  "popup_action_reset_filters": {
+    "message": "Réinitialiser les filtres",
+    "description": "Bouton pour effacer la recherche et le filtre actif."
+  },
+  "options_confirm_reset": {
+    "message": "Restaurer tous les paramètres par défaut ?",
+    "description": "Demande de confirmation avant réinitialisation des options."
+  },
+  "options_action_confirm_reset": {
+    "message": "Restaurer",
+    "description": "Bouton de confirmation de réinitialisation."
+  },
+  "options_action_cancel_reset": {
+    "message": "Annuler",
+    "description": "Bouton d'annulation de réinitialisation."
+  },
+  "options_min_image_px_hint": {
+    "message": "Par défaut : 64 px. Les images plus petites sur un côté sont ignorées (0 = tout inclure).",
+    "description": "Aide sous le champ taille minimale des images."
+  },
+  "options_hls_concurrency_hint": {
+    "message": "Par défaut : 4. Une valeur élevée accélère le flux mais peut déclencher des limites serveur.",
+    "description": "Aide sous le champ téléchargements parallèles."
+  },
+  "options_large_stream_mb_hint": {
+    "message": "Par défaut : 250 Mo. Le plafond d'assemblage en mémoire est de 512 Mo (0 = désactivé).",
+    "description": "Aide sous le champ seuil flux volumineux."
+  },
+  "x_btn_encrypted": {
+    "message": "Protégé par DRM",
+    "description": "Libellé d'erreur du bouton X si le flux est chiffré."
+  },
+  "x_btn_too_large": {
+    "message": "Dépasse 512 Mo",
+    "description": "Libellé d'erreur du bouton X si le flux dépasse 512 Mo."
+  },
+  "x_btn_timeout": {
+    "message": "Délai dépassé",
+    "description": "Libellé d'erreur du bouton X en cas de dépassement de délai."
+  },
+  "x_btn_cancelled": {
+    "message": "Annulé",
+    "description": "Libellé du bouton X après annulation du téléchargement."
+  },
+  "x_btn_progress": {
+    "message": "$DONE$/$TOTAL$ - Annuler",
+    "description": "Progression et annulation sur le bouton intégré X pendant l'assemblage.",
+    "placeholders": {
+      "done": {
+        "content": "$1",
+        "example": "3"
+      },
+      "total": {
+        "content": "$2",
+        "example": "12"
+      }
+    }
+  },
+  "x_btn_muxing": {
+    "message": "Fusion... - Annuler",
+    "description": "Libellé du bouton intégré X pendant le muxage avec option d'annulation."
+  },
+  "popup_badge_live": {
+    "message": "Direct",
+    "description": "Badge affiché sur les flux HLS ou DASH en direct."
+  },
+  "popup_badge_subtitles": {
+    "message": "Sous-titres",
+    "description": "Badge affiché lorsqu'un flux HLS propose des sous-titres."
+  },
+  "popup_header_sidepanel_title": {
+    "message": "Ouvrir dans le panneau latéral",
+    "description": "Infobulle et libellé accessible du bouton panneau latéral Chrome."
+  },
+  "popup_filter_subtitles": {
+    "message": "Sous-titres",
+    "description": "Bouton de filtre pour les pistes de sous-titres."
+  },
+  "popup_action_select_all": {
+    "message": "Tout sélectionner",
+    "description": "Bouton pour sélectionner tous les éléments visibles téléchargeables."
+  },
+  "popup_action_deselect_all": {
+    "message": "Tout désélectionner",
+    "description": "Bouton pour désélectionner les éléments visibles."
+  },
+  "popup_action_download_selected": {
+    "message": "Télécharger sélection ($COUNT$)",
+    "description": "Bouton pour télécharger tous les éléments cochés.",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "3"
+      }
+    }
+  },
+  "popup_card_select_aria": {
+    "message": "Sélectionner pour le téléchargement groupé",
+    "description": "Libellé accessible de la case à cocher sur chaque carte média."
+  },
+  "popup_subtitle_select_label": {
+    "message": "Piste de sous-titres",
+    "description": "Libellé accessible du sélecteur de piste de sous-titres."
+  },
+  "popup_action_download_subtitle": {
+    "message": "Sous-titres",
+    "description": "Bouton pour télécharger la piste de sous-titres HLS sélectionnée."
+  },
+  "options_template_host_folder": {
+    "message": "Dossier site ({hôte}/{nom}.{ext})",
+    "description": "Modèle regroupant les fichiers dans un sous-dossier par nom d'hôte."
+  },
+  "options_template_date_folder": {
+    "message": "Dossier date ({AAAA-MM-JJ}/{nom}.{ext})",
+    "description": "Modèle regroupant les fichiers dans un sous-dossier par date ISO."
+  },
+  "site_btn_aria_download": {
+    "message": "Télécharger la vidéo depuis ce lecteur",
+    "description": "Libellé accessible du bouton flottant de téléchargement vidéo sur les sites sociaux pris en charge."
+  },
+  "popup_badge_mse": {
+    "message": "MSE",
+    "description": "Badge affiché sur les médias capturés depuis les tampons MediaSource du navigateur."
+  },
+  "popup_badge_mse_capped": {
+    "message": "Plafond tampon",
+    "description": "Badge d'alerte lorsqu'un flux MSE atteint la limite mémoire de capture."
+  },
+  "popup_action_companion_item": {
+    "message": "yt-dlp",
+    "description": "Bouton sur carte pour déléguer l'élément au compagnon local yt-dlp."
+  },
+  "popup_action_companion_page": {
+    "message": "Télécharger la page via yt-dlp",
+    "description": "Bouton de barre d'outils pour déléguer l'URL de l'onglet au compagnon local."
+  },
+  "popup_status_companion_started": {
+    "message": "Envoyé au compagnon local yt-dlp...",
+    "description": "Statut affiché pendant le téléchargement par le compagnon local."
+  },
+  "popup_status_companion_done": {
+    "message": "Téléchargement compagnon terminé dans Téléchargements/MediaHarvest.",
+    "description": "Statut affiché lorsque le compagnon local termine un téléchargement."
+  },
+  "popup_error_mse_failed": {
+    "message": "Tampon MSE indisponible. Rechargez ou relancez la lecture vidéo.",
+    "description": "Erreur lorsque l'exportation d'un flux MSE échoue ou a expiré."
+  },
+  "popup_error_companion_unavailable": {
+    "message": "Le compagnon local yt-dlp n'est pas installé ou reste inaccessible.",
+    "description": "Erreur lorsque l'hôte Native Messaging Chrome ne répond pas."
+  },
+  "popup_error_companion_failed": {
+    "message": "Échec du téléchargement via le compagnon local.",
+    "description": "Erreur renvoyée lorsque yt-dlp échoue sur le compagnon local."
+  },
+  "options_enable_social_overlay": {
+    "message": "Afficher le bouton de téléchargement sur les réseaux sociaux (YouTube, Instagram, TikTok, Reddit, Twitch...)",
+    "description": "Option pour activer ou désactiver le bouton vidéo intégré sur les plateformes prises en charge."
+  },
+  "options_enable_mse_capture": {
+    "message": "Capturer les flux MSE (MediaSource) en secours (jusqu'à 150 Mo par vidéo)",
+    "description": "Option pour activer la capture universelle des tampons MediaSource."
+  },
+  "options_companion_title": {
+    "message": "Compagnon Windows optionnel (yt-dlp + ffmpeg)",
+    "description": "Titre de section pour l'intégration du compagnon Native Messaging."
+  },
+  "options_companion_desc": {
+    "message": "Ajoute la prise en charge native yt-dlp + ffmpeg pour les vidéos lourdes (>512 Mo) ou les flux adaptatifs complexes.",
+    "description": "Description du compagnon Windows optionnel Native Messaging."
+  },
+  "options_companion_check": {
+    "message": "Tester la connexion",
+    "description": "Bouton pour vérifier si le compagnon Native Messaging répond."
+  },
+  "options_companion_connected": {
+    "message": "Connecté (yt-dlp $VERSION$)",
+    "description": "Statut affiché lorsque le compagnon Native Messaging est joignable.",
+    "placeholders": {
+      "version": {
+        "content": "$1",
+        "example": "2025.01.15"
+      }
+    }
+  },
+  "options_companion_not_connected": {
+    "message": "Non installé ou non enregistré.",
+    "description": "Statut affiché lorsque le compagnon Native Messaging n'est pas connecté."
+  },
+  "options_companion_install_hint": {
+    "message": "Exécuter dans PowerShell depuis le dossier de l'extension (nécessite Python 3, yt-dlp, et idéalement ffmpeg) :",
+    "description": "Instruction affichée avant la commande d'installation PowerShell du compagnon."
+  },
+  "options_enable_generic_overlay": {
+    "message": "Afficher le bouton de téléchargement vidéo sur tous les autres sites (lecteurs HTML5)",
+    "description": "Option pour activer ou désactiver le bouton vidéo intégré hors des réseaux sociaux."
+  },
+  "options_enable_companion_cookies": {
+    "message": "Transmettre les cookies Chrome au compagnon local yt-dlp (pages avec session)",
+    "description": "Option activable par l'utilisateur pour autoriser yt-dlp à lire les cookies Chrome."
+  },
+  "popup_status_companion_progress": {
+    "message": "Téléchargement compagnon yt-dlp en cours ($PERCENT$ %)...",
+    "description": "Pourcentage en direct pendant le téléchargement par le compagnon local.",
+    "placeholders": {
+      "percent": {
+        "content": "$1",
+        "example": "42"
+      }
+    }
   }
 }

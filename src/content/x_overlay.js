@@ -21,16 +21,27 @@
     ACTION_GROUP_SELECTOR: '[role="group"]',
     STATUS_LINK_SELECTOR: 'a[href*="/status/"]',
     BUTTON_ATTR: 'data-media-harvest-attached',
+    ACTIVE_REQ_ATTR: 'data-mh-request-id',
     BUTTON_CLASS: 'mh-x-download-btn',
     SETTINGS_KEY: 'user_settings',
     MEDIA_ID_PATTERN: /(?:ext_tw_video|amplify_video|tweet_video)(?:_thumb)?\/(\d+)\//i,
     STATUS_PATH_PATTERN: /\/([A-Za-z0-9_]+)\/status\/(\d+)/,
     MESSAGE_TYPE: 'DOWNLOAD_TWEET_VIDEO',
+    CANCEL_MESSAGE_TYPE: 'CANCEL_DOWNLOAD',
+    PROGRESS_MESSAGE_TYPE: 'DOWNLOAD_PROGRESS',
     DEBOUNCE_MS: 300,
     RESET_DELAY_MS: 3000
   });
 
-  const msg = (key) => chrome.i18n.getMessage(key) || key;
+  const X_ERROR_KEY_MAP = Object.freeze({
+    PLAY_FIRST: 'x_btn_play_first',
+    ENCRYPTED_STREAM: 'x_btn_encrypted',
+    STREAM_TOO_LARGE: 'x_btn_too_large',
+    FETCH_TIMEOUT: 'x_btn_timeout',
+    DOWNLOAD_CANCELLED: 'x_btn_cancelled'
+  });
+
+  const msg = (key, substitutions) => chrome.i18n.getMessage(key, substitutions) || key;
 
   /**
    * Creates the inline SVG download icon element.
@@ -112,20 +123,45 @@
     };
   }
 
+  const resetTimers = new WeakMap();
+  const activeButtonsByRequestId = new Map();
+
   /**
    * Updates the button text and schedules automatic restoration to idle state.
    * @param {HTMLButtonElement} btn
    * @param {HTMLSpanElement} labelEl
    * @param {string} labelText
    * @param {boolean} isError
+   * @param {string} [tooltipText='']
    */
-  function flashButtonState(btn, labelEl, labelText, isError) {
+  function flashButtonState(btn, labelEl, labelText, isError, tooltipText = '') {
+    const existingTimer = resetTimers.get(btn);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
     labelEl.textContent = labelText;
+    btn.title = tooltipText;
     btn.classList.toggle('mh-is-error', isError);
-    setTimeout(() => {
+    const timerId = setTimeout(() => {
+      resetTimers.delete(btn);
       labelEl.textContent = msg('x_btn_download');
+      btn.title = '';
       btn.classList.remove('mh-is-error');
     }, OVERLAY_CONFIG.RESET_DELAY_MS);
+    resetTimers.set(btn, timerId);
+  }
+
+  /**
+   * Formats an inline error label and tooltip from a service worker error code.
+   * @param {string} errorCode
+   * @returns {{ label: string, isError: boolean, tooltip: string }}
+   */
+  function formatOverlayError(errorCode) {
+    const key = X_ERROR_KEY_MAP[errorCode] || 'x_btn_error';
+    const label = msg(key);
+    const isError = errorCode !== 'DOWNLOAD_CANCELLED';
+    const tooltip = key === 'x_btn_error' && errorCode ? `${label}: ${errorCode}` : label;
+    return { label, isError, tooltip };
   }
 
   let isEnabled = true;
@@ -159,29 +195,46 @@
         event.preventDefault();
         event.stopPropagation();
 
+        const activeReqId = btn.getAttribute(OVERLAY_CONFIG.ACTIVE_REQ_ATTR);
+        if (activeReqId) {
+          btn.disabled = true;
+          chrome.runtime.sendMessage({
+            type: OVERLAY_CONFIG.CANCEL_MESSAGE_TYPE,
+            requestId: activeReqId
+          }).catch(() => {});
+          return;
+        }
+
+        const requestId = `x_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        btn.setAttribute(OVERLAY_CONFIG.ACTIVE_REQ_ATTR, requestId);
+        activeButtonsByRequestId.set(requestId, { btn, labelEl });
         btn.disabled = true;
-        btn.classList.remove('mh-is-error');
+        btn.title = '';
+        btn.classList.remove('mh-is-error', 'mh-is-cancelable');
         labelEl.textContent = msg('x_btn_downloading');
 
         try {
           const currentVideo = findDirectTweetElement(article, OVERLAY_CONFIG.VIDEO_SELECTOR);
           const payload = extractTweetMetadata(article, currentVideo);
+          payload.requestId = requestId;
           const response = await chrome.runtime.sendMessage({
             type: OVERLAY_CONFIG.MESSAGE_TYPE,
             payload
           });
 
           if (!response || !response.ok) {
-            const errorKey = response && response.error === 'PLAY_FIRST'
-              ? 'x_btn_play_first'
-              : 'x_btn_error';
-            flashButtonState(btn, labelEl, msg(errorKey), true);
+            const errInfo = formatOverlayError(response && response.error ? response.error : '');
+            flashButtonState(btn, labelEl, errInfo.label, errInfo.isError, errInfo.tooltip);
             return;
           }
           flashButtonState(btn, labelEl, msg('x_btn_done'), false);
-        } catch {
-          flashButtonState(btn, labelEl, msg('x_btn_error'), true);
+        } catch (err) {
+          const errInfo = formatOverlayError(err && err.message ? err.message : '');
+          flashButtonState(btn, labelEl, errInfo.label, errInfo.isError, errInfo.tooltip);
         } finally {
+          activeButtonsByRequestId.delete(requestId);
+          btn.removeAttribute(OVERLAY_CONFIG.ACTIVE_REQ_ATTR);
+          btn.classList.remove('mh-is-cancelable');
           btn.disabled = false;
         }
       });
@@ -261,6 +314,29 @@
       } else {
         enableOverlay();
       }
+    });
+  }
+
+  if (chrome && chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener((message) => {
+      if (!message || message.type !== OVERLAY_CONFIG.PROGRESS_MESSAGE_TYPE || !message.requestId) {
+        return false;
+      }
+      const target = activeButtonsByRequestId.get(message.requestId);
+      if (!target) {
+        return false;
+      }
+      const { btn, labelEl } = target;
+      btn.disabled = false;
+      btn.classList.add('mh-is-cancelable');
+      if (message.total > 0 && message.done >= message.total) {
+        labelEl.textContent = msg('x_btn_muxing');
+      } else if (message.total > 0) {
+        labelEl.textContent = msg('x_btn_progress', [String(message.done), String(message.total)]);
+      } else {
+        labelEl.textContent = msg('x_btn_downloading');
+      }
+      return false;
     });
   }
 

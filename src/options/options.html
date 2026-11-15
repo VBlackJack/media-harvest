@@ -48,22 +48,27 @@
           <option value="default" data-i18n="options_template_default"></option>
           <option value="host_stem" data-i18n="options_template_host_stem"></option>
           <option value="date_stem" data-i18n="options_template_date_stem"></option>
+          <option value="host_folder" data-i18n="options_template_host_folder"></option>
+          <option value="date_folder" data-i18n="options_template_date_folder"></option>
         </select>
       </div>
 
       <div class="field">
         <label for="minImageDimensionPx" data-i18n="options_min_image_px"></label>
-        <input id="minImageDimensionPx" name="minImageDimensionPx" type="number" min="0" max="2000" step="1" required>
+        <input id="minImageDimensionPx" name="minImageDimensionPx" type="number" min="0" max="2000" step="1" aria-describedby="minImageDimensionHint" required>
+        <p id="minImageDimensionHint" class="field-hint" data-i18n="options_min_image_px_hint"></p>
       </div>
 
       <div class="field">
         <label for="hlsFetchConcurrency" data-i18n="options_hls_concurrency"></label>
-        <input id="hlsFetchConcurrency" name="hlsFetchConcurrency" type="number" min="1" max="8" step="1" required>
+        <input id="hlsFetchConcurrency" name="hlsFetchConcurrency" type="number" min="1" max="8" step="1" aria-describedby="hlsFetchConcurrencyHint" required>
+        <p id="hlsFetchConcurrencyHint" class="field-hint" data-i18n="options_hls_concurrency_hint"></p>
       </div>
 
       <div class="field">
         <label for="largeStreamWarningMb" data-i18n="options_large_stream_mb"></label>
-        <input id="largeStreamWarningMb" name="largeStreamWarningMb" type="number" min="0" max="2048" step="10" required>
+        <input id="largeStreamWarningMb" name="largeStreamWarningMb" type="number" min="0" max="512" step="1" aria-describedby="largeStreamWarningHint" required>
+        <p id="largeStreamWarningHint" class="field-hint" data-i18n="options_large_stream_mb_hint"></p>
       </div>
 
       <label class="checkbox-field" for="enableXOverlay">
@@ -71,11 +76,57 @@
         <span data-i18n="options_enable_x_overlay"></span>
       </label>
 
+      <label class="checkbox-field" for="enableSocialOverlay">
+        <input id="enableSocialOverlay" name="enableSocialOverlay" type="checkbox">
+        <span data-i18n="options_enable_social_overlay"></span>
+      </label>
+
+      <label class="checkbox-field" for="enableGenericVideoOverlay">
+        <input id="enableGenericVideoOverlay" name="enableGenericVideoOverlay" type="checkbox">
+        <span data-i18n="options_enable_generic_overlay"></span>
+      </label>
+
+      <label class="checkbox-field" for="enableMseCapture">
+        <input id="enableMseCapture" name="enableMseCapture" type="checkbox">
+        <span data-i18n="options_enable_mse_capture"></span>
+      </label>
+
+      <label class="checkbox-field" for="enableCompanionCookies">
+        <input id="enableCompanionCookies" name="enableCompanionCookies" type="checkbox">
+        <span data-i18n="options_enable_companion_cookies"></span>
+      </label>
+
+      <label class="checkbox-field" for="promptSaveAs">
+        <input id="promptSaveAs" name="promptSaveAs" type="checkbox">
+        <span data-i18n="options_prompt_save_as"></span>
+      </label>
+
+      <div id="resetConfirmBar" class="reset-confirm hidden" role="group" aria-live="polite">
+        <span class="reset-confirm-text" data-i18n="options_confirm_reset"></span>
+        <div class="reset-confirm-actions">
+          <button id="resetCancelBtn" class="btn btn-secondary" type="button" data-i18n="options_action_cancel_reset"></button>
+          <button id="resetConfirmBtn" class="btn btn-danger" type="button" data-i18n="options_action_confirm_reset"></button>
+        </div>
+      </div>
+
       <div class="actions">
         <button id="resetBtn" class="btn btn-secondary" type="button" data-i18n="options_action_reset"></button>
         <button id="saveBtn" class="btn btn-primary" type="submit" data-i18n="options_action_save"></button>
       </div>
     </form>
+
+    <section class="companion-panel" aria-labelledby="companionSectionTitle">
+      <div class="companion-header">
+        <div>
+          <h2 id="companionSectionTitle" class="companion-title" data-i18n="options_companion_title"></h2>
+          <p class="field-hint" data-i18n="options_companion_desc"></p>
+        </div>
+        <button id="checkCompanionBtn" class="btn btn-secondary" type="button" data-i18n="options_companion_check"></button>
+      </div>
+      <div id="companionStatus" class="companion-status" role="status" aria-live="polite"></div>
+      <p class="field-hint" data-i18n="options_companion_install_hint"></p>
+      <code class="companion-cmd">.\companion\install_companion.ps1 -ExtensionId &lt;EXTENSION_ID&gt;</code>
+    </section>
   </main>
 
   <script type="module" src="options.js"></script>

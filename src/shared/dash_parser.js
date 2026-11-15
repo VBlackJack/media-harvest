@@ -250,6 +250,113 @@ function mergeSegmentConfigs(node, inheritedTemplate, inheritedList) {
 }
 
 /**
+ * Expands SegmentTimeline <S> nodes into segment entries.
+ * @param {object} template
+ * @param {string} repBaseUrl
+ * @param {{ repId: string, bandwidth: number, startNumber: number, timescale: number }} ctx
+ * @param {number} periodDurationSec
+ * @returns {Array<{ url: string, duration: number, byteRange: null }>}
+ */
+function buildTimelineSegments(template, repBaseUrl, ctx, periodDurationSec) {
+  const { repId, bandwidth, startNumber, timescale } = ctx;
+  const segments = [];
+  let currentTime = 0;
+  let segNumber = startNumber;
+
+  for (const sNode of findChildren(template.timeline, 'S')) {
+    if (sNode.attrs.t !== undefined) {
+      currentTime = Number.parseInt(sNode.attrs.t, 10) || 0;
+    }
+    const d = Number.parseInt(sNode.attrs.d, 10) || 0;
+    let r = sNode.attrs.r !== undefined ? Number.parseInt(sNode.attrs.r, 10) : 0;
+    if (r < 0) {
+      if (d > 0 && periodDurationSec > 0) {
+        const totalTicks = Math.ceil((periodDurationSec * timescale - currentTime) / d);
+        r = Math.max(0, Math.min(MAX_TIMELINE_SEGMENTS, totalTicks - 1));
+      } else {
+        r = 0;
+      }
+    }
+    const count = Math.min(r + 1, MAX_TIMELINE_SEGMENTS - segments.length);
+    for (let i = 0; i < count; i += 1) {
+      const mediaPath = expandDashTemplate(template.attrs.media, {
+        repId,
+        bandwidth,
+        number: segNumber,
+        time: currentTime
+      });
+      const url = mediaPath ? resolveUrlSafe(mediaPath, repBaseUrl) : '';
+      if (url) {
+        segments.push({ url, duration: d / timescale, byteRange: null });
+      }
+      currentTime += d;
+      segNumber += 1;
+    }
+    if (segments.length >= MAX_TIMELINE_SEGMENTS) {
+      break;
+    }
+  }
+  return segments;
+}
+
+/**
+ * Expands duration-based SegmentTemplate attributes into segment entries.
+ * @param {Record<string, string>} attrs
+ * @param {string} repBaseUrl
+ * @param {{ repId: string, bandwidth: number, startNumber: number, timescale: number }} ctx
+ * @param {number} periodDurationSec
+ * @returns {Array<{ url: string, duration: number, byteRange: null }>}
+ */
+function buildDurationSegments(attrs, repBaseUrl, ctx, periodDurationSec) {
+  const { repId, bandwidth, startNumber, timescale } = ctx;
+  const segDurationTicks = Number.parseInt(attrs.duration, 10) || 0;
+  const segDurationSec = segDurationTicks / timescale;
+  if (segDurationSec <= 0 || periodDurationSec <= 0 || !attrs.media) {
+    return [];
+  }
+
+  const segments = [];
+  const count = Math.min(MAX_TIMELINE_SEGMENTS, Math.ceil(periodDurationSec / segDurationSec));
+  for (let i = 0; i < count; i += 1) {
+    const mediaPath = expandDashTemplate(attrs.media, {
+      repId,
+      bandwidth,
+      number: startNumber + i,
+      time: i * segDurationTicks
+    });
+    const url = resolveUrlSafe(mediaPath, repBaseUrl);
+    if (url) {
+      segments.push({ url, duration: segDurationSec, byteRange: null });
+    }
+  }
+  return segments;
+}
+
+/**
+ * Resolves SegmentList child entries into validated HTTP(S) segment descriptors.
+ * @param {object} list
+ * @param {string} repBaseUrl
+ * @returns {{ initSegmentUrl: string | null, segments: Array<{ url: string, duration: number, byteRange: null }>, isProgressive: boolean }}
+ */
+function buildSegmentListEntries(list, repBaseUrl) {
+  const initEl = findChildren(list, 'Initialization')[0];
+  const initSegmentUrl = initEl && initEl.attrs.sourceURL
+    ? resolveUrlSafe(initEl.attrs.sourceURL, repBaseUrl) || null
+    : null;
+  const timescale = Number.parseInt(list.attrs.timescale, 10) || 1;
+  const duration = (Number.parseInt(list.attrs.duration, 10) || 0) / timescale;
+  const segments = findChildren(list, 'SegmentURL')
+    .filter((s) => s.attrs.media)
+    .map((s) => ({
+      url: resolveUrlSafe(s.attrs.media, repBaseUrl),
+      duration,
+      byteRange: null
+    }))
+    .filter((s) => Boolean(s.url));
+  return { initSegmentUrl, segments, isProgressive: false };
+}
+
+/**
  * Builds resolved init segment and media segment URLs for a Representation.
  * @param {object} repNode
  * @param {string} repBaseUrl
@@ -270,96 +377,19 @@ function buildRepresentationSegments(repNode, repBaseUrl, segConfig, periodDurat
     const initUrlCandidate = attrs.initialization
       ? resolveUrlSafe(expandDashTemplate(attrs.initialization, { repId, bandwidth, number: startNumber, time: 0 }), repBaseUrl)
       : '';
-    const initSegmentUrl = initUrlCandidate || null;
-
-    const segments = [];
-    if (template.timeline) {
-      let currentTime = 0;
-      let segNumber = startNumber;
-      for (const sNode of findChildren(template.timeline, 'S')) {
-        if (sNode.attrs.t !== undefined) {
-          currentTime = Number.parseInt(sNode.attrs.t, 10) || 0;
-        }
-        const d = Number.parseInt(sNode.attrs.d, 10) || 0;
-        let r = sNode.attrs.r !== undefined ? Number.parseInt(sNode.attrs.r, 10) : 0;
-        if (r < 0) {
-          if (d > 0 && periodDurationSec > 0) {
-            const totalTicks = Math.ceil((periodDurationSec * timescale - currentTime) / d);
-            r = Math.max(0, Math.min(MAX_TIMELINE_SEGMENTS, totalTicks - 1));
-          } else {
-            r = 0;
-          }
-        }
-        const count = Math.min(r + 1, MAX_TIMELINE_SEGMENTS - segments.length);
-        for (let i = 0; i < count; i += 1) {
-          const mediaPath = expandDashTemplate(attrs.media, {
-            repId,
-            bandwidth,
-            number: segNumber,
-            time: currentTime
-          });
-          if (mediaPath) {
-            const url = resolveUrlSafe(mediaPath, repBaseUrl);
-            if (url) {
-              segments.push({
-                url,
-                duration: d / timescale,
-                byteRange: null
-              });
-            }
-          }
-          currentTime += d;
-          segNumber += 1;
-        }
-        if (segments.length >= MAX_TIMELINE_SEGMENTS) {
-          break;
-        }
-      }
-    } else if (attrs.duration && periodDurationSec > 0 && attrs.media) {
-      const segDurationSec = (Number.parseInt(attrs.duration, 10) || 0) / timescale;
-      if (segDurationSec > 0) {
-        const count = Math.min(MAX_TIMELINE_SEGMENTS, Math.ceil(periodDurationSec / segDurationSec));
-        for (let i = 0; i < count; i += 1) {
-          const mediaPath = expandDashTemplate(attrs.media, {
-            repId,
-            bandwidth,
-            number: startNumber + i,
-            time: i * (Number.parseInt(attrs.duration, 10) || 0)
-          });
-          const url = resolveUrlSafe(mediaPath, repBaseUrl);
-          if (url) {
-            segments.push({
-              url,
-              duration: segDurationSec,
-              byteRange: null
-            });
-          }
-        }
-      }
-    }
-
-    return { initSegmentUrl, segments, isProgressive: false };
+    const ctx = { repId, bandwidth, startNumber, timescale };
+    const segments = template.timeline
+      ? buildTimelineSegments(template, repBaseUrl, ctx, periodDurationSec)
+      : buildDurationSegments(attrs, repBaseUrl, ctx, periodDurationSec);
+    return { initSegmentUrl: initUrlCandidate || null, segments, isProgressive: false };
   }
 
   if (list) {
-    const initEl = findChildren(list, 'Initialization')[0];
-    const initSegmentUrl = initEl && initEl.attrs.sourceURL
-      ? resolveUrlSafe(initEl.attrs.sourceURL, repBaseUrl)
-      : null;
-    const timescale = Number.parseInt(list.attrs.timescale, 10) || 1;
-    const duration = (Number.parseInt(list.attrs.duration, 10) || 0) / timescale;
-    const segments = findChildren(list, 'SegmentURL')
-      .filter((s) => s.attrs.media)
-      .map((s) => ({
-        url: resolveUrlSafe(s.attrs.media, repBaseUrl),
-        duration,
-        byteRange: null
-      }));
-    return { initSegmentUrl, segments, isProgressive: false };
+    return buildSegmentListEntries(list, repBaseUrl);
   }
 
   const ownBase = findChildren(repNode, 'BaseURL')[0];
-  if (ownBase && ownBase.text) {
+  if (ownBase && ownBase.text && repBaseUrl) {
     return {
       initSegmentUrl: null,
       segments: [{ url: repBaseUrl, duration: periodDurationSec, byteRange: null }],
@@ -368,6 +398,97 @@ function buildRepresentationSegments(repNode, repBaseUrl, segConfig, periodDurat
   }
 
   return { initSegmentUrl: null, segments: [], isProgressive: false };
+}
+
+/**
+ * Checks a DASH node for ContentProtection DRM declarations.
+ * @param {object} node
+ * @returns {string}
+ */
+function readContentProtectionMethod(node) {
+  const prot = findChildren(node, 'ContentProtection')[0];
+  if (!prot) {
+    return '';
+  }
+  return prot.attrs.value || prot.attrs.schemeIdUri || 'DRM';
+}
+
+/**
+ * Filters a track list to prefer MP4 representations when both MP4 and WebM exist.
+ * @param {Array<object>} entries
+ * @param {string} preferredMime
+ * @returns {Array<object>}
+ */
+function preferMp4Entries(entries, preferredMime) {
+  const hasPreferred = entries.some((entry) => entry.mimeType === preferredMime);
+  return hasPreferred
+    ? entries.filter((entry) => !entry.mimeType || entry.mimeType === preferredMime)
+    : entries;
+}
+
+/**
+ * Collects video/audio representations and DRM flags from a single AdaptationSet.
+ * @param {object} adaptation
+ * @param {{ baseUrl: string, periodBaseUrl: string, periodConfig: object, periodDurationSec: number }} ctx
+ * @param {{ variants: Array<object>, audioTracks: Array<object>, markProtection: (node: object) => void }} out
+ */
+function collectAdaptationTracks(adaptation, ctx, out) {
+  out.markProtection(adaptation);
+  const adaptationBaseUrl = resolveElementBaseUrl(adaptation, ctx.periodBaseUrl);
+  const adaptationConfig = mergeSegmentConfigs(adaptation, ctx.periodConfig.template, ctx.periodConfig.list);
+  const contentType = (adaptation.attrs.contentType || '').toLowerCase();
+  const adaptationMime = (adaptation.attrs.mimeType || '').toLowerCase();
+  const lang = adaptation.attrs.lang || '';
+
+  for (const rep of findChildren(adaptation, 'Representation')) {
+    out.markProtection(rep);
+    const repMime = (rep.attrs.mimeType || adaptationMime).toLowerCase();
+    const isAudio = contentType === 'audio' || repMime.startsWith('audio/');
+    const isVideo = contentType === 'video' || repMime.startsWith('video/');
+    if (!isAudio && !isVideo) {
+      continue;
+    }
+
+    const repBaseUrl = resolveElementBaseUrl(rep, adaptationBaseUrl);
+    const repConfig = mergeSegmentConfigs(rep, adaptationConfig.template, adaptationConfig.list);
+    const built = buildRepresentationSegments(rep, repBaseUrl, repConfig, ctx.periodDurationSec);
+    if (built.segments.length === 0) {
+      continue;
+    }
+
+    const width = Number.parseInt(rep.attrs.width || adaptation.attrs.width, 10) || 0;
+    const height = Number.parseInt(rep.attrs.height || adaptation.attrs.height, 10) || 0;
+    const bandwidth = Number.parseInt(rep.attrs.bandwidth, 10) || 0;
+    const repId = rep.attrs.id || `${width}x${height}_${bandwidth}`;
+
+    if (isAudio) {
+      out.audioTracks.push({
+        groupId: 'dash-audio',
+        name: lang || repId || 'audio',
+        language: lang,
+        mimeType: repMime,
+        bandwidth,
+        url: `${ctx.baseUrl}#dash-audio-${repId}`,
+        initSegmentUrl: built.initSegmentUrl,
+        segments: built.segments,
+        isProgressive: built.isProgressive
+      });
+    } else {
+      out.variants.push({
+        id: repId,
+        bandwidth,
+        width,
+        height,
+        resolution: width && height ? `${width}x${height}` : '',
+        mimeType: repMime,
+        audioGroup: 'dash-audio',
+        url: `${ctx.baseUrl}#dash-video-${repId}`,
+        initSegmentUrl: built.initSegmentUrl,
+        segments: built.segments,
+        isProgressive: built.isProgressive
+      });
+    }
+  }
 }
 
 /**
@@ -395,10 +516,10 @@ export function parseDashManifest(xmlText, baseUrl) {
   let totalDurationSec = mpdDurationSec;
 
   const markProtection = (node) => {
-    const prot = findChildren(node, 'ContentProtection')[0];
-    if (prot) {
+    const method = readContentProtectionMethod(node);
+    if (method) {
       encrypted = true;
-      encryptionMethod = prot.attrs.value || prot.attrs.schemeIdUri || 'DRM';
+      encryptionMethod = method;
     }
   };
 
@@ -411,77 +532,18 @@ export function parseDashManifest(xmlText, baseUrl) {
     const periodConfig = mergeSegmentConfigs(period, mpdConfig.template, mpdConfig.list);
 
     for (const adaptation of findChildren(period, 'AdaptationSet')) {
-      markProtection(adaptation);
-      const adaptationBaseUrl = resolveElementBaseUrl(adaptation, periodBaseUrl);
-      const adaptationConfig = mergeSegmentConfigs(adaptation, periodConfig.template, periodConfig.list);
-      const contentType = (adaptation.attrs.contentType || '').toLowerCase();
-      const adaptationMime = (adaptation.attrs.mimeType || '').toLowerCase();
-      const lang = adaptation.attrs.lang || '';
-
-      for (const rep of findChildren(adaptation, 'Representation')) {
-        markProtection(rep);
-        const repMime = (rep.attrs.mimeType || adaptationMime).toLowerCase();
-        const isAudio = contentType === 'audio' || repMime.startsWith('audio/');
-        const isVideo = contentType === 'video' || repMime.startsWith('video/');
-        if (!isAudio && !isVideo) {
-          continue;
-        }
-
-        const repBaseUrl = resolveElementBaseUrl(rep, adaptationBaseUrl);
-        const repConfig = mergeSegmentConfigs(rep, adaptationConfig.template, adaptationConfig.list);
-        const built = buildRepresentationSegments(rep, repBaseUrl, repConfig, periodDurationSec);
-        if (built.segments.length === 0) {
-          continue;
-        }
-
-        const width = Number.parseInt(rep.attrs.width || adaptation.attrs.width, 10) || 0;
-        const height = Number.parseInt(rep.attrs.height || adaptation.attrs.height, 10) || 0;
-        const bandwidth = Number.parseInt(rep.attrs.bandwidth, 10) || 0;
-        const repId = rep.attrs.id || `${width}x${height}_${bandwidth}`;
-
-        if (isAudio) {
-          audioTracks.push({
-            groupId: 'dash-audio',
-            name: lang || repId || 'audio',
-            language: lang,
-            mimeType: repMime,
-            bandwidth,
-            url: `${baseUrl}#dash-audio-${repId}`,
-            initSegmentUrl: built.initSegmentUrl,
-            segments: built.segments,
-            isProgressive: built.isProgressive
-          });
-        } else {
-          variants.push({
-            id: repId,
-            bandwidth,
-            width,
-            height,
-            resolution: width && height ? `${width}x${height}` : '',
-            mimeType: repMime,
-            audioGroup: 'dash-audio',
-            url: `${baseUrl}#dash-video-${repId}`,
-            initSegmentUrl: built.initSegmentUrl,
-            segments: built.segments,
-            isProgressive: built.isProgressive
-          });
-        }
-      }
+      collectAdaptationTracks(
+        adaptation,
+        { baseUrl, periodBaseUrl, periodConfig, periodDurationSec },
+        { variants, audioTracks, markProtection }
+      );
     }
   }
 
-  // Prefer MP4 representations when both MP4 and WebM exist so fMP4 muxer works cleanly
-  const hasMp4Video = variants.some((v) => v.mimeType === 'video/mp4');
-  const filteredVariants = hasMp4Video
-    ? variants.filter((v) => !v.mimeType || v.mimeType === 'video/mp4')
-    : variants;
-  filteredVariants.sort((a, b) => (b.width * b.height - a.width * a.height) || (b.bandwidth - a.bandwidth));
-
-  const hasMp4Audio = audioTracks.some((a) => a.mimeType === 'audio/mp4');
-  const filteredAudio = hasMp4Audio
-    ? audioTracks.filter((a) => !a.mimeType || a.mimeType === 'audio/mp4')
-    : audioTracks;
-  filteredAudio.sort((a, b) => b.bandwidth - a.bandwidth);
+  const filteredVariants = preferMp4Entries(variants, 'video/mp4')
+    .sort((a, b) => (b.width * b.height - a.width * a.height) || (b.bandwidth - a.bandwidth));
+  const filteredAudio = preferMp4Entries(audioTracks, 'audio/mp4')
+    .sort((a, b) => b.bandwidth - a.bandwidth);
 
   if (!totalDurationSec && filteredVariants.length > 0) {
     totalDurationSec = Math.round(

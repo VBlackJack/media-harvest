@@ -25,6 +25,8 @@
   --accent-strong: #0369a1;
   --accent-strong-hover: #075985;
   --info-bg: rgba(56, 189, 248, 0.14);
+  --danger: #fca5a5;
+  --danger-bg: rgba(248, 113, 113, 0.14);
 }
 
 * {
@@ -93,6 +95,11 @@ input:focus-visible {
   font-size: 12px;
 }
 
+.status-banner.status-error {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
 .settings-form {
   display: flex;
   flex-direction: column;
@@ -108,6 +115,13 @@ input:focus-visible {
 .field label {
   font-weight: 600;
   color: var(--text);
+}
+
+.field-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .field select,
@@ -164,4 +178,85 @@ input:focus-visible {
 
 .btn-secondary:hover {
   background: var(--surface-hover);
+}
+
+.btn-danger {
+  background: var(--danger-bg);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  color: var(--danger);
+}
+
+.btn-danger:hover {
+  background: rgba(248, 113, 113, 0.24);
+}
+
+.reset-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  border-radius: 6px;
+  background: var(--danger-bg);
+}
+
+.reset-confirm-text {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.reset-confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.companion-panel {
+  margin-top: 18px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.companion-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.companion-title {
+  margin: 0 0 3px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.companion-status {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.companion-status.is-connected {
+  color: var(--accent);
+}
+
+.companion-cmd {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.45);
+  border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text);
+  user-select: all;
 }

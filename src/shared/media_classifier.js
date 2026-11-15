@@ -23,10 +23,13 @@ import {
   MEDIA_TYPES,
   MIME_EXTENSION_MAP,
   MIME_PREFIX_MAP,
+  MSE_CONSTANTS,
   NON_MEDIA_MIME_TYPES,
   SEGMENT_EXTENSIONS,
   STREAM_EXTENSIONS,
   STREAM_MIME_TYPES,
+  SUBTITLE_EXTENSIONS,
+  SUBTITLE_MIME_TYPES,
   VIDEO_EXTENSIONS,
   X_INTEGRATION
 } from '../config/constants.js';
@@ -35,7 +38,8 @@ const EXTENSION_TYPE_TABLE = [
   { extensions: STREAM_EXTENSIONS, type: MEDIA_TYPES.STREAM, isStream: true },
   { extensions: VIDEO_EXTENSIONS, type: MEDIA_TYPES.VIDEO, isStream: false },
   { extensions: IMAGE_EXTENSIONS, type: MEDIA_TYPES.IMAGE, isStream: false },
-  { extensions: AUDIO_EXTENSIONS, type: MEDIA_TYPES.AUDIO, isStream: false }
+  { extensions: AUDIO_EXTENSIONS, type: MEDIA_TYPES.AUDIO, isStream: false },
+  { extensions: SUBTITLE_EXTENSIONS, type: MEDIA_TYPES.SUBTITLE, isStream: false }
 ];
 
 const EXTENSION_LOOKUP = new Map(
@@ -46,6 +50,8 @@ const EXTENSION_LOOKUP = new Map(
 
 const SEGMENT_SET = new Set(SEGMENT_EXTENSIONS);
 const STREAM_MIME_SET = new Set(STREAM_MIME_TYPES);
+const SUBTITLE_MIME_SET = new Set(SUBTITLE_MIME_TYPES);
+const SUBTITLE_EXT_SET = new Set(SUBTITLE_EXTENSIONS);
 const NON_MEDIA_MIME_SET = new Set(NON_MEDIA_MIME_TYPES);
 const STREAM_EXT_SET = new Set(STREAM_EXTENSIONS);
 
@@ -58,6 +64,10 @@ export function extractUrlExtension(rawUrl) {
   if (typeof rawUrl !== 'string' || !rawUrl) {
     return '';
   }
+  if (isMseUrl(rawUrl)) {
+    return '';
+  }
+
   try {
     const parsed = new URL(rawUrl);
     const segments = parsed.pathname.split('/');
@@ -115,7 +125,10 @@ export function classifyMedia(rawUrl, mimeHeader = '') {
 
   const mime = normalizeMimeType(mimeHeader);
   if (mime) {
-    if ((mime === 'text/plain' || mime === 'application/xml' || mime === 'text/xml') && STREAM_EXT_SET.has(ext)) {
+    if (
+      (mime === 'text/plain' || mime === 'application/xml' || mime === 'text/xml') &&
+      (STREAM_EXT_SET.has(ext) || SUBTITLE_EXT_SET.has(ext))
+    ) {
       return { ...EXTENSION_LOOKUP.get(ext) };
     }
     if (NON_MEDIA_MIME_SET.has(mime) || mime === 'text/plain') {
@@ -127,6 +140,13 @@ export function classifyMedia(rawUrl, mimeHeader = '') {
       type: MEDIA_TYPES.STREAM,
       ext: MIME_EXTENSION_MAP[mime] || STREAM_EXTENSIONS[0],
       isStream: true
+    };
+  }
+  if (mime && SUBTITLE_MIME_SET.has(mime)) {
+    return {
+      type: MEDIA_TYPES.SUBTITLE,
+      ext: MIME_EXTENSION_MAP[mime] || SUBTITLE_EXTENSIONS[0],
+      isStream: false
     };
   }
 
@@ -151,26 +171,89 @@ export function classifyMedia(rawUrl, mimeHeader = '') {
 }
 
 /**
- * Produces a cross-platform safe filename with an explicit extension.
- * @param {string} rawName
- * @param {string} fallbackExt
+ * Sanitizes a single path segment for safe cross-platform Chrome download paths.
+ * @param {string} rawSegment
+ * @param {number} maxLength
  * @returns {string}
  */
-export function sanitizeFilename(rawName, fallbackExt = DEFAULT_FILENAMES.FALLBACK_EXT) {
+function sanitizePathSegment(rawSegment, maxLength = LIMITS.MAX_FILENAME_LENGTH) {
+  return String(rawSegment || '')
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+    .replace(/[\s_]+/g, '_')
+    .replace(/\.+$/g, '')
+    .slice(0, maxLength)
+    .replace(/^_+|_+$/g, '');
+}
+
+/**
+ * Produces a cross-platform safe filename (or safe forward-slash relative path) with an explicit extension.
+ * @param {string} rawName
+ * @param {string} fallbackExt
+ * @param {{ allowFolders?: boolean }} [options]
+ * @returns {string}
+ */
+export function sanitizeFilename(rawName, fallbackExt = DEFAULT_FILENAMES.FALLBACK_EXT, options = {}) {
   const safeExt = (fallbackExt || DEFAULT_FILENAMES.FALLBACK_EXT)
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '') || DEFAULT_FILENAMES.FALLBACK_EXT;
 
-  const cleanedBase = (rawName || DEFAULT_FILENAMES.BASE)
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
-    .replace(/[\s_]+/g, '_')
-    .replace(/\.+$/g, '')
-    .slice(0, LIMITS.MAX_FILENAME_LENGTH)
-    .replace(/^_+|_+$/g, '');
+  const rawText = rawName || DEFAULT_FILENAMES.BASE;
+  const allowFolders = Boolean(options && options.allowFolders);
+  let folderPrefix = '';
+  let leafSegment = rawText;
 
+  if (allowFolders && rawText.includes('/')) {
+    const parts = rawText.split('/').filter(Boolean);
+    if (parts.length > 1) {
+      leafSegment = parts[parts.length - 1];
+      const safeFolders = parts
+        .slice(0, -1)
+        .map((segment) => sanitizePathSegment(segment.replace(/^\.+$/, '')))
+        .filter((segment) => segment && segment !== '.' && segment !== '..');
+      if (safeFolders.length > 0) {
+        folderPrefix = `${safeFolders.join('/')}/`;
+      }
+    }
+  }
+
+  const cleanedBase = sanitizePathSegment(leafSegment, LIMITS.MAX_FILENAME_LENGTH);
   const base = cleanedBase || DEFAULT_FILENAMES.BASE;
   const suffix = `.${safeExt}`;
-  return base.toLowerCase().endsWith(suffix) ? base : `${base}${suffix}`;
+  const finalLeaf = base.toLowerCase().endsWith(suffix) ? base : `${base}${suffix}`;
+  return `${folderPrefix}${finalLeaf}`;
+}
+
+/**
+ * Checks whether a string uses the internal virtual MSE stream scheme.
+ * @param {string} rawUrl
+ * @returns {boolean}
+ */
+export function isMseUrl(rawUrl) {
+  return typeof rawUrl === 'string' && rawUrl.startsWith(MSE_CONSTANTS.URL_PREFIX);
+}
+
+/**
+ * Classifies an MSE codec/MIME header string into a canonical media descriptor.
+ * @param {string} mimeHeader
+ * @returns {{ type: string, ext: string, isStream: boolean, isMse: boolean }}
+ */
+export function classifyMseMime(mimeHeader) {
+  const mime = normalizeMimeType(mimeHeader);
+  const mappedExt = MIME_EXTENSION_MAP[mime];
+  if (mime.startsWith('audio/')) {
+    return {
+      type: MEDIA_TYPES.AUDIO,
+      ext: mappedExt || 'm4a',
+      isStream: false,
+      isMse: true
+    };
+  }
+  return {
+    type: MEDIA_TYPES.VIDEO,
+    ext: mappedExt || 'mp4',
+    isStream: false,
+    isMse: true
+  };
 }
 
 /**
@@ -193,6 +276,10 @@ export function deriveFilenameStem(rawUrl, pageTitle = '', pageUrl = '') {
     } catch {
       // Ignore malformed pageUrl
     }
+  }
+
+  if (isMseUrl(rawUrl)) {
+    return pageTitle || DEFAULT_FILENAMES.BASE;
   }
 
   try {
@@ -242,7 +329,11 @@ export function deduplicateMedia(items) {
       width: item.width || existing.width || 0,
       height: item.height || existing.height || 0,
       sizeBytes: item.sizeBytes || existing.sizeBytes || 0,
-      title: item.title || existing.title || ''
+      title: item.title || existing.title || '',
+      referer: item.referer || existing.referer || '',
+      isMse: Boolean(item.isMse || existing.isMse),
+      mseId: item.mseId || existing.mseId || '',
+      blobUrl: item.blobUrl || existing.blobUrl || ''
     });
   }
 

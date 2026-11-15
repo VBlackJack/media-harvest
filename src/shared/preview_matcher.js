@@ -94,6 +94,7 @@ export function attachVideoPreviews(items, videoElements) {
 
     const mediaId = extractMediaId(item.url);
     const matched = bySrc.get(item.url)
+      || (item.blobUrl ? bySrc.get(item.blobUrl) : null)
       || (mediaId ? byMediaId.get(mediaId) : null)
       || singleFallback;
 

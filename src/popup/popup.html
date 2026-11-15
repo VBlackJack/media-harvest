@@ -50,6 +50,12 @@
           <path d="M14 11v6"/>
         </svg>
       </button>
+      <button id="sidePanelBtn" class="icon-btn side-panel-btn" type="button" data-i18n-title="popup_header_sidepanel_title" data-i18n-aria="popup_header_sidepanel_title">
+        <svg aria-hidden="true" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+          <line x1="15" y1="3" x2="15" y2="21"/>
+        </svg>
+      </button>
       <button id="optionsBtn" class="icon-btn" type="button" data-i18n-title="popup_header_options_title">
         <svg aria-hidden="true" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="3"/>
@@ -59,30 +65,63 @@
     </div>
   </header>
 
-  <nav class="filters" role="tablist">
-    <button class="filter-btn active" data-filter="all" type="button" role="tab" aria-selected="true">
+  <nav class="filters" data-i18n-aria="popup_filter_nav_label">
+    <button class="filter-btn active" data-filter="all" type="button" aria-pressed="true">
       <span data-i18n="popup_filter_all"></span>
       <span class="count" id="countAll">0</span>
     </button>
-    <button class="filter-btn" data-filter="videos" type="button" role="tab" aria-selected="false">
+    <button class="filter-btn" data-filter="videos" type="button" aria-pressed="false">
       <span data-i18n="popup_filter_videos"></span>
       <span class="count" id="countVideos">0</span>
     </button>
-    <button class="filter-btn" data-filter="images" type="button" role="tab" aria-selected="false">
+    <button class="filter-btn" data-filter="images" type="button" aria-pressed="false">
       <span data-i18n="popup_filter_images"></span>
       <span class="count" id="countImages">0</span>
     </button>
-    <button class="filter-btn" data-filter="audio" type="button" role="tab" aria-selected="false">
+    <button class="filter-btn" data-filter="audio" type="button" aria-pressed="false">
       <span data-i18n="popup_filter_audio"></span>
       <span class="count" id="countAudio">0</span>
     </button>
+    <button class="filter-btn" data-filter="subtitles" type="button" aria-pressed="false">
+      <span data-i18n="popup_filter_subtitles"></span>
+      <span class="count" id="countSubtitles">0</span>
+    </button>
   </nav>
+
+  <div class="search-sort-bar">
+    <input
+      id="searchInput"
+      class="search-input"
+      type="search"
+      data-i18n-placeholder="popup_search_placeholder"
+      data-i18n-aria="popup_search_label"
+    >
+    <select id="sortSelect" class="sort-select" data-i18n-aria="popup_sort_label">
+      <option value="default" data-i18n="popup_sort_default"></option>
+      <option value="size_desc" data-i18n="popup_sort_size"></option>
+      <option value="resolution_desc" data-i18n="popup_sort_resolution"></option>
+      <option value="duration_desc" data-i18n="popup_sort_duration"></option>
+    </select>
+  </div>
 
   <div id="hintBanner" class="banner banner-info hidden" role="status" aria-live="polite"></div>
   <div id="statusBanner" class="banner banner-status hidden" role="status" aria-live="polite"></div>
 
   <div class="toolbar">
+    <div id="selectionBar" class="toolbar-row hidden">
+      <button id="selectAllBtn" class="btn btn-secondary btn-compact" type="button"></button>
+      <button id="downloadSelectedBtn" class="btn btn-primary btn-compact" type="button" disabled></button>
+    </div>
     <button id="downloadAllBtn" class="btn btn-secondary hidden" type="button"></button>
+    <button id="companionPageBtn" class="btn btn-secondary hidden" type="button" data-i18n="popup_action_companion_page"></button>
+    <button id="stopBatchBtn" class="btn btn-cancel btn-full hidden" type="button" data-i18n="popup_action_stop_batch"></button>
+    <div id="batchConfirmBar" class="batch-confirm hidden" role="group" aria-live="polite">
+      <span id="batchConfirmText" class="batch-confirm-text"></span>
+      <div class="batch-confirm-actions">
+        <button id="batchConfirmBtn" class="btn btn-primary" type="button" data-i18n="popup_action_confirm_batch"></button>
+        <button id="batchCancelBtn" class="btn btn-secondary btn-compact" type="button" data-i18n="popup_action_cancel_batch"></button>
+      </div>
+    </div>
   </div>
 
   <main id="mediaList" class="media-list"></main>
