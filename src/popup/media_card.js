@@ -452,9 +452,10 @@ export function applyStreamMetadata(entry, meta, context = {}) {
  * @param {(text: string, isError?: boolean) => void} onStatus
  * @param {Document} doc
  * @param {Function} translate
+ * @param {object} [context={}]
  * @returns {HTMLButtonElement}
  */
-function createCopyButton(entry, onStatus, doc, translate) {
+function createCopyButton(entry, onStatus, doc, translate, context = {}) {
   const copyBtn = doc.createElement('button');
   copyBtn.type = 'button';
   copyBtn.className = 'icon-btn';
@@ -483,7 +484,16 @@ function createCopyButton(entry, onStatus, doc, translate) {
   let resetTimer = null;
   copyBtn.addEventListener('click', async () => {
     try {
-      await navigator.clipboard.writeText(entry.item.url);
+      const targetUrl = (entry.qualitySelect && !entry.qualitySelect.classList.contains('hidden') && entry.qualitySelect.value)
+        ? entry.qualitySelect.value
+        : entry.item.url;
+      const writeFn = context.writeClipboardFn
+        || (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function'
+          ? (text) => navigator.clipboard.writeText(text)
+          : null);
+      if (writeFn) {
+        await writeFn(targetUrl);
+      }
       copyBtn.title = translate('popup_action_copied');
       copyBtn.classList.add('is-copied');
       onStatus(translate('popup_action_copied'));
@@ -659,7 +669,9 @@ export function createMediaCard(item, context = {}) {
     entry.retryInspectBtn = retryInspectBtn;
   }
 
-  controls.appendChild(createCopyButton(entry, context.onStatus || (() => {}), doc, translate));
+  const copyBtn = createCopyButton(entry, context.onStatus || (() => {}), doc, translate, context);
+  controls.appendChild(copyBtn);
+  entry.copyBtn = copyBtn;
 
   const isCompanionEligible = !item.isMse && (
     item.type === MEDIA_TYPES.VIDEO ||

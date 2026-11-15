@@ -698,5 +698,29 @@
         "example": "42"
       }
     }
+  },
+  "options_action_copy_cmd": {
+    "message": "Copy install command",
+    "description": "Button to copy the PowerShell companion installation command to the clipboard."
+  },
+  "options_enable_companion_cookies_hint": {
+    "message": "Forwards active tab session cookies only when downloading via the companion. Recommended only for videos behind your login.",
+    "description": "Help hint explaining the scope of companion cookie forwarding."
+  },
+  "popup_action_copy_link": {
+    "message": "Copy link",
+    "description": "Card button to copy the direct media or stream URL to the clipboard."
+  },
+  "popup_action_copied": {
+    "message": "Copied!",
+    "description": "Temporary button feedback after copying a link or command to the clipboard."
+  },
+  "popup_status_cleared": {
+    "message": "Media list cleared.",
+    "description": "Status banner message after clearing the captured media list."
+  },
+  "popup_status_empty_hint": {
+    "message": "Tip: Start video playback or reload the tab to detect streaming media.",
+    "description": "Helpful hint shown in the empty state when no media has been captured yet."
   }
 }

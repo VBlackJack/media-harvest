@@ -91,10 +91,13 @@
         <span data-i18n="options_enable_mse_capture"></span>
       </label>
 
-      <label class="checkbox-field" for="enableCompanionCookies">
-        <input id="enableCompanionCookies" name="enableCompanionCookies" type="checkbox">
-        <span data-i18n="options_enable_companion_cookies"></span>
-      </label>
+      <div class="field">
+        <label class="checkbox-field" for="enableCompanionCookies">
+          <input id="enableCompanionCookies" name="enableCompanionCookies" type="checkbox" aria-describedby="companionCookiesHint">
+          <span data-i18n="options_enable_companion_cookies"></span>
+        </label>
+        <p id="companionCookiesHint" class="field-hint" data-i18n="options_enable_companion_cookies_hint"></p>
+      </div>
 
       <label class="checkbox-field" for="promptSaveAs">
         <input id="promptSaveAs" name="promptSaveAs" type="checkbox">
@@ -125,7 +128,12 @@
       </div>
       <div id="companionStatus" class="companion-status" role="status" aria-live="polite"></div>
       <p class="field-hint" data-i18n="options_companion_install_hint"></p>
-      <code class="companion-cmd">.\companion\install_companion.ps1 -ExtensionId &lt;EXTENSION_ID&gt;</code>
+      <div class="companion-cmd-row">
+        <code id="companionCmd" class="companion-cmd">.\companion\install_companion.ps1 -ExtensionId &lt;EXTENSION_ID&gt;</code>
+        <button id="copyCompanionCmdBtn" class="btn btn-secondary btn-compact" type="button" data-i18n-title="options_action_copy_cmd" data-i18n-aria="options_action_copy_cmd">
+          <span data-i18n="options_action_copy_cmd"></span>
+        </button>
+      </div>
     </section>
   </main>
 

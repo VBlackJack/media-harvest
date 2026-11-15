@@ -43,7 +43,9 @@ export function collectOptionElements(doc) {
     resetBtn: doc.getElementById('resetBtn'),
     resetConfirmBar: doc.getElementById('resetConfirmBar'),
     resetConfirmBtn: doc.getElementById('resetConfirmBtn'),
-    resetCancelBtn: doc.getElementById('resetCancelBtn')
+    resetCancelBtn: doc.getElementById('resetCancelBtn'),
+    companionCmd: doc.getElementById('companionCmd'),
+    copyCompanionCmdBtn: doc.getElementById('copyCompanionCmdBtn')
   };
 }
 
@@ -78,8 +80,65 @@ export function createOptionsController(deps = {}) {
   const translateFn = deps.translateFn || t;
   const getLangFn = deps.getUiLanguageFn || getUiLanguage;
   const applyI18nFn = deps.applyTranslationsFn || applyTranslations;
+  const chromeRuntimeId = deps.chromeRuntimeId
+    || ((typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) ? chrome.runtime.id : '');
+  const writeClipboardFn = deps.writeClipboardFn
+    || (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function'
+      ? (text) => navigator.clipboard.writeText(text)
+      : null);
   const els = collectOptionElements(doc);
   let statusTimer = null;
+
+  /**
+   * Updates the companion installation PowerShell command with the active runtime extension ID.
+   */
+  function updateCompanionSnippet() {
+    if (els.companionCmd && chromeRuntimeId) {
+      els.companionCmd.textContent = `.\\companion\\install_companion.ps1 -ExtensionId ${chromeRuntimeId}`;
+    }
+  }
+
+  /**
+   * Copies the companion installation snippet to the clipboard with momentary feedback.
+   */
+  async function handleCopyCompanionCmd() {
+    if (!els.companionCmd || !els.copyCompanionCmdBtn) {
+      return;
+    }
+    const textToCopy = els.companionCmd.textContent || '';
+    if (!textToCopy) {
+      return;
+    }
+    try {
+      if (writeClipboardFn) {
+        await writeClipboardFn(textToCopy);
+      }
+      const labelSpan = (typeof els.copyCompanionCmdBtn.querySelector === 'function'
+        ? els.copyCompanionCmdBtn.querySelector('span')
+        : null) || els.copyCompanionCmdBtn;
+      const originalText = labelSpan.textContent;
+      labelSpan.textContent = translateFn('popup_action_copied');
+      els.copyCompanionCmdBtn.classList.add('is-copied');
+      setTimeout(() => {
+        labelSpan.textContent = originalText;
+        els.copyCompanionCmdBtn.classList.remove('is-copied');
+      }, LIMITS.COPY_FEEDBACK_MS);
+    } catch {
+      // Non-fatal if clipboard write fails
+    }
+  }
+
+  /**
+   * Handles keyboard navigation shortcuts like Escape to dismiss confirmation prompts.
+   * @param {KeyboardEvent} event
+   */
+  function handleGlobalKeyDown(event) {
+    if (event && event.key === 'Escape') {
+      if (els.resetConfirmBar && !els.resetConfirmBar.classList.contains('hidden')) {
+        hideResetConfirm();
+      }
+    }
+  }
 
   /**
    * Displays temporary feedback in the status banner.
@@ -253,6 +312,13 @@ export function createOptionsController(deps = {}) {
     if (els.checkCompanionBtn) {
       els.checkCompanionBtn.addEventListener('click', checkCompanion);
     }
+    if (els.copyCompanionCmdBtn) {
+      els.copyCompanionCmdBtn.addEventListener('click', handleCopyCompanionCmd);
+    }
+    if (doc && typeof doc.addEventListener === 'function') {
+      doc.addEventListener('keydown', handleGlobalKeyDown);
+    }
+    updateCompanionSnippet();
     try {
       const loaded = await loadFn();
       renderForm(loaded);
@@ -273,6 +339,9 @@ export function createOptionsController(deps = {}) {
     handleSubmit,
     handleReset,
     checkCompanion,
+    updateCompanionSnippet,
+    handleCopyCompanionCmd,
+    handleGlobalKeyDown,
     init
   };
 }

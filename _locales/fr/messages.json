@@ -698,5 +698,29 @@
         "example": "42"
       }
     }
+  },
+  "options_action_copy_cmd": {
+    "message": "Copier la commande d'installation",
+    "description": "Bouton pour copier la commande d'installation PowerShell du compagnon dans le presse-papiers."
+  },
+  "options_enable_companion_cookies_hint": {
+    "message": "Transmet uniquement les cookies de session de l'onglet actif lors d'un téléchargement via le compagnon. Recommandé uniquement pour les vidéos nécessitant une connexion.",
+    "description": "Aide expliquant la portée du transfert de cookies vers le compagnon."
+  },
+  "popup_action_copy_link": {
+    "message": "Copier le lien",
+    "description": "Bouton sur chaque carte pour copier l'URL directe ou de flux dans le presse-papiers."
+  },
+  "popup_action_copied": {
+    "message": "Copié !",
+    "description": "Indication temporaire après la copie d'un lien ou d'une commande."
+  },
+  "popup_status_cleared": {
+    "message": "Liste des médias effacée.",
+    "description": "Message affiché après la suppression de la liste des médias capturés."
+  },
+  "popup_status_empty_hint": {
+    "message": "Astuce : lancez la lecture d'une vidéo ou rechargez l'onglet pour détecter les flux.",
+    "description": "Conseil affiché dans l'état vide lorsqu'aucun média n'a encore été capturé."
   }
 }

@@ -432,4 +432,31 @@ test('createMediaCard supports HLS subtitles, live stream blocking, audio previe
   await directWithCompanion.companionBtn.dispatchEvent({ type: 'click' });
   assert.equal(companionCalls.length, 1);
   assert.equal(companionCalls[0].targetUrl, 'https://cdn.example.com/heavy.mp4');
+
+  // Copy URL button copies the direct or selected variant URL with visual feedback
+  let copiedUrl = '';
+  let statusReported = '';
+  const copyableCard = createMediaCard(
+    {
+      url: 'https://cdn.example.com/clip.mp4',
+      type: 'video',
+      ext: 'mp4',
+      isStream: false,
+      source: 'network',
+      suggestedFilename: 'clip.mp4'
+    },
+    {
+      documentRef: doc,
+      translateFn: (k) => k,
+      hlsMetaByUrl: metaMap,
+      getSettings: () => DEFAULT_SETTINGS,
+      writeClipboardFn: async (text) => { copiedUrl = text; },
+      onStatus: (msg) => { statusReported = msg; }
+    }
+  );
+  assert.ok(copyableCard.copyBtn);
+  await copyableCard.copyBtn.dispatchEvent({ type: 'click' });
+  assert.equal(copiedUrl, 'https://cdn.example.com/clip.mp4');
+  assert.equal(copyableCard.copyBtn.classList.contains('is-copied'), true);
+  assert.equal(statusReported, 'popup_action_copied');
 });

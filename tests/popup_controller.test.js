@@ -649,3 +649,88 @@ test('popup controller supports multi-select mixed batches, subtitles filter, si
   assert.deepEqual(openedSidePanels, [{ windowId: 99 }]);
   assert.equal(winClosed, true);
 });
+
+test('popup controller handles keyboard shortcuts, clear confirmation, and empty state guidance', async () => {
+  const doc = createFakePopupDocument();
+  let mediaList = [
+    {
+      url: 'https://cdn.example.com/video.mp4',
+      type: 'video',
+      source: 'dom',
+      suggestedFilename: 'video.mp4'
+    }
+  ];
+
+  const chromeApi = {
+    tabs: {
+      query: async () => [{ id: 10, url: 'https://example.com' }]
+    },
+    runtime: {
+      onMessage: { addListener: () => {} },
+      sendMessage: async (msg) => {
+        if (msg.type === MESSAGE_TYPES.GET_MEDIA_FOR_TAB) {
+          return { ok: true, items: mediaList, hasBlobVideo: false };
+        }
+        if (msg.type === MESSAGE_TYPES.CLEAR_MEDIA_FOR_TAB) {
+          mediaList = [];
+          return { ok: true };
+        }
+        return { ok: true };
+      }
+    },
+    storage: {
+      local: {
+        get: async () => ({}),
+        set: async () => {}
+      },
+      sync: {
+        get: async () => ({})
+      }
+    }
+  };
+
+  const controller = createPopupController({
+    documentRef: doc,
+    windowRef: { addEventListener: () => {} },
+    chromeApi,
+    loadSettingsFn: async () => DEFAULT_SETTINGS,
+    translateFn: (k) => k,
+    getUiLanguageFn: () => 'en',
+    applyTranslationsFn: () => {}
+  });
+
+  await controller.init();
+  assert.equal(controller.state.items.length, 1);
+
+  // Slash focuses search input
+  let searchFocused = false;
+  controller.els.searchInput.focus = () => { searchFocused = true; };
+  controller.handleGlobalKeyDown({ key: '/', preventDefault: () => {} });
+  assert.equal(searchFocused, true);
+
+  // Escape clears search when focused
+  doc.activeElement = controller.els.searchInput;
+  controller.els.searchInput.value = 'findme';
+  controller.state.searchQuery = 'findme';
+  controller.handleGlobalKeyDown({ key: 'Escape' });
+  assert.equal(controller.els.searchInput.value, '');
+  assert.equal(controller.state.searchQuery, '');
+
+  // Escape dismisses batch confirmation
+  controller.state.pendingBatchItems = mediaList;
+  assert.ok(controller.state.pendingBatchItems);
+  controller.handleGlobalKeyDown({ key: 'Escape' });
+  assert.equal(controller.state.pendingBatchItems, null);
+
+  // Clear button acknowledges with status banner
+  await controller.els.clearBtn.dispatchEvent({ type: 'click' });
+  assert.equal(controller.els.statusBanner.textContent, 'popup_status_cleared');
+  assert.equal(controller.els.statusBanner.classList.contains('hidden'), false);
+
+  // Empty state displays both base message and playback guidance hint
+  const emptyState = controller.els.mediaList.children.find((c) => c.classList.contains('empty-state'));
+  assert.ok(emptyState);
+  assert.equal(emptyState.children.length, 2);
+  assert.equal(emptyState.children[0].textContent, 'popup_status_empty');
+  assert.equal(emptyState.children[1].textContent, 'popup_status_empty_hint');
+});

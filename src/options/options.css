@@ -249,7 +249,16 @@ input:focus-visible {
   color: var(--accent);
 }
 
+.companion-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .companion-cmd {
+  flex: 1 1 240px;
+  min-width: 0;
   display: block;
   padding: 6px 8px;
   border-radius: 4px;
@@ -259,4 +268,11 @@ input:focus-visible {
   font-size: 11px;
   color: var(--text);
   user-select: all;
+  word-break: break-all;
+}
+
+.btn-compact {
+  padding: 5px 10px;
+  font-size: 11px;
+  white-space: nowrap;
 }

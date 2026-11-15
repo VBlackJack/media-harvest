@@ -49,7 +49,8 @@ test('runBatchDownloads executes downloads sequentially and summarizes success',
     activeTabUrl: 'https://example.com/page',
     activeTabId: 42,
     cardsByUrl: new Map(),
-    localPendingRequestIds: new Set()
+    localPendingRequestIds: new Set(),
+    selectedUrls: new Set(['https://example.com/v1.mp4'])
   };
 
   const chromeApi = {
@@ -81,6 +82,7 @@ test('runBatchDownloads executes downloads sequentially and summarizes success',
   assert.equal(result.startedCount, 2);
   assert.equal(result.failedCount, 0);
   assert.equal(result.aborted, false);
+  assert.equal(state.selectedUrls.size, 0);
   assert.equal(sentMessages.length, 2);
   assert.equal(sentMessages[0].type, MESSAGE_TYPES.DOWNLOAD_MEDIA);
   assert.equal(sentMessages[0].payload.url, 'https://example.com/v1.mp4');
@@ -96,7 +98,8 @@ test('runBatchDownloads aborts mid-flight when batchAbortRequested is triggered'
     batchAbortRequested: false,
     settings: { filenameTemplate: 'default' },
     cardsByUrl: new Map(),
-    localPendingRequestIds: new Set()
+    localPendingRequestIds: new Set(),
+    selectedUrls: new Set(['https://example.com/v1.mp4'])
   };
 
   const sentMessages = [];

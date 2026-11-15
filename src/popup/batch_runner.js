@@ -157,6 +157,9 @@ export async function runBatchDownloads({
     state.activeBatchRequestId = '';
     state.batchRunning = false;
     state.batchAbortRequested = false;
+    if (state.selectedUrls && typeof state.selectedUrls.clear === 'function') {
+      state.selectedUrls.clear();
+    }
     if (typeof renderList === 'function') {
       renderList();
     }

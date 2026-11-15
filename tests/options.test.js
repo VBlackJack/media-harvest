@@ -42,7 +42,8 @@ function createFakeElement(initial = {}) {
         await fn(ev);
       }
     },
-    listeners
+    listeners,
+    querySelector: () => null
   };
 }
 
@@ -66,11 +67,21 @@ function createFakeDocument() {
     ['resetBtn', createFakeElement()],
     ['resetConfirmBar', createFakeElement({ classes: ['hidden'] })],
     ['resetConfirmBtn', createFakeElement()],
-    ['resetCancelBtn', createFakeElement()]
+    ['resetCancelBtn', createFakeElement()],
+    ['companionCmd', createFakeElement({ text: '' })],
+    ['copyCompanionCmdBtn', createFakeElement()]
   ]);
+  const docListeners = new Map();
   return {
     documentElement: { lang: '' },
-    getElementById: (id) => elements.get(id)
+    getElementById: (id) => elements.get(id),
+    addEventListener: (event, fn) => docListeners.set(event, fn),
+    dispatchEvent: async (ev) => {
+      const fn = docListeners.get(ev.type);
+      if (fn) {
+        await fn(ev);
+      }
+    }
   };
 }
 
@@ -92,6 +103,8 @@ test('options controller syncs LIMITS bounds, confirms resets, keeps errors visi
     translateFn: (key) => key,
     getUiLanguageFn: () => 'fr',
     applyTranslationsFn: () => {},
+    chromeRuntimeId: 'test-extension-id',
+    writeClipboardFn: async (text) => { copiedText = text; },
     sendMessageFn: async () => ({ ok: true, available: true, ytDlpVersion: '2026.01.01' })
   });
 
@@ -129,4 +142,18 @@ test('options controller syncs LIMITS bounds, confirms resets, keeps errors visi
   await controller.handleSubmit({ preventDefault: () => {} });
   assert.equal(controller.els.statusBanner.textContent, 'options_error_save_failed');
   assert.equal(controller.els.statusBanner.classList.contains('status-error'), true);
+
+  // Companion snippet interpolation and copy
+  assert.ok(controller.els.companionCmd.textContent.includes('test-extension-id'));
+  let copiedText = '';
+  controller.writeClipboardFn = async (text) => { copiedText = text; };
+  await controller.handleCopyCompanionCmd();
+  assert.equal(copiedText, controller.els.companionCmd.textContent);
+  assert.equal(controller.els.copyCompanionCmdBtn.classList.contains('is-copied'), true);
+
+  // Escape key dismisses reset confirmation prompt
+  await controller.els.resetBtn.dispatchEvent({ type: 'click' });
+  assert.equal(controller.els.resetConfirmBar.classList.contains('hidden'), false);
+  await doc.dispatchEvent({ type: 'keydown', key: 'Escape' });
+  assert.equal(controller.els.resetConfirmBar.classList.contains('hidden'), true);
 });

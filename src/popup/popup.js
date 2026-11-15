@@ -726,7 +726,10 @@ export function createPopupController(deps = {}) {
         resetFilterBtn.addEventListener('click', resetFilters);
         empty.replaceChildren(emptyMsg, resetFilterBtn);
       } else {
-        empty.replaceChildren(emptyMsg);
+        const emptyHint = doc.createElement('span');
+        emptyHint.className = 'empty-state-hint';
+        emptyHint.textContent = translateFn('popup_status_empty_hint');
+        empty.replaceChildren(emptyMsg, emptyHint);
       }
       if (!existingEmpty) {
         els.mediaList.appendChild(empty);
@@ -1073,6 +1076,58 @@ export function createPopupController(deps = {}) {
   }
 
   /**
+   * Handles global keyboard navigation: Escape closes previews, dismisses batch confirmations,
+   * or clears/blurs the search input; Slash focuses the search bar.
+   * @param {KeyboardEvent} event
+   */
+  function handleGlobalKeyDown(event) {
+    if (!event) {
+      return;
+    }
+    if (event.key === 'Escape') {
+      let hadActivePreview = false;
+      for (const entry of state.cardsByUrl.values()) {
+        if (entry.previewBox && !entry.previewBox.classList.contains('hidden')) {
+          closeCardPreview(entry);
+          hadActivePreview = true;
+        }
+      }
+      if (hadActivePreview) {
+        return;
+      }
+      if (state.pendingBatchItems) {
+        hideBatchConfirm();
+        renderList();
+        return;
+      }
+      if (els.searchInput && doc.activeElement === els.searchInput) {
+        if (els.searchInput.value) {
+          resetFilters();
+        } else if (typeof els.searchInput.blur === 'function') {
+          els.searchInput.blur();
+        }
+      }
+      return;
+    }
+
+    if (event.key === '/') {
+      const activeTag = doc.activeElement && doc.activeElement.tagName;
+      const isInput = activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT';
+      if (!isInput && els.searchInput) {
+        if (typeof event.preventDefault === 'function') {
+          event.preventDefault();
+        }
+        if (typeof els.searchInput.focus === 'function') {
+          els.searchInput.focus();
+        }
+        if (typeof els.searchInput.select === 'function') {
+          els.searchInput.select();
+        }
+      }
+    }
+  }
+
+  /**
    * Initializes DOM listeners, Chrome message hooks, translations, and initial tab load.
    * @returns {Promise<void>}
    */
@@ -1127,6 +1182,7 @@ export function createPopupController(deps = {}) {
           throw new Error((response && response.error) || 'CLEAR_FAILED');
         }
         await loadActiveTabMedia();
+        setStatusBanner(translateFn('popup_status_cleared'));
       } catch (err) {
         setStatusBanner(localizeError(err.message, translateFn), true);
       }
@@ -1262,6 +1318,9 @@ export function createPopupController(deps = {}) {
     }
 
     win.addEventListener('pagehide', revokeAllPreviewBlobs);
+    if (doc && typeof doc.addEventListener === 'function') {
+      doc.addEventListener('keydown', handleGlobalKeyDown);
+    }
 
     try {
       state.settings = await loadSettingsFn();
@@ -1283,6 +1342,7 @@ export function createPopupController(deps = {}) {
     executeBatchDownloads,
     flushHydrationQueue,
     handleRuntimeMessage,
+    handleGlobalKeyDown,
     revokeAllPreviewBlobs
   };
 }
