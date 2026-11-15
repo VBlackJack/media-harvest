@@ -134,19 +134,57 @@ class CdpClient {
     });
   }
 
-  send(method, params = {}, sessionId = undefined) {
+  send(method, params = {}, sessionId = undefined, timeoutMs = 15000) {
     const id = this.nextId;
     this.nextId += 1;
     const payload = sessionId ? { id, method, params, sessionId } : { id, method, params };
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (this.pending.has(id)) {
+          this.pending.delete(id);
+          reject(new Error(`CDP request ${method} timed out after ${timeoutMs}ms`));
+        }
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (val) => {
+          clearTimeout(timer);
+          resolve(val);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        }
+      });
       this.ws.send(JSON.stringify(payload));
     });
   }
 
   close() {
+    for (const [id, entry] of this.pending.entries()) {
+      this.pending.delete(id);
+      entry.reject(new Error('CDP connection closed'));
+    }
     if (this.ws) {
       this.ws.close();
+    }
+  }
+}
+
+function terminateChromeProcess(proc) {
+  if (!proc) {
+    return;
+  }
+  try {
+    if (proc.stdout) proc.stdout.destroy();
+    if (proc.stderr) proc.stderr.destroy();
+  } catch {
+    // Ignore stream teardown errors
+  }
+  if (proc.exitCode === null && !proc.killed) {
+    try {
+      proc.kill('SIGKILL');
+    } catch {
+      // Ignore kill errors if already exited
     }
   }
 }
@@ -159,34 +197,72 @@ async function launchChromeWithExtension(chromePath, userDataDir) {
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-background-networking',
+    '--disable-crash-reporter',
+    '--disable-dev-shm-usage',
+    '--password-store=basic',
+    '--use-mock-keychain',
     '--disable-gpu',
     `--disable-extensions-except=${ROOT_DIR}`,
     `--load-extension=${ROOT_DIR}`
   ];
+  const env = { ...process.env };
   if (process.platform === 'linux') {
     args.push('--no-sandbox', '--disable-setuid-sandbox');
+    env.DBUS_SESSION_BUS_ADDRESS = 'unix:path=/nonexistent';
   }
 
-  const proc = spawn(chromePath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  const proc = spawn(chromePath, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
+  const activePortFile = path.join(userDataDir, 'DevToolsActivePort');
   let stderrText = '';
   const wsUrl = await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (err, value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      clearInterval(portPoller);
+      proc.stderr.off('data', onData);
+      if (err) {
+        terminateChromeProcess(proc);
+        reject(err);
+      } else {
+        resolve(value);
+      }
+    };
+
     const timeout = setTimeout(() => {
-      reject(new Error(`Timed out waiting for Chrome DevTools WS URL. Stderr: ${stderrText}`));
-    }, 15000);
+      finish(new Error(`Timed out waiting for Chrome DevTools WS URL. Stderr: ${stderrText}`));
+    }, 30000);
+
+    const portPoller = setInterval(() => {
+      try {
+        if (!fs.existsSync(activePortFile)) {
+          return;
+        }
+        const lines = fs.readFileSync(activePortFile, 'utf8').trim().split(/\r?\n/);
+        const port = Number(lines[0]);
+        const wsPath = (lines[1] || '').trim();
+        if (Number.isInteger(port) && port > 0 && wsPath.startsWith('/')) {
+          finish(null, `ws://127.0.0.1:${port}${wsPath}`);
+        }
+      } catch {
+        // File may still be flushing
+      }
+    }, 100);
 
     const onData = (chunk) => {
       const text = chunk.toString('utf8');
       stderrText += text;
       const match = text.match(/DevTools listening on (ws:\/\/[^\s]+)/);
       if (match) {
-        clearTimeout(timeout);
-        resolve(match[1]);
+        finish(null, match[1]);
       }
     };
     proc.stderr.on('data', onData);
     proc.once('exit', (code) => {
-      clearTimeout(timeout);
-      reject(new Error(`Chrome exited prematurely with code ${code}. Stderr: ${stderrText}`));
+      finish(new Error(`Chrome exited prematurely with code ${code}. Stderr: ${stderrText}`));
     });
   });
 
@@ -408,9 +484,7 @@ async function runE2E() {
       ]);
       cdp.close();
     }
-    if (proc && !proc.killed) {
-      proc.kill();
-    }
+    terminateChromeProcess(proc);
     if (typeof server.closeAllConnections === 'function') {
       server.closeAllConnections();
     }
