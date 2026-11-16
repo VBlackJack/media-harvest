@@ -2,6 +2,13 @@
 
 All notable engineering changes to Media Harvest are documented in this file.
 
+## [1.2.2] - 2026-11-16
+
+### Fixed
+- Prioritized master HLS playlists over reverse-chronological rendition and audio-only sub-playlists (such as X/Twitter `mp4a` audio playlists and `avc1` video-only playlists) in `handleTweetVideoDownload`, `handleSiteVideoDownload`, and `findMatchingStreamForDirectUrl` (`src/background/service_worker.js`).
+- Added sibling stream audio pairing (`findSiblingStreamAudioUrl` in `src/background/service_worker.js`) and explicit `preferredAudioUrl` loading for non-master HLS playlists in `resolveStreamPlan` (`src/offscreen/offscreen.js`) when a master playlist was not captured.
+- Expanded test suite to 144 automated unit/integration tests (`86.81%` line coverage) covering reverse-order X sub-playlists, sibling `avc1` + `mp4a` pairing, and generic site audio-subplaylist filtering.
+
 ## [1.2.1] - 2026-11-15
 
 ### Fixed
