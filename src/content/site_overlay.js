@@ -304,10 +304,17 @@
         const activeReqId = btn.getAttribute(SITE_OVERLAY_CONFIG.ACTIVE_REQ_ATTR);
         if (activeReqId) {
           btn.disabled = true;
-          chrome.runtime.sendMessage({
-            type: SITE_OVERLAY_CONFIG.CANCEL_MESSAGE_TYPE,
-            requestId: activeReqId
-          }).catch(() => {});
+          try {
+            const cancelReq = chrome.runtime.sendMessage({
+              type: SITE_OVERLAY_CONFIG.CANCEL_MESSAGE_TYPE,
+              requestId: activeReqId
+            });
+            if (cancelReq && typeof cancelReq.catch === 'function') {
+              cancelReq.catch(() => {});
+            }
+          } catch {
+            // Ignore invalidated extension context
+          }
           return;
         }
 
@@ -467,14 +474,21 @@
   });
 
   if (chrome.storage && chrome.storage.sync) {
-    chrome.storage.sync.get(SITE_OVERLAY_CONFIG.STORAGE_SETTINGS_KEY, (data) => {
-      const settings = data && data[SITE_OVERLAY_CONFIG.STORAGE_SETTINGS_KEY];
-      if (!isOverlayEnabledForSettings(settings, activeAdapter)) {
-        disableOverlay();
-      } else {
-        enableOverlay();
-      }
-    });
+    try {
+      chrome.storage.sync.get(SITE_OVERLAY_CONFIG.STORAGE_SETTINGS_KEY, (data) => {
+        if (chrome.runtime && chrome.runtime.lastError) {
+          return;
+        }
+        const settings = data && data[SITE_OVERLAY_CONFIG.STORAGE_SETTINGS_KEY];
+        if (!isOverlayEnabledForSettings(settings, activeAdapter)) {
+          disableOverlay();
+        } else {
+          enableOverlay();
+        }
+      });
+    } catch {
+      enableOverlay();
+    }
   } else {
     enableOverlay();
   }

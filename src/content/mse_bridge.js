@@ -64,16 +64,48 @@
     });
   }
 
+  /**
+   * Wraps chrome.runtime.sendMessage so invalidated contexts never emit uncaught sync or promise errors.
+   * @param {object} msg
+   * @param {{ propagateError?: boolean }} [options]
+   * @returns {Promise<any>}
+   */
+  function sendRuntimeMessageSafe(msg, { propagateError = false } = {}) {
+    if (typeof chrome === 'undefined' || !chrome.runtime || typeof chrome.runtime.sendMessage !== 'function') {
+      return propagateError ? Promise.reject(new Error('MSE_EXPORT_FAILED')) : Promise.resolve(undefined);
+    }
+    try {
+      const pending = chrome.runtime.sendMessage(msg);
+      if (pending && typeof pending.then === 'function') {
+        return propagateError ? pending : pending.catch(() => undefined);
+      }
+      return Promise.resolve(pending);
+    } catch (err) {
+      return propagateError ? Promise.reject(err) : Promise.resolve(undefined);
+    }
+  }
+
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.sync) {
-    chrome.storage.sync.get(BRIDGE_CONFIG.STORAGE_SETTINGS_KEY, (data) => {
-      applySettings(data && data[BRIDGE_CONFIG.STORAGE_SETTINGS_KEY]);
-    });
-    if (chrome.storage.onChanged) {
-      chrome.storage.onChanged.addListener((changes, areaName) => {
-        if (areaName === 'sync' && changes[BRIDGE_CONFIG.STORAGE_SETTINGS_KEY]) {
-          applySettings(changes[BRIDGE_CONFIG.STORAGE_SETTINGS_KEY].newValue);
+    try {
+      chrome.storage.sync.get(BRIDGE_CONFIG.STORAGE_SETTINGS_KEY, (data) => {
+        if (chrome.runtime && chrome.runtime.lastError) {
+          return;
         }
+        applySettings(data && data[BRIDGE_CONFIG.STORAGE_SETTINGS_KEY]);
       });
+    } catch {
+      // Ignore storage failures when extension context is invalidated
+    }
+    if (chrome.storage.onChanged) {
+      try {
+        chrome.storage.onChanged.addListener((changes, areaName) => {
+          if (areaName === 'sync' && changes[BRIDGE_CONFIG.STORAGE_SETTINGS_KEY]) {
+            applySettings(changes[BRIDGE_CONFIG.STORAGE_SETTINGS_KEY].newValue);
+          }
+        });
+      } catch {
+        // Ignore listener errors after context invalidation
+      }
     }
   }
 
@@ -90,8 +122,11 @@
 
   function cleanupPendingExport(requestId) {
     const pending = pendingExports.get(requestId);
-    if (pending && pending.timer) {
-      clearTimeout(pending.timer);
+    if (pending) {
+      pending.settled = true;
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+      }
     }
     pendingExports.delete(requestId);
   }
@@ -110,49 +145,62 @@
         return;
       }
       knownStreams.set(payload.mseId, payload);
-      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-        chrome.runtime.sendMessage({
-          type: BRIDGE_CONFIG.RUNTIME_MESSAGES.MSE_STREAM_UPDATED,
-          stream: payload
-        }).catch(() => {});
-      }
+      sendRuntimeMessageSafe({
+        type: BRIDGE_CONFIG.RUNTIME_MESSAGES.MSE_STREAM_UPDATED,
+        stream: payload
+      });
       return;
     }
 
     if (kind === BRIDGE_CONFIG.EVENTS.EXPORT_CHUNK) {
       const pending = pendingExports.get(payload.requestId);
-      if (!pending || !(payload.buffer instanceof ArrayBuffer)) {
+      if (!pending || pending.settled || pending.queueError || !(payload.buffer instanceof ArrayBuffer)) {
         return;
       }
-      pending.queue = pending.queue.then(() => chrome.runtime.sendMessage({
-        target: 'offscreen',
-        type: BRIDGE_CONFIG.RUNTIME_MESSAGES.OFFSCREEN_BUILD_MSE_BLOB,
-        action: 'append',
-        requestId: payload.requestId,
-        track: payload.track,
-        chunkBase64: arrayBufferToBase64(payload.buffer)
-      }));
+      pending.queue = pending.queue
+        .then(() => {
+          if (pending.settled || pending.queueError) {
+            return undefined;
+          }
+          return sendRuntimeMessageSafe({
+            target: 'offscreen',
+            type: BRIDGE_CONFIG.RUNTIME_MESSAGES.OFFSCREEN_BUILD_MSE_BLOB,
+            action: 'append',
+            requestId: payload.requestId,
+            track: payload.track,
+            chunkBase64: arrayBufferToBase64(payload.buffer)
+          }, { propagateError: true });
+        })
+        .catch((err) => {
+          pending.queueError = err || new Error('MSE_EXPORT_FAILED');
+        });
       return;
     }
 
     if (kind === BRIDGE_CONFIG.EVENTS.EXPORT_DONE) {
       const pending = pendingExports.get(payload.requestId);
-      if (!pending) {
+      if (!pending || pending.settled) {
         return;
       }
       pending.queue
         .then(async () => {
-          if (!payload.ok) {
-            await chrome.runtime.sendMessage({
+          if (pending.settled) {
+            return;
+          }
+          if (!payload.ok || pending.queueError) {
+            await sendRuntimeMessageSafe({
               target: 'offscreen',
               type: BRIDGE_CONFIG.RUNTIME_MESSAGES.OFFSCREEN_BUILD_MSE_BLOB,
               action: 'abort',
               requestId: payload.requestId
-            }).catch(() => {});
-            pending.resolve({ ok: false, error: payload.error || 'MSE_NOT_FOUND' });
+            });
+            const errMsg = pending.queueError
+              ? (pending.queueError.message || 'MSE_EXPORT_FAILED')
+              : (payload.error || 'MSE_NOT_FOUND');
+            pending.resolve({ ok: false, error: errMsg });
             return;
           }
-          const result = await chrome.runtime.sendMessage({
+          const result = await sendRuntimeMessageSafe({
             target: 'offscreen',
             type: BRIDGE_CONFIG.RUNTIME_MESSAGES.OFFSCREEN_BUILD_MSE_BLOB,
             action: 'finalize',
@@ -161,7 +209,7 @@
             audioFormat: pending.audioFormat || 'm4a',
             videoMime: payload.videoMime || '',
             audioMime: payload.audioMime || ''
-          });
+          }, { propagateError: true });
           pending.resolve(result || { ok: false, error: 'MSE_EXPORT_FAILED' });
         })
         .catch((err) => {
@@ -190,6 +238,8 @@
         pendingExports.set(requestId, {
           resolve,
           timer,
+          settled: false,
+          queueError: null,
           audioOnly: Boolean(message.audioOnly),
           audioFormat: typeof message.audioFormat === 'string' ? message.audioFormat : 'm4a',
           queue: Promise.resolve()
@@ -199,7 +249,13 @@
           mseId: message.mseId,
           sliceBytes: BRIDGE_CONFIG.DEFAULT_SLICE_BYTES
         });
-      }).then((result) => sendResponse(result));
+      }).then((result) => {
+        try {
+          sendResponse(result);
+        } catch {
+          // Ignore sendResponse errors if channel closed or context invalidated
+        }
+      });
       return true;
     });
   }

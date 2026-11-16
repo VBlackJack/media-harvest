@@ -216,10 +216,17 @@
         const activeReqId = btn.getAttribute(OVERLAY_CONFIG.ACTIVE_REQ_ATTR);
         if (activeReqId) {
           btn.disabled = true;
-          chrome.runtime.sendMessage({
-            type: OVERLAY_CONFIG.CANCEL_MESSAGE_TYPE,
-            requestId: activeReqId
-          }).catch(() => {});
+          try {
+            const cancelReq = chrome.runtime.sendMessage({
+              type: OVERLAY_CONFIG.CANCEL_MESSAGE_TYPE,
+              requestId: activeReqId
+            });
+            if (cancelReq && typeof cancelReq.catch === 'function') {
+              cancelReq.catch(() => {});
+            }
+          } catch {
+            // Ignore invalidated extension context
+          }
           return;
         }
 

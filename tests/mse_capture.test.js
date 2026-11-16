@@ -236,3 +236,46 @@ test('mse_hook resets track buffer on quality switch ftyp init and flushes short
   assert.equal(latest.stream.totalBytes, 1056);
   assert.equal(latest.stream.blobUrl, 'blob:https://player.example.com/1111');
 });
+
+test('mse_bridge swallows synchronous invalidated-context throws and surfaces append failures cleanly', async () => {
+  const harness = createMseHarness();
+  const ms = new harness.fakeWindow.MediaSource();
+  harness.fakeWindow.URL.createObjectURL(ms);
+  const videoSb = ms.addSourceBuffer('video/mp4; codecs="avc1.42E01E"');
+
+  const bigVideo = new Uint8Array(40 * 1024);
+  videoSb.appendBuffer(bigVideo);
+  await new Promise((resolve) => setTimeout(resolve, 650));
+
+  const streamUpdates = harness.runtimeMessages.filter((m) => m.type === 'MSE_STREAM_UPDATED');
+  const latestStream = streamUpdates[streamUpdates.length - 1].stream;
+
+  const prevSendMessage = harness.sandbox.chrome.runtime.sendMessage;
+  harness.sandbox.chrome.runtime.sendMessage = () => {
+    throw new Error('Extension context invalidated.');
+  };
+
+  assert.doesNotThrow(() => {
+    harness.fakeWindow.postMessage({
+      source: 'media-harvest-mse',
+      kind: 'MSE_STREAM_UPDATED',
+      payload: latestStream
+    });
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  harness.sandbox.chrome.runtime.sendMessage = async (msg) => {
+    if (msg && msg.type === 'OFFSCREEN_BUILD_MSE_BLOB' && msg.action === 'append') {
+      throw new Error('OFFSCREEN_DISCONNECTED');
+    }
+    return { ok: true };
+  };
+  const failedExport = await harness.dispatchExport({
+    type: 'EXPORT_MSE_STREAM',
+    requestId: 'req_mse_fail',
+    mseId: latestStream.mseId
+  });
+  harness.sandbox.chrome.runtime.sendMessage = prevSendMessage;
+  assert.equal(failedExport.ok, false);
+  assert.match(failedExport.error, /OFFSCREEN_DISCONNECTED/);
+});
