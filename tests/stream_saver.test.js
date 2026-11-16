@@ -24,6 +24,11 @@ import {
   splitFmp4InitAndFragments
 } from '../src/shared/fmp4_muxer.js';
 import {
+  buildEbmlElement,
+  countTracksInWebmInit,
+  splitWebmInitAndClusters
+} from '../src/shared/webm_muxer.js';
+import {
   createStreamSaverController,
   streamPlaylistToWritable,
   streamProgressiveResponseToWritable
@@ -421,4 +426,75 @@ test('streamPlaylistToWritable streams dual-track fMP4 HLS master with separate 
     new DataView(aTfhd.data.buffer, aTfhd.data.byteOffset, aTfhd.data.byteLength).getUint32(12, false),
     2
   );
+});
+
+test('streamPlaylistToWritable retries transient HTTP 503 segment fetches and streams dual-track WebM DASH to disk', async () => {
+  const writable = createMemoryWritable();
+  function makeSimpleWebm(trackType, markerByte) {
+    const ebml = buildEbmlElement(0x1a45dfa3, [buildEbmlElement(0x4286, [new Uint8Array([1])])]);
+    const info = buildEbmlElement(0x1549a966, [buildEbmlElement(0x2ad7b1, [new Uint8Array([0x0f, 0x42, 0x40])])]);
+    const trackEntry = buildEbmlElement(0xae, [
+      buildEbmlElement(0xd7, [new Uint8Array([1])]),
+      buildEbmlElement(0x83, [new Uint8Array([trackType])])
+    ]);
+    const tracks = buildEbmlElement(0x1654ae6b, [trackEntry]);
+    const cluster = buildEbmlElement(0x1f43b675, [
+      buildEbmlElement(0xe7, [new Uint8Array([0])]),
+      buildEbmlElement(0xa3, [new Uint8Array([0x81, 0x00, 0x00, 0x80, markerByte])])
+    ]);
+    return Buffer.concat([ebml, buildEbmlElement(0x18538067, [info, tracks, cluster])]);
+  }
+
+  const mpdXml = `
+    <MPD type="static">
+      <Period>
+        <AdaptationSet mimeType="video/webm">
+          <Representation id="vp9" bandwidth="1500000" width="1280" height="720">
+            <BaseURL>video.webm</BaseURL>
+          </Representation>
+        </AdaptationSet>
+        <AdaptationSet mimeType="audio/webm">
+          <Representation id="opus" bandwidth="128000">
+            <BaseURL>audio.webm</BaseURL>
+          </Representation>
+        </AdaptationSet>
+      </Period>
+    </MPD>`;
+
+  const vBytes = makeSimpleWebm(1, 0xaa);
+  const aBytes = makeSimpleWebm(2, 0xbb);
+  let audioAttempts = 0;
+
+  const written = await streamPlaylistToWritable(
+    {
+      url: 'https://cdn.example.com/dash/webm.mpd',
+      playlistUrl: 'https://cdn.example.com/dash/webm.mpd',
+      isStream: true
+    },
+    writable,
+    {
+      fetchFn: async (url) => {
+        if (url.endsWith('webm.mpd')) {
+          return { ok: true, status: 200, text: async () => mpdXml };
+        }
+        if (url.endsWith('video.webm')) {
+          return { ok: true, status: 200, arrayBuffer: async () => vBytes.buffer.slice(vBytes.byteOffset, vBytes.byteOffset + vBytes.byteLength) };
+        }
+        if (url.endsWith('audio.webm')) {
+          audioAttempts += 1;
+          if (audioAttempts === 1) {
+            return { ok: false, status: 503 };
+          }
+          return { ok: true, status: 200, arrayBuffer: async () => aBytes.buffer.slice(aBytes.byteOffset, aBytes.byteOffset + aBytes.byteLength) };
+        }
+        return { ok: false, status: 404 };
+      }
+    }
+  );
+
+  assert.equal(audioAttempts, 2);
+  assert.ok(written > 0);
+  const merged = Buffer.concat(writable.chunks.map((c) => Buffer.from(c)));
+  assert.equal(countTracksInWebmInit(merged), 2);
+  assert.equal(splitWebmInitAndClusters(merged).clusters.length, 2);
 });

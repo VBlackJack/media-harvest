@@ -212,7 +212,8 @@ export const LIMITS = Object.freeze({
   LIVE_RECORD_POLL_MAX_MS: 5000,
   MSE_BUFFER_CAP_BYTES: 150 * 1024 * 1024,
   MSE_CHUNK_SLICE_BYTES: 2 * 1024 * 1024,
-  DNR_RULE_BASE_ID: 9000
+  DNR_RULE_BASE_ID: 9000,
+  MAX_DOWNLOAD_HISTORY: 15
 });
 
 export const STORAGE_KEYS = Object.freeze({
@@ -223,7 +224,8 @@ export const STORAGE_KEYS = Object.freeze({
   DOWNLOAD_BLOB_PREFIX: 'download_blob_',
   STREAM_SAVER_JOB_PREFIX: 'stream_saver_job_',
   USER_SETTINGS: 'user_settings',
-  POPUP_UI_STATE: 'popup_ui_state'
+  POPUP_UI_STATE: 'popup_ui_state',
+  DOWNLOAD_HISTORY: 'download_history'
 });
 
 export const OFFSCREEN_DOCUMENT_PATH = 'src/offscreen/offscreen.html';
@@ -264,7 +266,9 @@ export const MESSAGE_TYPES = Object.freeze({
   MEDIA_UPDATED: 'MEDIA_UPDATED',
   CHECK_COMPANION: 'CHECK_COMPANION',
   DOWNLOAD_WITH_COMPANION: 'DOWNLOAD_WITH_COMPANION',
-  COMPANION_PROGRESS: 'COMPANION_PROGRESS'
+  COMPANION_PROGRESS: 'COMPANION_PROGRESS',
+  GET_DOWNLOAD_HISTORY: 'GET_DOWNLOAD_HISTORY',
+  CLEAR_DOWNLOAD_HISTORY: 'CLEAR_DOWNLOAD_HISTORY'
 });
 
 export const QUALITY_PREFERENCES = Object.freeze({

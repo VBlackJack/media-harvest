@@ -150,6 +150,15 @@ function createDomHarness({ initialEnableXOverlay = true } = {}) {
     if (selector === '.mh-x-download-btn') {
       return el.classList.contains('mh-x-download-btn');
     }
+    if (selector === '.mh-x-quality-wrap') {
+      return el.classList.contains('mh-x-quality-wrap');
+    }
+    if (selector === '.mh-x-quality-toggle') {
+      return el.classList.contains('mh-x-quality-toggle');
+    }
+    if (selector === '.mh-x-quality-option') {
+      return el.classList.contains('mh-x-quality-option');
+    }
     if (selector === '[data-media-harvest-attached]') {
       return el.hasAttribute('data-media-harvest-attached');
     }
@@ -314,4 +323,32 @@ test('x_overlay displays specific error labels and supports stream progress canc
   assert.ok(harness.sentMessages.some((m) => m.type === 'CANCEL_DOWNLOAD' && m.requestId === capturedReqId));
   assert.equal(btn.children[1].textContent, 'x_btn_cancelled');
   assert.equal(btn.classList.contains('mh-is-error'), false);
+});
+
+test('x_overlay quick quality/audio menu forwards qualityPreference and audioOnly options', async () => {
+  const harness = createDomHarness({ initialEnableXOverlay: true });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const wrap = harness.body.querySelectorAll('.mh-x-quality-wrap')[0];
+  const toggle = harness.body.querySelectorAll('.mh-x-quality-toggle')[0];
+  const options = harness.body.querySelectorAll('.mh-x-quality-option');
+  assert.ok(wrap && toggle);
+  assert.equal(options.length, 3);
+
+  await toggle.trigger('click');
+  assert.equal(wrap.classList.contains('mh-is-open'), true);
+
+  await options[1].trigger('click');
+  assert.equal(wrap.classList.contains('mh-is-open'), false);
+  assert.equal(harness.sentMessages.at(-1).payload.qualityPreference, 'lowest');
+  assert.equal(harness.sentMessages.at(-1).payload.audioOnly, undefined);
+
+  await options[2].trigger('click');
+  assert.equal(harness.sentMessages.at(-1).payload.audioOnly, true);
+
+  harness.storageListeners[0](
+    { user_settings: { newValue: { enableXOverlay: false } } },
+    'sync'
+  );
+  assert.equal(harness.body.querySelectorAll('.mh-x-quality-wrap').length, 0);
 });

@@ -2,6 +2,19 @@
 
 All notable engineering changes to Media Harvest are documented in this file.
 
+## [1.3.0] - 2026-11-16
+
+### Added
+- Quick quality and audio selector menu (`best`, `lowest`, `audio`) attached next to the inline download button on X (`src/content/x_overlay.js`, `src/content/x_overlay.css`) and social/generic HTML5 video overlays (`src/content/site_overlay.js`, `src/content/site_overlay.css`), forwarding `qualityPreference` and `audioOnly` overrides through `src/background/service_worker.js`.
+- Collapsible Recent Downloads history drawer in the popup (`src/popup/history_controller.js`, `src/popup/popup.html`, `src/popup/popup.css`, `src/popup/popup.js`) backed by `chrome.storage.local` (`STORAGE_KEYS.DOWNLOAD_HISTORY`, capped at `LIMITS.MAX_DOWNLOAD_HISTORY` = `15`), with one-click Retry (`DOWNLOAD_MEDIA`) and Clear (`CLEAR_DOWNLOAD_HISTORY`).
+- Modular extraction of `src/shared/stream_selector.js`, `src/offscreen/image_processor.js`, `src/popup/lightbox_controller.js`, and `src/popup/history_controller.js` plus shared `decodeBase64ToBytes` in `src/shared/hls_crypto.js`.
+
+### Improved
+- Master playlist eviction protection (`mergeCapturedMediaEntry` in `src/shared/stream_selector.js`): when per-tab captures exceed the cap while scrolling X or SPA timelines, captured root master playlists are retained ahead of stale non-master assets and sub-playlists.
+- Direct disk streaming (`src/saver/stream_saver.js`): transient HTTP/network retries (`fetchWithRetry`), dual-track WebM DASH streaming (`streamDualWebmToWritable`), and dual-track mixed container streaming (`streamDualMixedToWritable` for TS+TS, TS+ADTS, and fMP4+WebM Opus) over `FileSystemWritableFileStream` without hitting the 512 MB RAM cap.
+- MSE ABR quality-switch temporal alignment (`alignFmp4MseFragments` in `src/shared/fmp4_muxer.js` and `alignAbr` cluster trimming in `src/shared/webm_muxer.js`) wired into `handleMseBlobMessage` (`src/offscreen/offscreen.js`) so mismatched mid-playback resolution resets trim stale leading fragments cleanly.
+- Expanded automated suite to 159 passing unit/integration tests (`87.56%` line coverage across `75` source files).
+
 ## [1.2.2] - 2026-11-16
 
 ### Fixed

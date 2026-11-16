@@ -156,6 +156,9 @@ function createSiteHarness({
       if (sel === '.mh-site-download-btn') {
         return playerHost.children.filter((c) => c.classList.contains('mh-site-download-btn'));
       }
+      if (sel === '.mh-site-quality-wrap') {
+        return playerHost.children.filter((c) => c.classList.contains('mh-site-quality-wrap'));
+      }
       if (sel === '[data-mh-site-attached]') {
         return playerHost.hasAttribute('data-mh-site-attached') ? [playerHost] : [];
       }
@@ -274,4 +277,27 @@ test('site_overlay excludes x.com, supports generic HTML5 players with size thre
 
   const disabled = createSiteHarness({ hostname: 'www.reddit.com', enableSocialOverlay: false });
   assert.equal(disabled.playerHost.children.some((c) => c.classList.contains('mh-site-download-btn')), false);
+});
+
+test('site_overlay quick quality/audio menu sends lowest quality or audioOnly and cleans up when toggled off', async () => {
+  const harness = createSiteHarness({ hostname: 'www.youtube.com', enableSocialOverlay: true });
+  const wrap = harness.playerHost.children.find((c) => c.classList.contains('mh-site-quality-wrap'));
+  assert.ok(wrap);
+  const [toggle, menu] = wrap.children;
+  assert.equal(menu.children.length, 3);
+
+  await toggle.dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  assert.equal(wrap.classList.contains('mh-is-open'), true);
+
+  await menu.children[1].dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  assert.equal(wrap.classList.contains('mh-is-open'), false);
+  assert.equal(harness.sentMessages.at(-1).payload.qualityPreference, 'lowest');
+
+  await menu.children[2].dispatchEvent({ type: 'click', preventDefault: () => {}, stopPropagation: () => {} });
+  assert.equal(harness.sentMessages.at(-1).payload.audioOnly, true);
+
+  for (const fn of harness.storageListeners) {
+    fn({ user_settings: { newValue: { enableSocialOverlay: false } } }, 'sync');
+  }
+  assert.equal(harness.playerHost.children.some((c) => c.classList.contains('mh-site-quality-wrap')), false);
 });

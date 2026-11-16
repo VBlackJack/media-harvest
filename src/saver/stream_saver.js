@@ -30,11 +30,55 @@ import {
   isBase64DataUri,
   resolveSegmentIv
 } from '../shared/hls_crypto.js';
-import { mergeFmp4InitSegments, normalizeFmp4Fragment } from '../shared/fmp4_muxer.js';
+import {
+  looksLikeAdtsAudio,
+  transmuxAdtsSegmentsToFmp4Parts
+} from '../shared/adts_transmuxer.js';
+import { transmuxWebmOpusToFmp4Parts } from '../shared/mixed_mse_muxer.js';
+import {
+  mergeFmp4InitSegments,
+  normalizeFmp4Fragment
+} from '../shared/fmp4_muxer.js';
+import {
+  buildDualWebmStreamInit,
+  rewriteAudioClusterForMux,
+  splitWebmInitAndClusters
+} from '../shared/webm_muxer.js';
 import { parseHlsPlaylist, selectBestVariant } from '../shared/hls_parser.js';
 import { applyTranslations, getUiLanguage, t } from '../shared/i18n.js';
 import { isHttpUrl } from '../shared/media_classifier.js';
 import { clampInteger } from '../shared/settings.js';
+
+const RETRYABLE_HTTP_STATUS = new Set([408, 429]);
+
+async function fetchWithRetry(fetchFn, url, options = {}) {
+  const maxRetries = LIMITS.SEGMENT_FETCH_RETRIES || 2;
+  let lastError = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    if (options.signal && options.signal.aborted) {
+      throw new Error('DOWNLOAD_CANCELLED');
+    }
+    try {
+      const response = await fetchFn(url, options);
+      if (response.ok) {
+        return response;
+      }
+      if (!RETRYABLE_HTTP_STATUS.has(response.status) && response.status < 500) {
+        throw new Error(`HTTP_${response.status}`);
+      }
+      lastError = new Error(`HTTP_${response.status}`);
+    } catch (err) {
+      if (err && (err.name === 'AbortError' || err.message === 'DOWNLOAD_CANCELLED')) {
+        throw new Error('DOWNLOAD_CANCELLED');
+      }
+      if (err && typeof err.message === 'string' && /^HTTP_4\d\d$/.test(err.message)) {
+        throw err;
+      }
+      lastError = err;
+    }
+  }
+  throw lastError || new Error('DOWNLOAD_FAILED');
+}
 
 /**
  * Resolves a single segment fetch request into decrypted ArrayBuffer bytes.
@@ -46,10 +90,7 @@ import { clampInteger } from '../shared/settings.js';
  */
 async function fetchAndDecryptSegment(req, signal, fetchFn, keyCache) {
   const headers = req.byteRange ? { Range: req.byteRange } : undefined;
-  const response = await fetchFn(req.url, { headers, signal });
-  if (!response.ok) {
-    throw new Error(`HTTP_${response.status}`);
-  }
+  const response = await fetchWithRetry(fetchFn, req.url, { headers, signal });
   const rawBuf = await response.arrayBuffer();
   const keyUri = req.key && (req.key.keyUrl || req.key.uri);
   if (!keyUri) {
@@ -62,10 +103,7 @@ async function fetchAndDecryptSegment(req, signal, fetchFn, keyCache) {
       if (isBase64DataUri(keyUri)) {
         return importAes128Key(decodeBase64DataUri(keyUri));
       }
-      const keyRes = await fetchFn(keyUri, { signal });
-      if (!keyRes.ok) {
-        throw new Error(`HTTP_${keyRes.status}`);
-      }
+      const keyRes = await fetchWithRetry(fetchFn, keyUri, { signal });
       return importAes128Key(await keyRes.arrayBuffer());
     })();
     keyCache.set(keyUri, keyPromise);
@@ -87,10 +125,7 @@ export async function streamProgressiveResponseToWritable(targetUrl, writable, o
   const signal = options.signal;
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
 
-  const response = await fetchFn(targetUrl, { signal });
-  if (!response.ok) {
-    throw new Error(`HTTP_${response.status}`);
-  }
+  const response = await fetchWithRetry(fetchFn, targetUrl, { signal });
 
   let totalWritten = 0;
   if (response.body && typeof response.body.getReader === 'function') {
@@ -226,6 +261,253 @@ async function streamDualFmp4ToWritable(mediaPlaylist, audioPlaylist, writable, 
   return totalBytesWritten;
 }
 
+function createIncrementalTsCollector(TransmuxerCtor) {
+  const transmuxer = new TransmuxerCtor({ keepOriginalTimestamps: false });
+  const initHolder = { initSegment: null };
+  const chunks = [];
+  transmuxer.on('data', (segment) => {
+    if (!initHolder.initSegment && segment && segment.initSegment && segment.initSegment.byteLength > 0) {
+      initHolder.initSegment = new Uint8Array(segment.initSegment);
+    }
+    if (segment && segment.data && segment.data.byteLength > 0) {
+      chunks.push(new Uint8Array(segment.data));
+    }
+  });
+  return {
+    pushSegment: (buf, isDiscontinuity, isLast) => {
+      if (isDiscontinuity && typeof transmuxer.endTimeline === 'function') {
+        transmuxer.endTimeline();
+        transmuxer.flush();
+      }
+      transmuxer.push(buf instanceof Uint8Array ? buf : new Uint8Array(buf));
+      transmuxer.flush();
+      if (isLast && typeof transmuxer.endTimeline === 'function') {
+        transmuxer.endTimeline();
+      }
+      const out = chunks.splice(0, chunks.length);
+      return { initSegment: initHolder.initSegment, fragments: out };
+    }
+  };
+}
+
+/**
+ * Streams dual-track DASH WebM (video + audio init + cluster pairs) directly to disk.
+ * @param {object} mediaPlaylist
+ * @param {object} audioPlaylist
+ * @param {FileSystemWritableFileStream} writable
+ * @param {object} ctx
+ * @returns {Promise<number>}
+ */
+async function streamDualWebmToWritable(mediaPlaylist, audioPlaylist, writable, ctx) {
+  const { concurrency, signal, fetchFn, keyCache, onProgress } = ctx;
+  const videoSegReqs = buildPlaylistSegmentRequests(mediaPlaylist);
+  const audioSegReqs = buildPlaylistSegmentRequests(audioPlaylist);
+  const videoInitReq = mediaPlaylist.initSegmentUrl
+    ? { url: mediaPlaylist.initSegmentUrl, byteRange: mediaPlaylist.initSegmentByteRange || '', key: null, sequenceNumber: 0 }
+    : videoSegReqs.shift();
+  const audioInitReq = audioPlaylist.initSegmentUrl
+    ? { url: audioPlaylist.initSegmentUrl, byteRange: audioPlaylist.initSegmentByteRange || '', key: null, sequenceNumber: 0 }
+    : audioSegReqs.shift();
+  if (!videoInitReq || !audioInitReq) {
+    throw new Error('EMPTY_PLAYLIST');
+  }
+  const totalUnits = 2 + videoSegReqs.length + audioSegReqs.length;
+  const [videoInitBuf, audioInitBuf] = await Promise.all([
+    fetchAndDecryptSegment(videoInitReq, signal, fetchFn, keyCache),
+    fetchAndDecryptSegment(audioInitReq, signal, fetchFn, keyCache)
+  ]);
+  const { prefixParts, audioTrackNumber, videoScale, audioScale } = buildDualWebmStreamInit(
+    videoInitBuf,
+    audioInitBuf
+  );
+  let totalBytesWritten = 0;
+  for (const part of prefixParts) {
+    await writable.write(part);
+    totalBytesWritten += part.byteLength;
+  }
+  if (!mediaPlaylist.initSegmentUrl) {
+    for (const cluster of splitWebmInitAndClusters(videoInitBuf).clusters) {
+      await writable.write(cluster);
+      totalBytesWritten += cluster.byteLength;
+    }
+  }
+  if (!audioPlaylist.initSegmentUrl) {
+    for (const cluster of splitWebmInitAndClusters(audioInitBuf).clusters) {
+      const muxed = rewriteAudioClusterForMux(cluster, audioTrackNumber, audioScale, videoScale);
+      await writable.write(muxed);
+      totalBytesWritten += muxed.byteLength;
+    }
+  }
+  let completedCount = 2;
+  onProgress(completedCount, totalUnits, totalBytesWritten, true);
+
+  const pairCount = Math.max(videoSegReqs.length, audioSegReqs.length);
+  const stepWindow = Math.max(1, Math.floor(concurrency / 2));
+  for (let start = 0; start < pairCount; start += stepWindow) {
+    if (signal && signal.aborted) {
+      throw new Error('DOWNLOAD_CANCELLED');
+    }
+    const end = Math.min(start + stepWindow, pairCount);
+    const pairIndices = Array.from({ length: end - start }, (_, k) => start + k);
+    const pairBuffers = await Promise.all(
+      pairIndices.map((idx) => Promise.all([
+        idx < videoSegReqs.length ? fetchAndDecryptSegment(videoSegReqs[idx], signal, fetchFn, keyCache) : null,
+        idx < audioSegReqs.length ? fetchAndDecryptSegment(audioSegReqs[idx], signal, fetchFn, keyCache) : null
+      ]))
+    );
+    for (let i = 0; i < pairBuffers.length; i += 1) {
+      const [vBuf, aBuf] = pairBuffers[i];
+      if (vBuf) {
+        const vBytes = new Uint8Array(vBuf);
+        await writable.write(vBytes);
+        totalBytesWritten += vBytes.byteLength;
+        completedCount += 1;
+      }
+      if (aBuf) {
+        const rewritten = rewriteAudioClusterForMux(aBuf, audioTrackNumber, audioScale, videoScale);
+        await writable.write(rewritten);
+        totalBytesWritten += rewritten.byteLength;
+        completedCount += 1;
+      }
+      pairBuffers[i] = null;
+      onProgress(completedCount, totalUnits, totalBytesWritten, true);
+    }
+  }
+  return totalBytesWritten;
+}
+
+/**
+ * Streams dual-track playlists requiring incremental transmuxing (HLS TS video + separate audio,
+ * or fMP4 video + ADTS AAC / TS / WebM Opus audio) directly to disk in bounded windows.
+ * @param {object} mediaPlaylist
+ * @param {object} audioPlaylist
+ * @param {FileSystemWritableFileStream} writable
+ * @param {object} ctx
+ * @returns {Promise<number>}
+ */
+async function streamDualMixedToWritable(mediaPlaylist, audioPlaylist, writable, ctx) {
+  const { concurrency, signal, fetchFn, keyCache, onProgress, TransmuxerCtor } = ctx;
+  const videoSegReqs = buildPlaylistSegmentRequests(mediaPlaylist);
+  const audioSegReqs = buildPlaylistSegmentRequests(audioPlaylist);
+  if (videoSegReqs.length === 0) {
+    throw new Error('EMPTY_PLAYLIST');
+  }
+  const hasVideoInit = Boolean(mediaPlaylist.initSegmentUrl);
+  const hasAudioInit = Boolean(audioPlaylist.initSegmentUrl);
+  const videoDiscontinuities = new Set(Array.isArray(mediaPlaylist.discontinuityIndices) ? mediaPlaylist.discontinuityIndices : []);
+  const audioDiscontinuities = new Set(Array.isArray(audioPlaylist.discontinuityIndices) ? audioPlaylist.discontinuityIndices : []);
+  const videoCollector = !hasVideoInit && typeof TransmuxerCtor === 'function' ? createIncrementalTsCollector(TransmuxerCtor) : null;
+  const audioCollector = !hasAudioInit && typeof TransmuxerCtor === 'function' ? createIncrementalTsCollector(TransmuxerCtor) : null;
+
+  let videoInitBytes = hasVideoInit
+    ? new Uint8Array(await fetchAndDecryptSegment({ url: mediaPlaylist.initSegmentUrl, byteRange: mediaPlaylist.initSegmentByteRange || '', key: null, sequenceNumber: 0 }, signal, fetchFn, keyCache))
+    : null;
+  let audioInitBytes = hasAudioInit
+    ? new Uint8Array(await fetchAndDecryptSegment({ url: audioPlaylist.initSegmentUrl, byteRange: audioPlaylist.initSegmentByteRange || '', key: null, sequenceNumber: 0 }, signal, fetchFn, keyCache))
+    : null;
+  const audioIsWebmOpus = Boolean(hasAudioInit && (audioPlaylist.mimeType === 'audio/webm' || (audioInitBytes && audioInitBytes[0] === 0x1a)));
+
+  let mergedTrackId = 0;
+  let wroteHeader = false;
+  let totalBytesWritten = 0;
+  let completedCount = (hasVideoInit ? 1 : 0) + (hasAudioInit ? 1 : 0);
+  const totalUnits = completedCount + videoSegReqs.length + audioSegReqs.length;
+  const pendingPairs = [];
+
+  const flushHeaderAndPending = async () => {
+    while (pendingPairs.length > 0 && pendingPairs[0].ready) {
+      const pair = pendingPairs.shift();
+      for (const vf of pair.vFrags) {
+        const out = normalizeFmp4Fragment(vf, 0);
+        await writable.write(out);
+        totalBytesWritten += out.byteLength;
+      }
+      for (const af of pair.aFrags) {
+        const out = normalizeFmp4Fragment(af, mergedTrackId);
+        await writable.write(out);
+        totalBytesWritten += out.byteLength;
+      }
+    }
+  };
+
+  const pairCount = Math.max(videoSegReqs.length, audioSegReqs.length);
+  const stepWindow = Math.max(1, Math.floor(concurrency / 2));
+  for (let start = 0; start < pairCount; start += stepWindow) {
+    if (signal && signal.aborted) {
+      throw new Error('DOWNLOAD_CANCELLED');
+    }
+    const end = Math.min(start + stepWindow, pairCount);
+    const pairIndices = Array.from({ length: end - start }, (_, k) => start + k);
+    const pairBuffers = await Promise.all(
+      pairIndices.map((idx) => Promise.all([
+        idx < videoSegReqs.length ? fetchAndDecryptSegment(videoSegReqs[idx], signal, fetchFn, keyCache) : null,
+        idx < audioSegReqs.length ? fetchAndDecryptSegment(audioSegReqs[idx], signal, fetchFn, keyCache) : null
+      ]))
+    );
+
+    for (let i = 0; i < pairBuffers.length; i += 1) {
+      const idx = pairIndices[i];
+      const [vBuf, aBuf] = pairBuffers[i];
+      let vFrags = [];
+      let aFrags = [];
+      let convertedAudioInit = null;
+
+      if (vBuf) {
+        if (hasVideoInit) {
+          vFrags = [new Uint8Array(vBuf)];
+        } else if (videoCollector) {
+          const pushed = videoCollector.pushSegment(vBuf, idx > 0 && videoDiscontinuities.has(idx), idx === videoSegReqs.length - 1);
+          if (!videoInitBytes && pushed.initSegment) {
+            videoInitBytes = pushed.initSegment;
+          }
+          vFrags = pushed.fragments;
+        }
+        completedCount += 1;
+      }
+
+      if (aBuf) {
+        if (audioIsWebmOpus && audioInitBytes) {
+          const opusFmp4 = transmuxWebmOpusToFmp4Parts([audioInitBytes, aBuf]);
+          convertedAudioInit = opusFmp4.initSegment;
+          aFrags = opusFmp4.dataChunks;
+        } else if (hasAudioInit) {
+          aFrags = [new Uint8Array(aBuf)];
+        } else if (looksLikeAdtsAudio(aBuf)) {
+          const adtsParts = transmuxAdtsSegmentsToFmp4Parts([aBuf]);
+          convertedAudioInit = adtsParts.initSegment;
+          aFrags = adtsParts.dataChunks;
+        } else if (audioCollector) {
+          const pushed = audioCollector.pushSegment(aBuf, idx > 0 && audioDiscontinuities.has(idx), idx === audioSegReqs.length - 1);
+          if (!audioInitBytes && pushed.initSegment) {
+            convertedAudioInit = pushed.initSegment;
+          }
+          aFrags = pushed.fragments;
+        }
+        completedCount += 1;
+      }
+
+      if (!wroteHeader && videoInitBytes && (convertedAudioInit || (!audioIsWebmOpus && audioInitBytes))) {
+        const effAudioInit = convertedAudioInit || audioInitBytes;
+        const { initParts, audioTrackId } = mergeFmp4InitSegments(videoInitBytes, effAudioInit);
+        mergedTrackId = audioTrackId;
+        for (const part of initParts) {
+          await writable.write(part);
+          totalBytesWritten += part.byteLength;
+        }
+        wroteHeader = true;
+      }
+
+      pendingPairs.push({ vFrags, aFrags, ready: true });
+      if (wroteHeader) {
+        await flushHeaderAndPending();
+      }
+      pairBuffers[i] = null;
+      onProgress(completedCount, totalUnits, totalBytesWritten, true);
+    }
+  }
+  return totalBytesWritten;
+}
+
 /**
  * Streams an HLS or DASH manifest directly to disk chunk-by-chunk without exceeding RAM caps.
  * Processes segment batches in bounded sliding windows and immediately flushes ordered chunks.
@@ -250,10 +532,7 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
     return streamProgressiveResponseToWritable(preferredVariantUrl, writable, options);
   }
 
-  const rootRes = await fetchFn(rootUrl, { signal });
-  if (!rootRes.ok) {
-    throw new Error(`HTTP_${rootRes.status}`);
-  }
+  const rootRes = await fetchWithRetry(fetchFn, rootUrl, { signal });
   const rootText = await rootRes.text();
   const qualityPref = job.qualityPreference || QUALITY_PREFERENCES.BEST;
 
@@ -282,16 +561,17 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
     }
     mediaPlaylist = chosen;
     const isWebm = chosen.mimeType === 'video/webm';
-    const compatibleAudio = (dash.audioTracks || []).filter((track) => {
-      if (!track || !Array.isArray(track.segments) || track.segments.length === 0) {
-        return false;
-      }
+    const usableAudio = (dash.audioTracks || []).filter((track) => (
+      track && Array.isArray(track.segments) && track.segments.length > 0
+    ));
+    const sameContainer = usableAudio.filter((track) => {
       const trackIsWebm = (track.mimeType || '').toLowerCase() === 'audio/webm';
       return isWebm ? trackIsWebm : !trackIsWebm;
     });
+    const audioPool = sameContainer.length > 0 ? sameContainer : (!isWebm ? usableAudio : []);
     audioPlaylist = (
-      (preferredAudioUrl && compatibleAudio.find((a) => a.url === preferredAudioUrl)) ||
-      compatibleAudio[0] ||
+      (preferredAudioUrl && audioPool.find((a) => a.url === preferredAudioUrl)) ||
+      audioPool[0] ||
       null
     );
   } else {
@@ -301,10 +581,7 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
       if (!chosen) {
         throw new Error('EMPTY_PLAYLIST');
       }
-      const subRes = await fetchFn(chosen.url, { signal });
-      if (!subRes.ok) {
-        throw new Error(`HTTP_${subRes.status}`);
-      }
+      const subRes = await fetchWithRetry(fetchFn, chosen.url, { signal });
       mediaPlaylist = parseHlsPlaylist(await subRes.text(), chosen.url);
       const groupTracks = chosen.audioGroup
         ? (parsed.audioTracks || []).filter((a) => a.groupId === chosen.audioGroup && a.url)
@@ -318,8 +595,8 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
         null
       );
       if (matchedAudio && matchedAudio.url && matchedAudio.url !== chosen.url) {
-        const audioRes = await fetchFn(matchedAudio.url, { signal });
-        if (audioRes.ok) {
+        const audioRes = await fetchWithRetry(fetchFn, matchedAudio.url, { signal }).catch(() => null);
+        if (audioRes && audioRes.ok) {
           const candidateAudio = parseHlsPlaylist(await audioRes.text(), matchedAudio.url);
           if (
             !candidateAudio.drmEncrypted &&
@@ -350,12 +627,29 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
     LIMITS.MAX_HLS_CONCURRENCY
   );
   const keyCache = new Map();
+  const TransmuxerCtor = options.TransmuxerCtor
+    || (globalThis.muxjs && globalThis.muxjs.Transmuxer);
+
+  if (
+    mediaPlaylist.mimeType === 'video/webm' &&
+    audioPlaylist &&
+    audioPlaylist.mimeType === 'audio/webm'
+  ) {
+    return streamDualWebmToWritable(mediaPlaylist, audioPlaylist, writable, {
+      concurrency,
+      signal,
+      fetchFn,
+      keyCache,
+      onProgress
+    });
+  }
 
   if (
     mediaPlaylist.initSegmentUrl &&
     audioPlaylist &&
     audioPlaylist.initSegmentUrl &&
-    mediaPlaylist.mimeType !== 'video/webm'
+    mediaPlaylist.mimeType !== 'video/webm' &&
+    audioPlaylist.mimeType !== 'audio/webm'
   ) {
     return streamDualFmp4ToWritable(mediaPlaylist, audioPlaylist, writable, {
       concurrency,
@@ -363,6 +657,23 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
       fetchFn,
       keyCache,
       onProgress
+    });
+  }
+
+  if (
+    audioPlaylist &&
+    Array.isArray(audioPlaylist.segments) &&
+    audioPlaylist.segments.length > 0 &&
+    mediaPlaylist.mimeType !== 'video/webm' &&
+    (mediaPlaylist.initSegmentUrl || typeof TransmuxerCtor === 'function')
+  ) {
+    return streamDualMixedToWritable(mediaPlaylist, audioPlaylist, writable, {
+      concurrency,
+      signal,
+      fetchFn,
+      keyCache,
+      onProgress,
+      TransmuxerCtor
     });
   }
 
@@ -379,8 +690,6 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
   if (requests.length === 0) {
     throw new Error('EMPTY_PLAYLIST');
   }
-  const TransmuxerCtor = options.TransmuxerCtor
-    || (globalThis.muxjs && globalThis.muxjs.Transmuxer);
   const shouldTransmuxTs = Boolean(
     typeof TransmuxerCtor === 'function'
     && !mediaPlaylist.initSegmentUrl

@@ -17,6 +17,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  alignFmp4MseFragments,
   buildIsoBox,
   countTracksInInit,
   extractAudioOnlyFromFmp4Parts,
@@ -282,4 +283,53 @@ test('normalizeFmp4Fragment strips base-data-offset-present and updates trun dat
   );
   assert.equal(hasAudioTrackInInit(makeTypedInit([{ trackId: 1, handlerType: 'vide' }])), false);
   assert.equal(hasAudioTrackInInit(makeTypedInit([{ trackId: 2, handlerType: 'soun' }])), true);
+});
+
+test('alignFmp4MseFragments trims stale leading fragments when ABR switches mid-playback', () => {
+  function makeInitWithTimescale(trackId, timescale) {
+    const ftyp = buildIsoBox('ftyp', [new Uint8Array([0x69, 0x73, 0x6f, 0x6d])]);
+    const mdhdBody = makeFullBoxPayload(0, 20);
+    new DataView(mdhdBody.buffer).setUint32(12, timescale, false);
+    const mdia = buildIsoBox('mdia', [buildIsoBox('mdhd', [mdhdBody])]);
+    const tkhdPayload = makeFullBoxPayload(0, 80);
+    new DataView(tkhdPayload.buffer).setUint32(12, trackId, false);
+    const trak = buildIsoBox('trak', [buildIsoBox('tkhd', [tkhdPayload]), mdia]);
+    const moov = buildIsoBox('moov', [
+      makeMvhd(trackId + 1),
+      trak,
+      buildIsoBox('mvex', [makeTrex(trackId)])
+    ]);
+    const out = new Uint8Array(ftyp.byteLength + moov.byteLength);
+    out.set(ftyp, 0);
+    out.set(moov, ftyp.byteLength);
+    return out;
+  }
+
+  function makeFragWithTfdt(trackId, decodeTicks, marker) {
+    const tfhdPayload = makeFullBoxPayload(0, 8);
+    new DataView(tfhdPayload.buffer).setUint32(4, trackId, false);
+    const tfdtPayload = makeFullBoxPayload(0, 8);
+    new DataView(tfdtPayload.buffer).setUint32(4, decodeTicks, false);
+    const moof = buildIsoBox('moof', [
+      buildIsoBox('traf', [buildIsoBox('tfhd', [tfhdPayload]), buildIsoBox('tfdt', [tfdtPayload])])
+    ]);
+    const mdat = buildIsoBox('mdat', [new Uint8Array([marker])]);
+    const out = new Uint8Array(moof.byteLength + mdat.byteLength);
+    out.set(moof, 0);
+    out.set(mdat, moof.byteLength);
+    return out;
+  }
+
+  const vInit = makeInitWithTimescale(1, 1000);
+  const aInit = makeInitWithTimescale(1, 48000);
+  const vFrags = [makeFragWithTfdt(1, 10000, 0x10), makeFragWithTfdt(1, 12000, 0x12)];
+  const aFrags = [
+    makeFragWithTfdt(1, 0, 0xa0),
+    makeFragWithTfdt(1, 480000, 0xa1),
+    makeFragWithTfdt(1, 576000, 0xa2)
+  ];
+
+  const aligned = alignFmp4MseFragments(vInit, vFrags, aInit, aFrags);
+  assert.equal(aligned.videoFrags.length, 2);
+  assert.equal(aligned.audioFrags.length, 2);
 });

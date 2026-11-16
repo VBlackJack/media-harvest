@@ -234,6 +234,11 @@ function createFakePopupDocument() {
   makeTracked('button', 'tabCaptureBtn');
   makeTracked('span', 'tabCaptureLabel');
   makeTracked('button', 'clearBtn');
+  makeTracked('button', 'historyToggleBtn');
+  makeTracked('section', 'historyDrawer', ['hidden']);
+  makeTracked('button', 'historyClearBtn');
+  makeTracked('ul', 'historyList');
+  makeTracked('p', 'historyEmpty', ['hidden']);
   makeTracked('button', 'sidePanelBtn');
   makeTracked('button', 'optionsBtn');
   makeTracked('button', 'companionPageBtn', ['hidden']);
@@ -1358,4 +1363,79 @@ test('popup controller handles subtitle downloads, companion actions, batchCance
     listener({ [STORAGE_KEYS.USER_SETTINGS]: { newValue: { largeStreamWarningMb: 1 } } }, 'sync');
   }
   assert.equal(controller.state.settings.largeStreamWarningMb, 1);
+});
+
+test('popup history drawer loads recent downloads, retries via DOWNLOAD_MEDIA, and clears entries', async () => {
+  const doc = createFakePopupDocument();
+  const win = {
+    location: { search: '' },
+    addEventListener: () => {},
+    close: () => {}
+  };
+  let historyEntries = [
+    {
+      id: 'h1',
+      url: 'https://cdn.example.com/saved.mp4',
+      playlistUrl: 'https://cdn.example.com/saved.mp4',
+      audioUrl: '',
+      referer: 'https://example.com/watch',
+      filename: 'saved.mp4',
+      isStream: false,
+      isMse: false,
+      audioOnly: false,
+      qualityPreference: 'highest',
+      ok: true,
+      error: ''
+    }
+  ];
+  const sentMessages = [];
+
+  const controller = createPopupController({
+    documentRef: doc,
+    windowRef: win,
+    chromeApi: {
+      tabs: { query: async () => [{ id: 33, windowId: 1, url: 'https://example.com', title: 'Ex' }] },
+      runtime: {
+        sendMessage: async (msg) => {
+          sentMessages.push(msg);
+          if (msg.type === MESSAGE_TYPES.GET_MEDIA_FOR_TAB) {
+            return { ok: true, items: [] };
+          }
+          if (msg.type === MESSAGE_TYPES.CHECK_COMPANION) {
+            return { ok: true, available: false };
+          }
+          if (msg.type === MESSAGE_TYPES.GET_DOWNLOAD_HISTORY) {
+            return { ok: true, history: historyEntries };
+          }
+          if (msg.type === MESSAGE_TYPES.CLEAR_DOWNLOAD_HISTORY) {
+            historyEntries = [];
+            return { ok: true };
+          }
+          return { ok: true, downloadId: 500 };
+        }
+      },
+      storage: { sync: { get: async () => ({}) } }
+    },
+    loadSettingsFn: async () => DEFAULT_SETTINGS,
+    translateFn: (k) => k,
+    getUiLanguageFn: () => 'en',
+    applyTranslationsFn: () => {}
+  });
+
+  await controller.init();
+  assert.equal(controller.els.historyDrawer.classList.contains('hidden'), true);
+
+  await controller.els.historyToggleBtn.dispatchEvent({ type: 'click' });
+  assert.equal(controller.els.historyDrawer.classList.contains('hidden'), false);
+  assert.equal(controller.els.historyList.children.length, 1);
+
+  const retryBtn = controller.els.historyList.children[0].children[1];
+  await retryBtn.dispatchEvent({ type: 'click' });
+  const retryMsg = sentMessages.find((m) => m.type === MESSAGE_TYPES.DOWNLOAD_MEDIA);
+  assert.ok(retryMsg);
+  assert.equal(retryMsg.payload.url, 'https://cdn.example.com/saved.mp4');
+
+  await controller.els.historyClearBtn.dispatchEvent({ type: 'click' });
+  assert.equal(controller.els.historyList.children.length, 0);
+  assert.equal(controller.els.historyEmpty.classList.contains('hidden'), false);
 });

@@ -1190,5 +1190,49 @@
         "example": "95.2 MB"
       }
     }
+  },
+  "overlay_quality_menu_aria": {
+    "message": "Choose quality or audio",
+    "description": "Accessible label for the quick quality/audio menu toggle on page video overlays."
+  },
+  "overlay_quality_best": {
+    "message": "Best quality",
+    "description": "Quick overlay option to download highest available stream variant."
+  },
+  "overlay_quality_lowest": {
+    "message": "Compact / lowest",
+    "description": "Quick overlay option to download lowest-bitrate stream variant."
+  },
+  "overlay_quality_audio": {
+    "message": "Audio only",
+    "description": "Quick overlay option to extract audio track only."
+  },
+  "popup_header_history_title": {
+    "message": "Recent downloads",
+    "description": "Tooltip and accessible label for the popup recent download history toggle."
+  },
+  "popup_history_heading": {
+    "message": "Recent downloads",
+    "description": "Heading inside the popup recent downloads drawer."
+  },
+  "popup_history_clear": {
+    "message": "Clear",
+    "description": "Button to clear recorded recent downloads in popup history drawer."
+  },
+  "popup_history_retry": {
+    "message": "Retry",
+    "description": "Button to re-trigger a download entry from recent downloads history."
+  },
+  "popup_history_empty": {
+    "message": "No recent downloads yet.",
+    "description": "Empty state shown when the recent downloads drawer has no entries."
+  },
+  "popup_history_status_done": {
+    "message": "Saved",
+    "description": "Badge label for a completed download in recent downloads history."
+  },
+  "popup_history_status_error": {
+    "message": "Failed",
+    "description": "Badge label for a failed download in recent downloads history."
   }
 }

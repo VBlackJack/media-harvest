@@ -805,3 +805,81 @@ select:focus-visible {
   height: 100%;
   cursor: pointer;
 }
+
+.history-drawer {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  padding: 8px 10px;
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.history-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.history-item-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.history-item-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-item-status {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.history-item-status.is-done {
+  color: #4ade80;
+}
+
+.history-item-status.is-error {
+  color: var(--danger);
+}
+
+.history-empty {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}

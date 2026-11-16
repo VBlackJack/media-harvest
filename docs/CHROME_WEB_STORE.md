@@ -1,6 +1,6 @@
 [Version française](fr/CHROME_WEB_STORE.md)
 
-# Chrome Web Store Submission Guide (`v1.2.2`)
+# Chrome Web Store Submission Guide (`v1.3.0`)
 
 ## Build & Package
 
@@ -11,7 +11,7 @@
    npm run test:e2e
    npm run package
    ```
-2. Upload `dist/media-harvest-v1.2.2.zip` in the Chrome Web Store Developer Dashboard (**Package** -> **Upload new package**).
+2. Upload `dist/media-harvest-v1.3.0.zip` in the Chrome Web Store Developer Dashboard (**Package** -> **Upload new package**).
 
 ## Store Listing Copy
 

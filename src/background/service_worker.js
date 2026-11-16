@@ -53,6 +53,15 @@ import {
 } from '../shared/media_classifier.js';
 import { attachVideoPreviews, extractMediaId } from '../shared/preview_matcher.js';
 import {
+  findCompanionAudioUrl,
+  findMatchingStreamForDirectUrl,
+  findSiblingStreamAudioUrl,
+  isLikelyAudioOnlyStreamUrl,
+  isLikelyVideoOnlyDirectUrl,
+  mergeCapturedMediaEntry,
+  rankVideoCandidates
+} from '../shared/stream_selector.js';
+import {
   addTemporaryRefererRule,
   attachDownloadDnrRule,
   detachDownloadDnrRule,
@@ -282,9 +291,7 @@ function toRouteKey(rawUrl) {
 function recordNetworkMedia(tabId, entry) {
   enqueueTabWrite(tabId, async () => {
     const existing = await getTabNetworkMedia(tabId);
-    const filtered = existing.filter((item) => item.url !== entry.url);
-    filtered.unshift(entry);
-    const capped = filtered.slice(0, LIMITS.MAX_CAPTURED_PER_TAB);
+    const capped = mergeCapturedMediaEntry(existing, entry, LIMITS.MAX_CAPTURED_PER_TAB);
     await chrome.storage.session.set({ [tabStorageKey(tabId)]: capped });
     const mseItems = await getTabMseMedia(tabId);
     await updateTabBadge(tabId, [...capped, ...mseItems]);
@@ -772,118 +779,6 @@ async function inspectHlsStream(url, referer = '') {
   });
 }
 
-function isLikelyAudioOnlyStreamUrl(rawUrl) {
-  if (typeof rawUrl !== 'string' || !rawUrl) {
-    return false;
-  }
-  return /\/(?:mp4a|aac|audio(?:-only|_only)?|snd)(?:\/|$)/i.test(rawUrl)
-    || /[?&](?:mime|type|track)=audio\b/i.test(rawUrl)
-    || /\/DASH_AUDIO/i.test(rawUrl)
-    || /\.(?:aac|m4a|mp3|ogg|opus|wav)(?:$|[?#])/i.test(rawUrl);
-}
-
-function isLikelyVideoOnlyDirectUrl(rawUrl) {
-  if (typeof rawUrl !== 'string' || !rawUrl) {
-    return false;
-  }
-  return /\/DASH_\d+\.(?:mp4|m4s)/i.test(rawUrl)
-    || /(?:[?&]mime=video|\/video(?:only|-only)\b)/i.test(rawUrl);
-}
-
-function isLikelySubPlaylistUrl(rawUrl, isStream = true) {
-  if (typeof rawUrl !== 'string' || !rawUrl) {
-    return false;
-  }
-  if (isLikelyAudioOnlyStreamUrl(rawUrl) || isLikelyVideoOnlyDirectUrl(rawUrl)) {
-    return true;
-  }
-  if (!isStream) {
-    return false;
-  }
-  return /\/(?:avc1|hev1|hvc1|vp09|vp9|av01)(?:\/|$)/i.test(rawUrl)
-    || /\/\d{2,4}x\d{2,4}(?:\/|$)/i.test(rawUrl);
-}
-
-function getUrlPathDepth(rawUrl) {
-  try {
-    return new URL(rawUrl).pathname.split('/').filter(Boolean).length;
-  } catch {
-    return 999;
-  }
-}
-
-function scoreVideoCandidate(item) {
-  if (!item || !item.url) {
-    return -100000;
-  }
-  if (isLikelyAudioOnlyStreamUrl(item.url)) {
-    return -10000;
-  }
-  if (item.isStream && !isLikelySubPlaylistUrl(item.url, true)) {
-    return 3000;
-  }
-  if (!item.isStream && !isLikelyVideoOnlyDirectUrl(item.url)) {
-    return 2000;
-  }
-  if (item.isStream) {
-    return 1000;
-  }
-  return 500;
-}
-
-/**
- * Sorts video/stream candidates so master playlists precede sub-playlists and audio-only streams.
- * Ties favor shallower paths and earlier captures (remembering recordNetworkMedia unshifts newest first).
- * @param {Array<object>} candidates
- * @returns {Array<object>}
- */
-function rankVideoCandidates(candidates) {
-  if (!Array.isArray(candidates) || candidates.length <= 1) {
-    return Array.isArray(candidates) ? [...candidates] : [];
-  }
-  return candidates
-    .map((item, idx) => ({ item, idx, score: scoreVideoCandidate(item), depth: getUrlPathDepth(item.url) }))
-    .sort((a, b) => {
-      if (b.score !== a.score) {
-        return b.score - a.score;
-      }
-      if (a.item.isStream && b.item.isStream && a.depth !== b.depth) {
-        return a.depth - b.depth;
-      }
-      const timeA = Number(a.item.capturedAt) || 0;
-      const timeB = Number(b.item.capturedAt) || 0;
-      if (timeA > 0 && timeB > 0 && timeA !== timeB) {
-        return timeA - timeB;
-      }
-      return b.idx - a.idx;
-    })
-    .map((entry) => entry.item);
-}
-
-function findSiblingStreamAudioUrl(chosen, allItems) {
-  if (!chosen || !chosen.isStream || !isLikelySubPlaylistUrl(chosen.url, true) || !Array.isArray(allItems)) {
-    return '';
-  }
-  const chosenMediaId = extractMediaId(chosen.url);
-  const chosenDir = getUrlDirectoryPrefix(chosen.url);
-  const match = allItems.find((item) => {
-    if (!item || !item.url || item.url === chosen.url || !item.isStream) {
-      return false;
-    }
-    if (!isLikelyAudioOnlyStreamUrl(item.url)) {
-      return false;
-    }
-    if (chosenMediaId && extractMediaId(item.url) === chosenMediaId) {
-      return true;
-    }
-    if (chosenDir && getUrlDirectoryPrefix(item.url) === chosenDir) {
-      return true;
-    }
-    return false;
-  });
-  return match ? match.url : '';
-}
-
 /**
  * Resolves and downloads the video matching an inline X post click.
  * @param {number} tabId
@@ -945,6 +840,8 @@ async function handleTweetVideoDownload(tabId, payload, pageUrl = '') {
     playlistUrl: chosen.url,
     audioUrl,
     isStream: Boolean(chosen.isStream),
+    audioOnly: Boolean(payload.audioOnly),
+    qualityPreference: typeof payload.qualityPreference === 'string' ? payload.qualityPreference : '',
     filename,
     saveAs: Boolean(settings.promptSaveAs),
     requestId: typeof payload.requestId === 'string' ? payload.requestId : '',
@@ -1227,7 +1124,9 @@ async function startStreamDownload(payload, rawStem, requestId) {
       progressiveMux: Boolean(payload.progressiveMux),
       audioFormat: settings.audioExportFormat || AUDIO_EXPORT_FORMATS.M4A,
       concurrency: settings.hlsFetchConcurrency,
-      qualityPreference: settings.defaultQuality,
+      qualityPreference: typeof payload.qualityPreference === 'string' && payload.qualityPreference
+        ? payload.qualityPreference
+        : settings.defaultQuality,
       pollIntervalMs: typeof payload.pollIntervalMs === 'number' ? payload.pollIntervalMs : undefined
     })
   });
@@ -1324,124 +1223,6 @@ async function handleDownloadHlsSubtitle(payload) {
   });
 }
 
-function getUrlDirectoryPrefix(rawUrl) {
-  try {
-    const parsed = new URL(rawUrl);
-    const lastSlash = parsed.pathname.lastIndexOf('/');
-    const dir = lastSlash >= 0 ? parsed.pathname.slice(0, lastSlash + 1) : '/';
-    return `${parsed.origin}${dir}`;
-  } catch {
-    return '';
-  }
-}
-
-function findMatchingStreamForDirectUrl(directUrl, streams) {
-  if (!directUrl || !Array.isArray(streams) || streams.length === 0) {
-    return null;
-  }
-  const rankedStreams = rankVideoCandidates(streams).filter((s) => !isLikelyAudioOnlyStreamUrl(s.url));
-  if (rankedStreams.length === 0) {
-    return null;
-  }
-  const directDir = getUrlDirectoryPrefix(directUrl);
-  if (directDir) {
-    const dirMatch = rankedStreams.find((s) => getUrlDirectoryPrefix(s.url) === directDir);
-    if (dirMatch) {
-      return dirMatch;
-    }
-  }
-  const directMediaId = extractMediaId(directUrl);
-  if (directMediaId) {
-    const idMatch = rankedStreams.find((s) => extractMediaId(s.url) === directMediaId);
-    if (idMatch) {
-      return idMatch;
-    }
-  }
-  if (isLikelyVideoOnlyDirectUrl(directUrl) && rankedStreams.length === 1) {
-    return rankedStreams[0];
-  }
-  return null;
-}
-
-const IDENTITY_QUERY_PARAMS = Object.freeze([
-  'id',
-  'docid',
-  'vid',
-  'media_id',
-  'asset_id',
-  'clip_id',
-  'item_id'
-]);
-
-function extractUrlIdentityParam(rawUrl) {
-  try {
-    const parsed = new URL(rawUrl);
-    for (const key of IDENTITY_QUERY_PARAMS) {
-      const val = parsed.searchParams.get(key);
-      if (val && val.length >= 4) {
-        return `${key}:${val}`;
-      }
-    }
-    return '';
-  } catch {
-    return '';
-  }
-}
-
-function getUrlPathnameLeaf(rawUrl) {
-  try {
-    const parts = new URL(rawUrl).pathname.split('/').filter(Boolean);
-    return parts.length > 0 ? parts[parts.length - 1].toLowerCase() : '';
-  } catch {
-    return '';
-  }
-}
-
-function findCompanionAudioUrl(videoUrl, networkItems) {
-  if (!videoUrl || !Array.isArray(networkItems)) {
-    return '';
-  }
-  const videoDir = getUrlDirectoryPrefix(videoUrl);
-  const videoMediaId = extractMediaId(videoUrl);
-  const videoIdentity = extractUrlIdentityParam(videoUrl);
-  const videoLeaf = getUrlPathnameLeaf(videoUrl);
-
-  const audioCandidates = networkItems.filter((item) => (
-    item
-    && item.url
-    && item.url !== videoUrl
-    && !item.isStream
-    && (item.type === MEDIA_TYPES.AUDIO || /\/DASH_AUDIO|[?&](?:mime|type|track)=audio\b/i.test(item.url))
-  ));
-  if (audioCandidates.length === 0) {
-    return '';
-  }
-
-  const exactMatch = audioCandidates.find((item) => {
-    if (videoDir && getUrlDirectoryPrefix(item.url) === videoDir) {
-      return true;
-    }
-    if (videoMediaId && extractMediaId(item.url) === videoMediaId) {
-      return true;
-    }
-    if (videoIdentity && extractUrlIdentityParam(item.url) === videoIdentity) {
-      return true;
-    }
-    return false;
-  });
-  if (exactMatch) {
-    return exactMatch.url;
-  }
-
-  if (videoLeaf === 'videoplayback' && isLikelyVideoOnlyDirectUrl(videoUrl)) {
-    const queryAudio = audioCandidates.find((item) => getUrlPathnameLeaf(item.url) === 'videoplayback');
-    if (queryAudio) {
-      return queryAudio.url;
-    }
-  }
-  return '';
-}
-
 /**
  * Resolves and downloads the best available video stream or capture for a site overlay click.
  * @param {number} tabId
@@ -1531,6 +1312,8 @@ async function handleSiteVideoDownload(tabId, payload, fallbackPageUrl = '') {
     frameId: typeof chosen.frameId === 'number' ? chosen.frameId : undefined,
     ext: chosen.ext || '',
     referer: chosen.referer || pageUrl,
+    audioOnly: Boolean(payload.audioOnly),
+    qualityPreference: typeof payload.qualityPreference === 'string' ? payload.qualityPreference : '',
     filename,
     saveAs: Boolean(settings.promptSaveAs),
     requestId: typeof payload.requestId === 'string' ? payload.requestId : '',
@@ -1900,25 +1683,76 @@ async function handleOpenStreamSaver(payload) {
   return { jobId, tabId: saverTabId };
 }
 
+let historyWriteChain = Promise.resolve();
+
 /**
- * Starts a download either directly, via image conversion, via MSE export, or via HLS/DASH offscreen assembly.
- * @param {{ url: string, playlistUrl?: string, isStream?: boolean, isMse?: boolean, convertTo?: string, filename?: string, saveAs?: boolean, requestId?: string }} payload
+ * Reads recorded recent download history from chrome.storage.local.
+ * @returns {Promise<Array<object>>}
+ */
+async function getDownloadHistory() {
+  if (!chrome.storage || !chrome.storage.local || typeof chrome.storage.local.get !== 'function') {
+    return [];
+  }
+  const stored = await chrome.storage.local.get(STORAGE_KEYS.DOWNLOAD_HISTORY);
+  const list = stored && stored[STORAGE_KEYS.DOWNLOAD_HISTORY];
+  return Array.isArray(list) ? list : [];
+}
+
+/**
+ * Clears all entries in recent download history storage.
+ * @returns {Promise<void>}
+ */
+async function clearDownloadHistory() {
+  if (!chrome.storage || !chrome.storage.local || typeof chrome.storage.local.remove !== 'function') {
+    return;
+  }
+  await chrome.storage.local.remove(STORAGE_KEYS.DOWNLOAD_HISTORY);
+}
+
+/**
+ * Appends a completed or failed download record to recent history capped to LIMITS.MAX_DOWNLOAD_HISTORY.
+ * @param {object} entry
+ * @returns {Promise<void>}
+ */
+function recordDownloadHistory(entry) {
+  if (!chrome.storage || !chrome.storage.local || typeof chrome.storage.local.set !== 'function') {
+    return Promise.resolve();
+  }
+  const item = {
+    id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    url: typeof entry.url === 'string' ? entry.url : '',
+    playlistUrl: typeof entry.playlistUrl === 'string' ? entry.playlistUrl : '',
+    audioUrl: typeof entry.audioUrl === 'string' ? entry.audioUrl : '',
+    referer: typeof entry.referer === 'string' ? entry.referer : '',
+    filename: typeof entry.filename === 'string' ? entry.filename : '',
+    isStream: Boolean(entry.isStream),
+    isMse: Boolean(entry.isMse),
+    audioOnly: Boolean(entry.audioOnly),
+    qualityPreference: typeof entry.qualityPreference === 'string' ? entry.qualityPreference : '',
+    ok: Boolean(entry.ok),
+    error: typeof entry.error === 'string' ? entry.error : '',
+    timestamp: Date.now()
+  };
+  historyWriteChain = historyWriteChain
+    .then(async () => {
+      const prev = await getDownloadHistory();
+      const deduped = prev.filter((p) => !(p.url === item.url && p.filename === item.filename && Boolean(p.audioOnly) === item.audioOnly));
+      const next = [item, ...deduped].slice(0, LIMITS.MAX_DOWNLOAD_HISTORY);
+      await chrome.storage.local.set({ [STORAGE_KEYS.DOWNLOAD_HISTORY]: next });
+    })
+    .catch(() => {});
+  return historyWriteChain;
+}
+
+/**
+ * Dispatches a validated download payload to the appropriate pipeline.
+ * @param {object} payload
+ * @param {string} rawStem
+ * @param {string} requestId
+ * @param {boolean} mseTarget
  * @returns {Promise<{ downloadId: number, requestId: string }>}
  */
-async function handleDownloadMedia(payload) {
-  if (!payload || typeof payload !== 'object') {
-    throw new Error('INVALID_URL');
-  }
-  const mseTarget = Boolean(payload.isMse || isMseUrl(payload.url));
-  if (!mseTarget && !isDownloadableMediaUrl(payload.url)) {
-    throw new Error('INVALID_URL');
-  }
-
-  const rawStem = resolveDownloadStem(payload.filename, payload.url);
-  const requestId = typeof payload.requestId === 'string' && payload.requestId
-    ? payload.requestId
-    : `dl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
+async function dispatchDownloadMedia(payload, rawStem, requestId, mseTarget) {
   if (mseTarget) {
     return startMseDownload(payload, rawStem, requestId);
   }
@@ -1939,6 +1773,52 @@ async function handleDownloadMedia(payload) {
     return startDirectDownload(payload, rawStem, requestId);
   }
   return startStreamDownload(payload, rawStem, requestId);
+}
+
+/**
+ * Starts a download either directly, via image conversion, via MSE export, or via HLS/DASH offscreen assembly.
+ * @param {{ url: string, playlistUrl?: string, isStream?: boolean, isMse?: boolean, convertTo?: string, filename?: string, saveAs?: boolean, requestId?: string }} payload
+ * @returns {Promise<{ downloadId: number, requestId: string }>}
+ */
+async function handleDownloadMedia(payload) {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('INVALID_URL');
+  }
+  const mseTarget = Boolean(payload.isMse || isMseUrl(payload.url));
+  if (!mseTarget && !isDownloadableMediaUrl(payload.url)) {
+    throw new Error('INVALID_URL');
+  }
+
+  const rawStem = resolveDownloadStem(payload.filename, payload.url);
+  const requestId = typeof payload.requestId === 'string' && payload.requestId
+    ? payload.requestId
+    : `dl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const historyBase = {
+    url: payload.url,
+    playlistUrl: payload.playlistUrl || payload.url,
+    audioUrl: payload.audioUrl || '',
+    referer: payload.referer || '',
+    filename: payload.filename || `${rawStem}.${payload.ext || DEFAULT_FILENAMES.FALLBACK_EXT}`,
+    isStream: Boolean(payload.isStream || (payload.audioUrl && isHttpUrl(payload.audioUrl))),
+    isMse: mseTarget,
+    audioOnly: Boolean(payload.audioOnly),
+    qualityPreference: typeof payload.qualityPreference === 'string' ? payload.qualityPreference : ''
+  };
+
+  try {
+    const result = await dispatchDownloadMedia(payload, rawStem, requestId, mseTarget);
+    await recordDownloadHistory({ ...historyBase, ok: true });
+    return result;
+  } catch (err) {
+    if (!err || err.message !== 'DOWNLOAD_CANCELLED') {
+      await recordDownloadHistory({
+        ...historyBase,
+        ok: false,
+        error: err && err.message ? err.message : 'DOWNLOAD_FAILED'
+      });
+    }
+    throw err;
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -2084,6 +1964,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === MESSAGE_TYPES.STOP_TAB_CAPTURE) {
     stopLiveRecording(message.requestId)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.GET_DOWNLOAD_HISTORY) {
+    getDownloadHistory()
+      .then((history) => sendResponse({ ok: true, history }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.CLEAR_DOWNLOAD_HISTORY) {
+    clearDownloadHistory()
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;

@@ -24,6 +24,8 @@
     PROGRESS_MESSAGE_TYPE: 'DOWNLOAD_PROGRESS',
     HOST_CLASS: 'mh-site-overlay-host',
     BUTTON_CLASS: 'mh-site-download-btn',
+    QUALITY_WRAP_CLASS: 'mh-site-quality-wrap',
+    QUALITY_MENU_CLASS: 'mh-site-quality-menu',
     BUTTON_ATTR: 'data-mh-site-attached',
     ACTIVE_REQ_ATTR: 'data-mh-site-request-id',
     MIN_VIDEO_WIDTH_PX: 160,
@@ -176,6 +178,22 @@
     return svg;
   }
 
+  function createChevronIcon() {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('width', '12');
+    svg.setAttribute('height', '12');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2.5');
+    svg.setAttribute('aria-hidden', 'true');
+    const polyline = document.createElementNS(ns, 'polyline');
+    polyline.setAttribute('points', '6 9 12 15 18 9');
+    svg.appendChild(polyline);
+    return svg;
+  }
+
   function flashButtonState(btn, labelEl, text, isError = false, tooltip = '') {
     const existing = resetTimers.get(btn);
     if (existing) {
@@ -282,10 +300,7 @@
       labelEl.textContent = msg('x_btn_download');
       btn.append(createDownloadIcon(), labelEl);
 
-      btn.addEventListener('click', async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-
+      const triggerDownload = async (options = {}) => {
         const activeReqId = btn.getAttribute(SITE_OVERLAY_CONFIG.ACTIVE_REQ_ATTR);
         if (activeReqId) {
           btn.disabled = true;
@@ -315,6 +330,12 @@
             blobUrl: rawSrc.startsWith('blob:') ? rawSrc : '',
             poster: (typeof video.getAttribute === 'function' ? video.getAttribute('poster') : '') || ''
           };
+          if (typeof options.qualityPreference === 'string' && options.qualityPreference) {
+            payload.qualityPreference = options.qualityPreference;
+          }
+          if (options.audioOnly) {
+            payload.audioOnly = true;
+          }
           const response = await chrome.runtime.sendMessage({
             type: SITE_OVERLAY_CONFIG.MESSAGE_TYPE,
             payload
@@ -335,9 +356,63 @@
           btn.classList.remove('mh-is-cancelable');
           btn.disabled = false;
         }
+      };
+
+      btn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        return triggerDownload();
       });
 
-      host.appendChild(btn);
+      const qualityWrap = document.createElement('div');
+      qualityWrap.className = SITE_OVERLAY_CONFIG.QUALITY_WRAP_CLASS;
+
+      const toggleBtn = document.createElement('button');
+      toggleBtn.type = 'button';
+      toggleBtn.className = 'mh-site-quality-toggle';
+      toggleBtn.setAttribute('aria-label', msg('overlay_quality_menu_aria'));
+      toggleBtn.setAttribute('aria-expanded', 'false');
+      toggleBtn.appendChild(createChevronIcon());
+
+      const menu = document.createElement('div');
+      menu.className = SITE_OVERLAY_CONFIG.QUALITY_MENU_CLASS;
+      menu.setAttribute('role', 'menu');
+
+      const presets = [
+        { key: 'overlay_quality_best', qualityPreference: 'highest', audioOnly: false },
+        { key: 'overlay_quality_lowest', qualityPreference: 'lowest', audioOnly: false },
+        { key: 'overlay_quality_audio', qualityPreference: '', audioOnly: true }
+      ];
+      for (const preset of presets) {
+        const optionBtn = document.createElement('button');
+        optionBtn.type = 'button';
+        optionBtn.className = 'mh-site-quality-option';
+        optionBtn.setAttribute('role', 'menuitem');
+        optionBtn.setAttribute('data-quality', preset.qualityPreference);
+        optionBtn.setAttribute('data-audio-only', String(preset.audioOnly));
+        optionBtn.textContent = msg(preset.key);
+        optionBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          qualityWrap.classList.remove('mh-is-open');
+          toggleBtn.setAttribute('aria-expanded', 'false');
+          return triggerDownload({
+            qualityPreference: preset.qualityPreference,
+            audioOnly: preset.audioOnly
+          });
+        });
+        menu.appendChild(optionBtn);
+      }
+
+      toggleBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const isOpen = qualityWrap.classList.toggle('mh-is-open');
+        toggleBtn.setAttribute('aria-expanded', String(isOpen));
+      });
+
+      qualityWrap.append(toggleBtn, menu);
+      host.append(btn, qualityWrap);
     }
   }
 
@@ -361,6 +436,9 @@
     observer.disconnect();
     for (const btn of document.querySelectorAll(`.${SITE_OVERLAY_CONFIG.BUTTON_CLASS}`)) {
       btn.remove();
+    }
+    for (const wrap of document.querySelectorAll(`.${SITE_OVERLAY_CONFIG.QUALITY_WRAP_CLASS}`)) {
+      wrap.remove();
     }
     for (const host of document.querySelectorAll(`[${SITE_OVERLAY_CONFIG.BUTTON_ATTR}]`)) {
       host.removeAttribute(SITE_OVERLAY_CONFIG.BUTTON_ATTR);

@@ -152,3 +152,38 @@ test('mergeWebmVideoAndAudioParts rejects invalid or empty-cluster WebM inputs',
     /EMPTY_WEBM_CLUSTERS/
   );
 });
+
+test('mergeWebmVideoAndAudioParts trims misaligned leading clusters when alignAbr is enabled', () => {
+  const videoBuf = makeWebmStream({
+    trackType: 1,
+    timestampScale: 1000000,
+    clusters: [
+      makeCluster(10000, [makeSimpleBlock(1, 0xaa)]),
+      makeCluster(12000, [makeSimpleBlock(1, 0xab)])
+    ]
+  });
+  const audioBuf = makeWebmStream({
+    trackType: 2,
+    timestampScale: 1000000,
+    clusters: [
+      makeCluster(0, [makeSimpleBlock(1, 0xba)]),
+      makeCluster(5000, [makeSimpleBlock(1, 0xbb)]),
+      makeCluster(10000, [makeSimpleBlock(1, 0xbc)]),
+      makeCluster(12000, [makeSimpleBlock(1, 0xbd)])
+    ]
+  });
+
+  const merged = Buffer.concat(mergeWebmVideoAndAudioParts(videoBuf, audioBuf, { alignAbr: true }));
+  const split = splitWebmInitAndClusters(merged);
+  assert.equal(split.clusters.length, 4);
+  const firstTsEl = parseEbmlElements(
+    split.clusters[0],
+    parseEbmlElements(split.clusters[0])[0].dataStart,
+    parseEbmlElements(split.clusters[0])[0].end
+  ).find((x) => x.id === 0xe7);
+  let ts = 0;
+  for (const b of firstTsEl.data) {
+    ts = (ts * 256) + b;
+  }
+  assert.equal(ts, 10000);
+});

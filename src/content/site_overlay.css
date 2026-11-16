@@ -21,7 +21,7 @@
 .mh-site-download-btn {
   position: absolute;
   top: 10px;
-  right: 10px;
+  right: 40px;
   z-index: 2147483000;
   display: inline-flex;
   align-items: center;
@@ -87,6 +87,91 @@
 
 :fullscreen .mh-site-overlay-host:hover .mh-site-download-btn,
 :-webkit-full-screen .mh-site-overlay-host:hover .mh-site-download-btn {
+  opacity: 0.88;
+  pointer-events: auto;
+}
+
+.mh-site-quality-wrap {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2147483000;
+  opacity: 0.88;
+  transition: opacity 0.15s ease;
+}
+
+.mh-site-overlay-host:hover .mh-site-quality-wrap,
+.mh-site-quality-wrap.mh-is-open {
+  opacity: 1;
+}
+
+.mh-site-quality-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgba(56, 189, 248, 0.55);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.86);
+  color: #38bdf8;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+}
+
+.mh-site-quality-toggle:hover,
+.mh-site-quality-wrap.mh-is-open .mh-site-quality-toggle {
+  background: #0369a1;
+  color: #ffffff;
+}
+
+.mh-site-quality-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 155px;
+  padding: 4px;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.96);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mh-site-quality-wrap.mh-is-open .mh-site-quality-menu {
+  display: flex;
+}
+
+.mh-site-quality-option {
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #e2e8f0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mh-site-quality-option:hover {
+  background: rgba(56, 189, 248, 0.2);
+  color: #ffffff;
+}
+
+:fullscreen .mh-site-quality-wrap,
+:-webkit-full-screen .mh-site-quality-wrap {
+  opacity: 0;
+  pointer-events: none;
+}
+
+:fullscreen .mh-site-overlay-host:hover .mh-site-quality-wrap,
+:-webkit-full-screen .mh-site-overlay-host:hover .mh-site-quality-wrap {
   opacity: 0.88;
   pointer-events: auto;
 }

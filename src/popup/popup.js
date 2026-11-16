@@ -31,20 +31,13 @@ import {
   ZIP_RENAME_MODES
 } from '../config/constants.js';
 import { applyTranslations, getUiLanguage, t } from '../shared/i18n.js';
-import { isSvgDataUrl } from '../shared/media_classifier.js';
 import { isFolderFilenameTemplate, loadSettings, normalizeSettings } from '../shared/settings.js';
-import {
-  convertSvgToCurrentColor,
-  extractSvgPalette,
-  replaceSvgColor
-} from '../shared/svg_utils.js';
 import {
   applyStreamMetadata,
   createMediaCard,
   markInspectionFailed,
   refreshAudioExtractButton,
   renderBadges,
-  resolveSvgMarkup,
   updateCardEntry,
   updateStreamLimitWarning
 } from './media_card.js';
@@ -63,6 +56,8 @@ import {
   revokeCardPreviewBlob
 } from './preview_player.js';
 import { runBatchDownloads } from './batch_runner.js';
+import { createLightboxController } from './lightbox_controller.js';
+import { createHistoryController } from './history_controller.js';
 
 /**
  * Resolves popup DOM element references from the active document.
@@ -116,6 +111,11 @@ export function collectPopupElements(doc) {
     tabCaptureBtn: doc.getElementById('tabCaptureBtn'),
     tabCaptureLabel: doc.getElementById('tabCaptureLabel'),
     clearBtn: doc.getElementById('clearBtn'),
+    historyToggleBtn: doc.getElementById('historyToggleBtn'),
+    historyDrawer: doc.getElementById('historyDrawer'),
+    historyClearBtn: doc.getElementById('historyClearBtn'),
+    historyList: doc.getElementById('historyList'),
+    historyEmpty: doc.getElementById('historyEmpty'),
     sidePanelBtn: doc.getElementById('sidePanelBtn'),
     optionsBtn: doc.getElementById('optionsBtn'),
     countAll: doc.getElementById('countAll'),
@@ -213,6 +213,25 @@ export function createPopupController(deps = {}) {
     els.statusBanner.classList.remove('hidden');
     els.statusBanner.classList.toggle('banner-error', isError);
   }
+
+  const lightbox = createLightboxController({
+    doc,
+    els,
+    state,
+    translateFn,
+    setStatusBanner,
+    writeClipboardFn: deps.writeClipboardFn
+  });
+  const historyCtrl = createHistoryController({
+    doc,
+    els,
+    sendMessage: (msg) => chromeApi.runtime.sendMessage(msg),
+    translateFn,
+    setStatusBanner
+  });
+  const openLightbox = (entry) => lightbox.openLightbox(entry);
+  const closeLightbox = () => lightbox.closeLightbox();
+  const applyLightboxBg = (mode) => lightbox.applyLightboxBg(mode);
 
   /**
    * Hides any open in-DOM batch download confirmation prompt.
@@ -1525,229 +1544,6 @@ export function createPopupController(deps = {}) {
   }
 
   /**
-   * Applies the active backdrop theme (checker, light, or dark) onto the lightbox preview stage.
-   * @param {'checker' | 'light' | 'dark'} mode
-   */
-  function applyLightboxBg(mode) {
-    const resolved = mode === LIGHTBOX_BG_MODES.LIGHT || mode === LIGHTBOX_BG_MODES.DARK
-      ? mode
-      : LIGHTBOX_BG_MODES.CHECKER;
-    state.lightboxBg = resolved;
-    if (els.lightboxStage) {
-      els.lightboxStage.classList.toggle('is-bg-checker', resolved === LIGHTBOX_BG_MODES.CHECKER);
-      els.lightboxStage.classList.toggle('is-bg-light', resolved === LIGHTBOX_BG_MODES.LIGHT);
-      els.lightboxStage.classList.toggle('is-bg-dark', resolved === LIGHTBOX_BG_MODES.DARK);
-    }
-    if (els.lightboxBgCheckerBtn) {
-      els.lightboxBgCheckerBtn.classList.toggle('is-active', resolved === LIGHTBOX_BG_MODES.CHECKER);
-    }
-    if (els.lightboxBgLightBtn) {
-      els.lightboxBgLightBtn.classList.toggle('is-active', resolved === LIGHTBOX_BG_MODES.LIGHT);
-    }
-    if (els.lightboxBgDarkBtn) {
-      els.lightboxBgDarkBtn.classList.toggle('is-active', resolved === LIGHTBOX_BG_MODES.DARK);
-    }
-  }
-
-  /**
-   * Determines whether a lightbox item represents editable SVG markup.
-   * @param {object} item
-   * @returns {boolean}
-   */
-  function isSvgItemEntry(item) {
-    return Boolean(
-      item
-      && (
-        item.svgMarkup
-        || (item.ext || '').toLowerCase() === DEFAULT_FILENAMES.SVG_EXT
-        || isSvgDataUrl(item.url)
-      )
-    );
-  }
-
-  /**
-   * Applies updated SVG markup to the active lightbox entry, preview image, and card thumbnail.
-   * @param {string} updatedSvg
-   */
-  function applyRecoloredSvgToLightbox(updatedSvg) {
-    if (!state.lightboxEntry || !state.lightboxEntry.item || !updatedSvg) {
-      return;
-    }
-    state.lightboxSvgMarkup = updatedSvg;
-    const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(updatedSvg)}`;
-    state.lightboxEntry.item.svgMarkup = updatedSvg;
-    state.lightboxEntry.item.svgSymbolId = '';
-    state.lightboxEntry.item.url = dataUrl;
-    if (els.lightboxImg) {
-      els.lightboxImg.src = dataUrl;
-    }
-    if (state.lightboxEntry.thumbEl) {
-      state.lightboxEntry.thumbEl.src = dataUrl;
-    }
-    renderLightboxPalette(updatedSvg);
-  }
-
-  /**
-   * Renders interactive SVG palette swatches and recolor controls inside the lightbox toolbar.
-   * @param {string} svgMarkup
-   */
-  function renderLightboxPalette(svgMarkup) {
-    if (!els.lightboxPaletteBar || !els.lightboxPaletteSwatches) {
-      return;
-    }
-    const colors = svgMarkup ? extractSvgPalette(svgMarkup) : [];
-    els.lightboxPaletteSwatches.replaceChildren();
-    if (!svgMarkup || colors.length === 0) {
-      els.lightboxPaletteBar.classList.add('hidden');
-      return;
-    }
-    for (const color of colors) {
-      const swatch = doc.createElement('label');
-      swatch.className = 'lightbox-swatch-item';
-      swatch.title = translateFn('popup_lightbox_recolor_title', [color]);
-
-      const dot = doc.createElement('span');
-      dot.className = 'lightbox-swatch-dot';
-      if (dot.style) {
-        dot.style.backgroundColor = color;
-      }
-
-      const code = doc.createElement('span');
-      code.textContent = color;
-
-      const input = doc.createElement('input');
-      input.type = 'color';
-      input.className = 'lightbox-swatch-input';
-      input.setAttribute('aria-label', translateFn('popup_lightbox_recolor_title', [color]));
-      if (/^#[0-9a-f]{6}$/i.test(color)) {
-        input.value = color;
-      }
-      input.addEventListener('change', () => {
-        if (!state.lightboxSvgMarkup || !input.value) {
-          return;
-        }
-        const recolored = replaceSvgColor(state.lightboxSvgMarkup, color, input.value);
-        applyRecoloredSvgToLightbox(recolored);
-      });
-
-      swatch.appendChild(dot);
-      swatch.appendChild(code);
-      swatch.appendChild(input);
-      els.lightboxPaletteSwatches.appendChild(swatch);
-    }
-    if (els.lightboxCurrentColorBtn) {
-      els.lightboxCurrentColorBtn.classList.toggle(
-        'hidden',
-        colors.every((c) => c === 'currentcolor')
-      );
-    }
-    els.lightboxPaletteBar.classList.remove('hidden');
-  }
-
-  /**
-   * Copies SVG markup or media URL for the currently open lightbox entry.
-   */
-  async function copyLightboxContent() {
-    if (!state.lightboxEntry || !state.lightboxEntry.item) {
-      return;
-    }
-    const { item } = state.lightboxEntry;
-    const isSvgItem = isSvgItemEntry(item);
-    let payloadText = item.url || '';
-    if (isSvgItem) {
-      try {
-        payloadText = state.lightboxSvgMarkup || (await resolveSvgMarkup(item)) || payloadText;
-      } catch {
-        payloadText = item.url || '';
-      }
-    }
-    const writeFn = deps.writeClipboardFn
-      || (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function'
-        ? (text) => navigator.clipboard.writeText(text)
-        : null);
-    if (writeFn && payloadText) {
-      try {
-        await writeFn(payloadText);
-        setStatusBanner(translateFn('popup_action_copied'));
-      } catch (err) {
-        setStatusBanner(localizeError(err && err.message, translateFn), true);
-      }
-    }
-  }
-
-  /**
-   * Opens the modal lightbox viewer for inspecting an image or SVG thumbnail in full size.
-   * @param {object} entry
-   */
-  function openLightbox(entry) {
-    if (!entry || !entry.item || !els.imageLightbox || !els.lightboxImg) {
-      return;
-    }
-    const { item } = entry;
-    state.lightboxEntry = entry;
-    state.lightboxSvgMarkup = '';
-    els.lightboxImg.src = item.url || '';
-    els.lightboxImg.alt = item.suggestedFilename || '';
-    if (els.lightboxTitle) {
-      els.lightboxTitle.textContent = item.suggestedFilename || item.url || '';
-    }
-    if (els.lightboxMeta) {
-      const parts = [];
-      if (item.width && item.height) {
-        parts.push(translateFn('popup_lightbox_dimensions', [String(item.width), String(item.height)]));
-      }
-      if (item.ext) {
-        parts.push(String(item.ext).toUpperCase());
-      }
-      els.lightboxMeta.textContent = parts.join(' - ');
-      els.lightboxMeta.classList.toggle('hidden', parts.length === 0);
-    }
-    const isSvgItem = isSvgItemEntry(item);
-    if (els.lightboxCopyBtn) {
-      els.lightboxCopyBtn.textContent = translateFn(
-        isSvgItem ? 'popup_lightbox_copy_svg' : 'popup_lightbox_copy_url'
-      );
-    }
-    renderLightboxPalette('');
-    if (isSvgItem) {
-      if (item.svgMarkup) {
-        state.lightboxSvgMarkup = item.svgMarkup;
-        renderLightboxPalette(item.svgMarkup);
-      } else {
-        resolveSvgMarkup(item)
-          .then((markup) => {
-            if (state.lightboxEntry === entry && markup) {
-              state.lightboxSvgMarkup = markup;
-              renderLightboxPalette(markup);
-            }
-          })
-          .catch(() => {});
-      }
-    }
-    applyLightboxBg(state.lightboxBg);
-    els.imageLightbox.classList.remove('hidden');
-    if (els.lightboxCloseBtn && typeof els.lightboxCloseBtn.focus === 'function') {
-      els.lightboxCloseBtn.focus();
-    }
-  }
-
-  /**
-   * Closes the modal image lightbox and resets its image source.
-   */
-  function closeLightbox() {
-    if (!els.imageLightbox) {
-      return;
-    }
-    state.lightboxEntry = null;
-    state.lightboxSvgMarkup = '';
-    renderLightboxPalette('');
-    els.imageLightbox.classList.add('hidden');
-    if (els.lightboxImg) {
-      els.lightboxImg.src = '';
-    }
-  }
-
-  /**
    * Resolves a rendered card entry by active requestId or fallback media URL.
    * @param {string | undefined} requestId
    * @param {string | undefined} url
@@ -1829,6 +1625,9 @@ export function createPopupController(deps = {}) {
     }
 
     if (message.type === MESSAGE_TYPES.DOWNLOAD_FINISHED) {
+      if (els.historyDrawer && !els.historyDrawer.classList.contains('hidden')) {
+        historyCtrl.refreshHistory();
+      }
       if (message.url) {
         state.activeBuildsByUrl.delete(message.url);
       }
@@ -2015,40 +1814,7 @@ export function createPopupController(deps = {}) {
       });
     }
 
-    if (els.lightboxCloseBtn) {
-      els.lightboxCloseBtn.addEventListener('click', closeLightbox);
-    }
-    if (els.lightboxBackdrop) {
-      els.lightboxBackdrop.addEventListener('click', closeLightbox);
-    }
-    if (els.lightboxBgCheckerBtn) {
-      els.lightboxBgCheckerBtn.addEventListener('click', () => applyLightboxBg(LIGHTBOX_BG_MODES.CHECKER));
-    }
-    if (els.lightboxBgLightBtn) {
-      els.lightboxBgLightBtn.addEventListener('click', () => applyLightboxBg(LIGHTBOX_BG_MODES.LIGHT));
-    }
-    if (els.lightboxBgDarkBtn) {
-      els.lightboxBgDarkBtn.addEventListener('click', () => applyLightboxBg(LIGHTBOX_BG_MODES.DARK));
-    }
-    if (els.lightboxCopyBtn) {
-      els.lightboxCopyBtn.addEventListener('click', copyLightboxContent);
-    }
-    if (els.lightboxCurrentColorBtn) {
-      els.lightboxCurrentColorBtn.addEventListener('click', () => {
-        if (!state.lightboxSvgMarkup) {
-          return;
-        }
-        const converted = convertSvgToCurrentColor(state.lightboxSvgMarkup);
-        applyRecoloredSvgToLightbox(converted);
-      });
-    }
-    if (els.lightboxDownloadBtn) {
-      els.lightboxDownloadBtn.addEventListener('click', () => {
-        if (state.lightboxEntry) {
-          triggerDownload(state.lightboxEntry, state.lightboxEntry.item.url, '');
-        }
-      });
-    }
+    lightbox.bindLightboxEvents((entry) => triggerDownload(entry, entry.item.url, ''));
 
     if (els.searchInput) {
       els.searchInput.addEventListener('input', () => {
@@ -2259,6 +2025,7 @@ export function createPopupController(deps = {}) {
         chromeApi.runtime.openOptionsPage();
       });
     }
+    historyCtrl.bindHistoryEvents();
 
     if (els.companionPageBtn) {
       els.companionPageBtn.addEventListener('click', () => triggerCompanionDownload(null, state.activeTabUrl));

@@ -738,3 +738,102 @@ export function mergeFmp4VideoAndAudio(
   }
   return merged;
 }
+
+function readTrackTimescaleFromInit(initBytes) {
+  const top = parseIsoBoxes(initBytes);
+  const moov = top.find((b) => b.type === 'moov');
+  if (!moov) {
+    return 0;
+  }
+  const trak = parseIsoBoxes(initBytes, moov.start + BOX_HEADER_SIZE, moov.end).find((b) => b.type === 'trak');
+  if (!trak) {
+    return 0;
+  }
+  const mdia = parseIsoBoxes(initBytes, trak.start + BOX_HEADER_SIZE, trak.end).find((b) => b.type === 'mdia');
+  if (!mdia) {
+    return 0;
+  }
+  const mdhd = parseIsoBoxes(initBytes, mdia.start + BOX_HEADER_SIZE, mdia.end).find((b) => b.type === 'mdhd');
+  if (!mdhd || mdhd.data.byteLength < 24) {
+    return 0;
+  }
+  const version = mdhd.data[FULL_BOX_VERSION_OFFSET];
+  const tsPos = version === 1 ? 28 : 20;
+  if (tsPos + 4 > mdhd.data.byteLength) {
+    return 0;
+  }
+  return new DataView(mdhd.data.buffer, mdhd.data.byteOffset, mdhd.data.byteLength).getUint32(tsPos, false);
+}
+
+function readFragmentDecodeTimeSec(fragmentBytes, timescale) {
+  if (!timescale || timescale <= 0) {
+    return null;
+  }
+  const bytes = toUint8(fragmentBytes);
+  const moof = parseIsoBoxes(bytes).find((b) => b.type === 'moof');
+  if (!moof) {
+    return null;
+  }
+  const traf = parseIsoBoxes(bytes, moof.start + BOX_HEADER_SIZE, moof.end).find((b) => b.type === 'traf');
+  if (!traf) {
+    return null;
+  }
+  const tfdt = parseIsoBoxes(bytes, traf.start + BOX_HEADER_SIZE, traf.end).find((b) => b.type === 'tfdt');
+  if (!tfdt || tfdt.data.byteLength < 16) {
+    return null;
+  }
+  const version = tfdt.data[FULL_BOX_VERSION_OFFSET];
+  const view = new DataView(tfdt.data.buffer, tfdt.data.byteOffset, tfdt.data.byteLength);
+  const rawTicks = version === 1 && tfdt.data.byteLength >= 20
+    ? Number(view.getBigUint64(12, false))
+    : view.getUint32(12, false);
+  return Number.isFinite(rawTicks) ? rawTicks / timescale : null;
+}
+
+function trimEarlierFragments(fragments, timescale, targetStartSec) {
+  if (fragments.length <= 1) {
+    return fragments;
+  }
+  let keepFrom = 0;
+  for (let i = 0; i < fragments.length - 1; i += 1) {
+    const nextSec = readFragmentDecodeTimeSec(fragments[i + 1], timescale);
+    if (nextSec !== null && nextSec <= targetStartSec + 0.05) {
+      keepFrom = i + 1;
+    } else {
+      break;
+    }
+  }
+  return keepFrom > 0 ? fragments.slice(keepFrom) : fragments;
+}
+
+/**
+ * Aligns video and audio MSE fragment arrays when one track was reset mid-playback
+ * due to an ABR resolution switch (keeping both tracks starting at the same timestamp).
+ * @param {Uint8Array} videoInit
+ * @param {Array<Uint8Array>} videoFrags
+ * @param {Uint8Array} audioInit
+ * @param {Array<Uint8Array>} audioFrags
+ * @returns {{ videoFrags: Array<Uint8Array>, audioFrags: Array<Uint8Array> }}
+ */
+export function alignFmp4MseFragments(videoInit, videoFrags, audioInit, audioFrags) {
+  if (videoFrags.length === 0 || audioFrags.length === 0) {
+    return { videoFrags, audioFrags };
+  }
+  const videoScale = readTrackTimescaleFromInit(videoInit);
+  const audioScale = readTrackTimescaleFromInit(audioInit);
+  const vStartSec = readFragmentDecodeTimeSec(videoFrags[0], videoScale);
+  const aStartSec = readFragmentDecodeTimeSec(audioFrags[0], audioScale);
+  if (vStartSec === null || aStartSec === null || Math.abs(vStartSec - aStartSec) < 0.5) {
+    return { videoFrags, audioFrags };
+  }
+  if (vStartSec > aStartSec) {
+    return {
+      videoFrags,
+      audioFrags: trimEarlierFragments(audioFrags, audioScale, vStartSec)
+    };
+  }
+  return {
+    videoFrags: trimEarlierFragments(videoFrags, videoScale, aStartSec),
+    audioFrags
+  };
+}

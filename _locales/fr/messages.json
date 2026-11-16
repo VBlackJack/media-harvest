@@ -1190,5 +1190,49 @@
         "example": "95.2 Mo"
       }
     }
+  },
+  "overlay_quality_menu_aria": {
+    "message": "Choisir la qualité ou l'audio",
+    "description": "Libellé accessible du menu rapide qualité/audio sur les vidéos de la page."
+  },
+  "overlay_quality_best": {
+    "message": "Meilleure qualité",
+    "description": "Option rapide de superposition pour télécharger la plus haute qualité."
+  },
+  "overlay_quality_lowest": {
+    "message": "Compact / plus léger",
+    "description": "Option rapide de superposition pour télécharger la variante la plus légère."
+  },
+  "overlay_quality_audio": {
+    "message": "Audio seul",
+    "description": "Option rapide de superposition pour extraire uniquement l'audio."
+  },
+  "popup_header_history_title": {
+    "message": "Téléchargements récents",
+    "description": "Infobulle et libellé accessible du bouton d'historique récent dans la popup."
+  },
+  "popup_history_heading": {
+    "message": "Téléchargements récents",
+    "description": "Titre du panneau d'historique des téléchargements récents."
+  },
+  "popup_history_clear": {
+    "message": "Effacer",
+    "description": "Bouton pour vider l'historique récent des téléchargements."
+  },
+  "popup_history_retry": {
+    "message": "Relancer",
+    "description": "Bouton pour relancer un téléchargement depuis l'historique récent."
+  },
+  "popup_history_empty": {
+    "message": "Aucun téléchargement récent.",
+    "description": "État vide du panneau d'historique récent."
+  },
+  "popup_history_status_done": {
+    "message": "Enregistré",
+    "description": "Statut d'un téléchargement réussi dans l'historique récent."
+  },
+  "popup_history_status_error": {
+    "message": "Échec",
+    "description": "Statut d'un téléchargement échoué dans l'historique récent."
   }
 }

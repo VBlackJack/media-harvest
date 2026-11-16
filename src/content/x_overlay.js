@@ -23,6 +23,8 @@
     BUTTON_ATTR: 'data-media-harvest-attached',
     ACTIVE_REQ_ATTR: 'data-mh-request-id',
     BUTTON_CLASS: 'mh-x-download-btn',
+    QUALITY_WRAP_CLASS: 'mh-x-quality-wrap',
+    QUALITY_MENU_CLASS: 'mh-x-quality-menu',
     SETTINGS_KEY: 'user_settings',
     MEDIA_ID_PATTERN: /(?:ext_tw_video|amplify_video|tweet_video)(?:_thumb)?\/(\d+)\//i,
     STATUS_PATH_PATTERN: /\/([A-Za-z0-9_]+)\/status\/(\d+)/,
@@ -68,6 +70,25 @@
     line.setAttribute('y2', '3');
 
     svg.append(path, poly, line);
+    return svg;
+  }
+
+  /**
+   * Creates a compact downward chevron SVG icon for the quality menu toggle.
+   * @returns {SVGSVGElement}
+   */
+  function createChevronIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '11');
+    svg.setAttribute('height', '11');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2.5');
+    const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+    poly.setAttribute('points', '6 9 12 15 18 9');
+    svg.appendChild(poly);
     return svg;
   }
 
@@ -191,10 +212,7 @@
       labelEl.textContent = msg('x_btn_download');
       btn.append(createDownloadIcon(), labelEl);
 
-      btn.addEventListener('click', async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-
+      const triggerDownload = async (options = {}) => {
         const activeReqId = btn.getAttribute(OVERLAY_CONFIG.ACTIVE_REQ_ATTR);
         if (activeReqId) {
           btn.disabled = true;
@@ -217,6 +235,12 @@
           const currentVideo = findDirectTweetElement(article, OVERLAY_CONFIG.VIDEO_SELECTOR);
           const payload = extractTweetMetadata(article, currentVideo);
           payload.requestId = requestId;
+          if (typeof options.qualityPreference === 'string' && options.qualityPreference) {
+            payload.qualityPreference = options.qualityPreference;
+          }
+          if (options.audioOnly) {
+            payload.audioOnly = true;
+          }
           const response = await chrome.runtime.sendMessage({
             type: OVERLAY_CONFIG.MESSAGE_TYPE,
             payload
@@ -237,9 +261,63 @@
           btn.classList.remove('mh-is-cancelable');
           btn.disabled = false;
         }
+      };
+
+      btn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        return triggerDownload();
       });
 
-      actionBar.appendChild(btn);
+      const qualityWrap = document.createElement('div');
+      qualityWrap.className = OVERLAY_CONFIG.QUALITY_WRAP_CLASS;
+
+      const toggleBtn = document.createElement('button');
+      toggleBtn.type = 'button';
+      toggleBtn.className = 'mh-x-quality-toggle';
+      toggleBtn.setAttribute('aria-label', msg('overlay_quality_menu_aria'));
+      toggleBtn.setAttribute('aria-expanded', 'false');
+      toggleBtn.appendChild(createChevronIcon());
+
+      const menu = document.createElement('div');
+      menu.className = OVERLAY_CONFIG.QUALITY_MENU_CLASS;
+      menu.setAttribute('role', 'menu');
+
+      const presets = [
+        { key: 'overlay_quality_best', qualityPreference: 'highest', audioOnly: false },
+        { key: 'overlay_quality_lowest', qualityPreference: 'lowest', audioOnly: false },
+        { key: 'overlay_quality_audio', qualityPreference: '', audioOnly: true }
+      ];
+      for (const preset of presets) {
+        const optionBtn = document.createElement('button');
+        optionBtn.type = 'button';
+        optionBtn.className = 'mh-x-quality-option';
+        optionBtn.setAttribute('role', 'menuitem');
+        optionBtn.setAttribute('data-quality', preset.qualityPreference);
+        optionBtn.setAttribute('data-audio-only', String(preset.audioOnly));
+        optionBtn.textContent = msg(preset.key);
+        optionBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          qualityWrap.classList.remove('mh-is-open');
+          toggleBtn.setAttribute('aria-expanded', 'false');
+          return triggerDownload({
+            qualityPreference: preset.qualityPreference,
+            audioOnly: preset.audioOnly
+          });
+        });
+        menu.appendChild(optionBtn);
+      }
+
+      toggleBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const isOpen = qualityWrap.classList.toggle('mh-is-open');
+        toggleBtn.setAttribute('aria-expanded', String(isOpen));
+      });
+
+      qualityWrap.append(toggleBtn, menu);
+      actionBar.append(btn, qualityWrap);
     }
   }
 
@@ -270,6 +348,9 @@
     observer.disconnect();
     for (const btn of document.querySelectorAll(`.${OVERLAY_CONFIG.BUTTON_CLASS}`)) {
       btn.remove();
+    }
+    for (const wrap of document.querySelectorAll(`.${OVERLAY_CONFIG.QUALITY_WRAP_CLASS}`)) {
+      wrap.remove();
     }
     for (const host of document.querySelectorAll(`[${OVERLAY_CONFIG.BUTTON_ATTR}]`)) {
       host.removeAttribute(OVERLAY_CONFIG.BUTTON_ATTR);

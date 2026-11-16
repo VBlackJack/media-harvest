@@ -80,6 +80,20 @@ export function isBase64DataUri(uri) {
 }
 
 /**
+ * Decodes a base64 string into raw Uint8Array bytes.
+ * @param {string} base64
+ * @returns {Uint8Array}
+ */
+export function decodeBase64ToBytes(base64) {
+  const binary = atob(base64 || '');
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+/**
  * Decodes raw AES-128 key bytes from a base64 data URI.
  * @param {string} dataUri
  * @returns {Uint8Array}
@@ -90,11 +104,7 @@ export function decodeBase64DataUri(dataUri) {
   }
   const commaIdx = dataUri.indexOf(',');
   const b64 = dataUri.slice(commaIdx + 1).replace(/\s+/g, '');
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-  }
+  const bytes = decodeBase64ToBytes(b64);
   if (bytes.byteLength !== AES_BLOCK_BYTES) {
     throw new Error('INVALID_KEY');
   }

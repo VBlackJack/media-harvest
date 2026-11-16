@@ -485,18 +485,98 @@ function rewriteAudioCluster(clusterBytes, targetTrackNumber, srcScale, dstScale
 }
 
 /**
+ * Builds a streaming-safe dual-track WebM initialization prefix (`EBML` + unknown-size `Segment`
+ * + `Info` + merged `Tracks`) so clusters can be written incrementally straight to disk.
+ * @param {ArrayBuffer | Uint8Array} videoInitInput
+ * @param {ArrayBuffer | Uint8Array} audioInitInput
+ * @returns {{ prefixParts: Array<Uint8Array>, audioTrackNumber: number, videoScale: number, audioScale: number }}
+ */
+export function buildDualWebmStreamInit(videoInitInput, audioInitInput) {
+  const video = splitWebmInitAndClusters(videoInitInput);
+  const audio = splitWebmInitAndClusters(audioInitInput);
+  const maxVideoTrackNum = video.trackEntries.reduce(
+    (max, entry) => Math.max(max, entry.trackNumber || 0),
+    0
+  );
+  let nextTrackNum = maxVideoTrackNum + 1;
+  const audioTrackEntryElements = audio.trackEntries.map((entry) => {
+    const assigned = nextTrackNum;
+    nextTrackNum += 1;
+    return {
+      newTrackNumber: assigned,
+      element: rewriteTrackEntryElement(entry.data, assigned)
+    };
+  });
+  const mergedTracksElement = buildEbmlElement(ID_TRACKS, [
+    ...video.trackEntries.map((entry) => entry.element),
+    ...audioTrackEntryElements.map((entry) => entry.element)
+  ]);
+  const segId = encodeEbmlId(ID_SEGMENT);
+  const segHeader = new Uint8Array(segId.byteLength + SEGMENT_UNKNOWN_SIZE.byteLength);
+  segHeader.set(segId, 0);
+  segHeader.set(SEGMENT_UNKNOWN_SIZE, segId.byteLength);
+  return {
+    prefixParts: [video.ebmlHeader, segHeader, video.infoElement, mergedTracksElement],
+    audioTrackNumber: audioTrackEntryElements[0].newTrackNumber,
+    videoScale: video.timestampScale,
+    audioScale: audio.timestampScale
+  };
+}
+
+/**
+ * Rewrites a WebM audio cluster for streaming insertion against a merged target TrackNumber.
+ * @param {ArrayBuffer | Uint8Array} clusterInput
+ * @param {number} targetTrackNumber
+ * @param {number} srcScale
+ * @param {number} dstScale
+ * @returns {Uint8Array}
+ */
+export function rewriteAudioClusterForMux(clusterInput, targetTrackNumber, srcScale, dstScale) {
+  return rewriteAudioCluster(toUint8(clusterInput), targetTrackNumber, srcScale, dstScale).bytes;
+}
+
+function trimLeadingWebmClusters(clusters, targetScaledTs, scale) {
+  if (clusters.length <= 1) {
+    return clusters;
+  }
+  let keepFrom = 0;
+  for (let i = 0; i < clusters.length - 1; i += 1) {
+    const nextMs = (readClusterTimestamp(clusters[i + 1]) * scale) / 1e6;
+    if (nextMs <= targetScaledTs + 50) {
+      keepFrom = i + 1;
+    } else {
+      break;
+    }
+  }
+  return keepFrom > 0 ? clusters.slice(keepFrom) : clusters;
+}
+
+/**
  * Merges separate video and audio WebM streams into an ordered dual-track WebM Blob part array.
  * Preserves video cluster bytes without re-encoding and interleaves tracks chronologically.
  * @param {ArrayBuffer | Uint8Array | Array<ArrayBuffer | Uint8Array>} videoInput
  * @param {ArrayBuffer | Uint8Array | Array<ArrayBuffer | Uint8Array>} audioInput
+ * @param {{ alignAbr?: boolean }} [options={}]
  * @returns {Array<Uint8Array>}
  */
-export function mergeWebmVideoAndAudioParts(videoInput, audioInput) {
+export function mergeWebmVideoAndAudioParts(videoInput, audioInput, options = {}) {
   const video = splitWebmInitAndClusters(videoInput);
   const audio = splitWebmInitAndClusters(audioInput);
 
   if (video.clusters.length === 0 || audio.clusters.length === 0) {
     throw new Error('EMPTY_WEBM_CLUSTERS');
+  }
+
+  let videoClusters = video.clusters;
+  let audioClusters = audio.clusters;
+  if (options && options.alignAbr) {
+    const vStartMs = (readClusterTimestamp(videoClusters[0]) * video.timestampScale) / 1e6;
+    const aStartMs = (readClusterTimestamp(audioClusters[0]) * audio.timestampScale) / 1e6;
+    if (vStartMs - aStartMs >= 500) {
+      audioClusters = trimLeadingWebmClusters(audioClusters, vStartMs, audio.timestampScale);
+    } else if (aStartMs - vStartMs >= 500) {
+      videoClusters = trimLeadingWebmClusters(videoClusters, aStartMs, video.timestampScale);
+    }
   }
 
   const maxVideoTrackNum = video.trackEntries.reduce(
@@ -520,14 +600,14 @@ export function mergeWebmVideoAndAudioParts(videoInput, audioInput) {
   ]);
 
   const timelineItems = [];
-  for (const vCluster of video.clusters) {
+  for (const vCluster of videoClusters) {
     timelineItems.push({
       ts: readClusterTimestamp(vCluster),
       order: 0,
       bytes: vCluster
     });
   }
-  for (const aCluster of audio.clusters) {
+  for (const aCluster of audioClusters) {
     const rewritten = rewriteAudioCluster(
       aCluster,
       primaryAudioTrackNumber,

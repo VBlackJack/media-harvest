@@ -73,3 +73,69 @@
   opacity: 1;
   pointer-events: auto;
 }
+
+.mh-x-quality-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+}
+
+.mh-x-quality-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.85);
+  color: #38bdf8;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.mh-x-quality-toggle:hover,
+.mh-x-quality-wrap.mh-is-open .mh-x-quality-toggle {
+  background: #0369a1;
+  color: #ffffff;
+}
+
+.mh-x-quality-menu {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  z-index: 2147483001;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.96);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mh-x-quality-wrap.mh-is-open .mh-x-quality-menu {
+  display: flex;
+}
+
+.mh-x-quality-option {
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #e2e8f0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mh-x-quality-option:hover {
+  background: rgba(56, 189, 248, 0.2);
+  color: #ffffff;
+}

@@ -23,6 +23,7 @@ const prevFetch = globalThis.fetch;
 
 const sessionStore = new Map();
 const syncStore = new Map();
+const localStore = new Map();
 const messageHandlers = [];
 const downloadChangedHandlers = [];
 const downloads = [];
@@ -88,6 +89,17 @@ globalThis.chrome = {
         for (const [k, v] of Object.entries(entries)) {
           syncStore.set(k, v);
         }
+      }
+    },
+    local: {
+      get: async (key) => (localStore.has(key) ? { [key]: localStore.get(key) } : {}),
+      set: async (entries) => {
+        for (const [k, v] of Object.entries(entries)) {
+          localStore.set(k, v);
+        }
+      },
+      remove: async (key) => {
+        localStore.delete(key);
       }
     }
   },
@@ -1074,4 +1086,53 @@ test('service_worker handles OPEN_STREAM_SAVER, EXPORT_BATCH_ZIP, STOP_LIVE_RECO
   } finally {
     delete globalThis.chrome.tabs.create;
   }
+});
+
+test('service_worker forwards overlay qualityPreference/audioOnly and persists capped download history', async () => {
+  localStore.clear();
+  offscreenMessages.length = 0;
+
+  await dispatchRuntimeMessage({
+    type: MESSAGE_TYPES.CLEAR_MEDIA_FOR_TAB,
+    tabId: 109
+  });
+  sessionStore.set('tab_media_109', [{
+    url: 'https://video.twimg.com/ext_tw_video/777777/pl/master.m3u8',
+    type: 'stream',
+    isStream: true,
+    ext: 'mp4',
+    title: 'Master'
+  }]);
+
+  const tweetResp = await dispatchRuntimeMessage(
+    {
+      type: MESSAGE_TYPES.DOWNLOAD_TWEET_VIDEO,
+      payload: {
+        requestId: 'req_hist_1',
+        mediaId: '777777',
+        authorHandle: 'alice',
+        tweetId: '42',
+        qualityPreference: 'lowest',
+        audioOnly: true
+      }
+    },
+    { tab: { id: 109, url: 'https://x.com/alice/status/42' } }
+  );
+  assert.equal(tweetResp.ok, true);
+  const buildMsg = offscreenMessages.find((m) => m.requestId === 'req_hist_1');
+  assert.ok(buildMsg);
+  assert.equal(buildMsg.qualityPreference, 'lowest');
+  assert.equal(buildMsg.audioOnly, true);
+
+  const histResp = await dispatchRuntimeMessage({ type: MESSAGE_TYPES.GET_DOWNLOAD_HISTORY });
+  assert.equal(histResp.ok, true);
+  assert.equal(histResp.history.length, 1);
+  assert.equal(histResp.history[0].ok, true);
+  assert.equal(histResp.history[0].qualityPreference, 'lowest');
+  assert.equal(histResp.history[0].audioOnly, true);
+
+  const cleared = await dispatchRuntimeMessage({ type: MESSAGE_TYPES.CLEAR_DOWNLOAD_HISTORY });
+  assert.equal(cleared.ok, true);
+  const histAfter = await dispatchRuntimeMessage({ type: MESSAGE_TYPES.GET_DOWNLOAD_HISTORY });
+  assert.equal(histAfter.history.length, 0);
 });
