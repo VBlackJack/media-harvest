@@ -35,6 +35,8 @@ const CHROME_CANDIDATES = [
 ].filter(Boolean);
 
 const SAMPLE_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAFAAAABQCAYAAACOEfKtAAAAPElEQVR4nO3BMQEAAADCoPVPbQ0PoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADg3w0AAf8BAAE0AAH4sAAAAABJRU5ErkJggg==';
+const DEVTOOLS_STARTUP_TIMEOUT_MS = 45000;
+const EXTENSION_TARGET_TIMEOUT_MS = 8000;
 
 function findChromeBinary() {
   for (const candidate of CHROME_CANDIDATES) {
@@ -234,7 +236,7 @@ async function launchChromeWithExtension(chromePath, userDataDir) {
 
     const timeout = setTimeout(() => {
       finish(new Error(`Timed out waiting for Chrome DevTools WS URL. Stderr: ${stderrText}`));
-    }, 30000);
+    }, DEVTOOLS_STARTUP_TIMEOUT_MS);
 
     const portPoller = setInterval(() => {
       try {
@@ -269,7 +271,7 @@ async function launchChromeWithExtension(chromePath, userDataDir) {
   return { proc, wsUrl };
 }
 
-async function waitForExtensionId(cdp, timeoutMs = 4000) {
+async function waitForExtensionId(cdp, timeoutMs = EXTENSION_TARGET_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const { targetInfos } = await cdp.send('Target.getTargets');
