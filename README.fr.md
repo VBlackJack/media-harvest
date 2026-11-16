@@ -2,7 +2,7 @@
 
 # Media Harvest
 
-Extension Chrome Manifest V3 (`v1.3.0`) pour détecter, prévisualiser et télécharger les vidéos, flux HLS (`.m3u8`) et DASH (`.mpd`) sans DRM, sous-titres, images et fichiers audio de l'onglet actif, en popup ou dans le panneau latéral Chrome.
+Extension Chrome Manifest V3 (`v1.3.1`) pour détecter, prévisualiser et télécharger les vidéos, flux HLS (`.m3u8`) et DASH (`.mpd`) sans DRM, sous-titres, images et fichiers audio de l'onglet actif, en popup ou dans le panneau latéral Chrome.
 
 ## Fonctionnalités
 

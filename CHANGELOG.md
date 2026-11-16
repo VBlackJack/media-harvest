@@ -2,6 +2,12 @@
 
 All notable engineering changes to Media Harvest are documented in this file.
 
+## [1.3.1] - 2026-11-16
+
+### Fixed
+- Guarded `src/content/mse_bridge.js` (`sendRuntimeMessageSafe`, `chrome.storage.sync.get` `lastError` handling, `pending.queueError` trapping, and `sendResponse` channel guards) plus cancel/settings calls in `src/content/x_overlay.js` and `src/content/site_overlay.js` so open tabs never surface uncaught `Extension context invalidated` errors after reloading or updating the extension.
+- Added unit test coverage in `tests/mse_capture.test.js` (`160/160` passing tests).
+
 ## [1.3.0] - 2026-11-16
 
 ### Added

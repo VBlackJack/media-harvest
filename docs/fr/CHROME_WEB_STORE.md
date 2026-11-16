@@ -1,6 +1,6 @@
 [English version](../CHROME_WEB_STORE.md)
 
-# Guide de publication Chrome Web Store (`v1.3.0`)
+# Guide de publication Chrome Web Store (`v1.3.1`)
 
 ## Construction du paquet
 
@@ -11,7 +11,7 @@
    npm run test:e2e
    npm run package
    ```
-2. Importer `dist/media-harvest-v1.3.0.zip` dans le tableau de bord développeur Chrome Web Store (**Package** -> **Upload new package**).
+2. Importer `dist/media-harvest-v1.3.1.zip` dans le tableau de bord développeur Chrome Web Store (**Package** -> **Upload new package**).
 
 ## Fiche du magasin
 
