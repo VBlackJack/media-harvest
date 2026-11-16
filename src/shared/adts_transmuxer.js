@@ -154,7 +154,7 @@ export function parseAdtsFrames(input) {
   };
 }
 
-function buildFullBox(type, version, flags, payload) {
+export function buildFullIsoBox(type, version, flags, payload) {
   const full = new Uint8Array(4 + payload.byteLength);
   full[0] = version & 0xff;
   full[1] = (flags >> 16) & 0xff;
@@ -173,15 +173,20 @@ function encodeAscii(str) {
 }
 
 /**
- * Builds an ISO BMFF audio-only initialization segment (ftyp + moov) matching ADTS AAC parameters.
- * @param {{ objectType: number, freqIndex: number, sampleRate: number, channelConfig: number }} params
+ * Builds a minimal ISO BMFF `'soun'` initialization segment wrapping an arbitrary AudioSampleEntry box.
+ * @param {{ sampleRate: number, defaultSampleDuration: number, sampleEntryBox: Uint8Array, compatBrands?: string }} params
  * @returns {Uint8Array}
  */
-function buildAacFmp4InitSegment({ objectType, freqIndex, sampleRate, channelConfig }) {
+export function buildSoundFmp4InitSegment({
+  sampleRate,
+  defaultSampleDuration,
+  sampleEntryBox,
+  compatBrands = 'isommp41'
+}) {
   const ftyp = buildIsoBox('ftyp', [
     encodeAscii('isom'),
     new Uint8Array([0, 0, 2, 0]),
-    encodeAscii('isommp41')
+    encodeAscii(compatBrands)
   ]);
 
   const mvhdBody = new Uint8Array(96);
@@ -189,12 +194,11 @@ function buildAacFmp4InitSegment({ objectType, freqIndex, sampleRate, channelCon
   mvhdView.setUint32(8, sampleRate, false);
   mvhdView.setUint32(20, 0x00010000, false); // rate 1.0
   mvhdView.setUint16(24, 0x0100, false); // volume 1.0
-  // identity matrix
   mvhdView.setUint32(36, 0x00010000, false);
   mvhdView.setUint32(52, 0x00010000, false);
   mvhdView.setUint32(68, 0x40000000, false);
   mvhdView.setUint32(92, AUDIO_TRACK_ID + 1, false);
-  const mvhd = buildFullBox('mvhd', 0, 0, mvhdBody);
+  const mvhd = buildFullIsoBox('mvhd', 0, 0, mvhdBody);
 
   const tkhdBody = new Uint8Array(80);
   const tkhdView = new DataView(tkhdBody.buffer);
@@ -203,55 +207,36 @@ function buildAacFmp4InitSegment({ objectType, freqIndex, sampleRate, channelCon
   tkhdView.setUint32(28, 0x00010000, false);
   tkhdView.setUint32(44, 0x00010000, false);
   tkhdView.setUint32(60, 0x40000000, false);
-  const tkhd = buildFullBox('tkhd', 0, 0x07, tkhdBody);
+  const tkhd = buildFullIsoBox('tkhd', 0, 0x07, tkhdBody);
 
   const mdhdBody = new Uint8Array(20);
   const mdhdView = new DataView(mdhdBody.buffer);
   mdhdView.setUint32(8, sampleRate, false);
   mdhdView.setUint16(16, 0x55c4, false); // 'und'
-  const mdhd = buildFullBox('mdhd', 0, 0, mdhdBody);
+  const mdhd = buildFullIsoBox('mdhd', 0, 0, mdhdBody);
 
   const hdlrBody = new Uint8Array(24);
   hdlrBody.set(encodeAscii('soun'), 4);
   hdlrBody.set(encodeAscii('Sound\0'), 18);
-  const hdlr = buildFullBox('hdlr', 0, 0, hdlrBody);
+  const hdlr = buildFullIsoBox('hdlr', 0, 0, hdlrBody);
 
-  const smhd = buildFullBox('smhd', 0, 0, new Uint8Array(4));
-  const urlBox = buildFullBox('url ', 0, 1, new Uint8Array(0));
+  const smhd = buildFullIsoBox('smhd', 0, 0, new Uint8Array(4));
+  const urlBox = buildFullIsoBox('url ', 0, 1, new Uint8Array(0));
   const drefPayload = new Uint8Array(4 + urlBox.byteLength);
   new DataView(drefPayload.buffer).setUint32(0, 1, false);
   drefPayload.set(urlBox, 4);
-  const dref = buildFullBox('dref', 0, 0, drefPayload);
+  const dref = buildFullIsoBox('dref', 0, 0, drefPayload);
   const dinf = buildIsoBox('dinf', [dref]);
 
-  // 2-byte AudioSpecificConfig: 5 bits objectType | 4 bits freqIndex | 4 bits channelConfig | 3 bits 0
-  const ascByte0 = ((objectType & 0x1f) << 3) | ((freqIndex >> 1) & 0x07);
-  const ascByte1 = ((freqIndex & 0x01) << 7) | ((channelConfig & 0x0f) << 3);
-  const esdsPayload = new Uint8Array([
-    0x03, 25, 0x00, AUDIO_TRACK_ID, 0x00,
-    0x04, 17, 0x40, 0x15, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x05, 2, ascByte0, ascByte1,
-    0x06, 1, 0x02
-  ]);
-  const esds = buildFullBox('esds', 0, 0, esdsPayload);
-
-  const mp4aHeader = new Uint8Array(28);
-  const mp4aView = new DataView(mp4aHeader.buffer);
-  mp4aView.setUint16(6, 1, false); // data_reference_index
-  mp4aView.setUint16(16, channelConfig, false);
-  mp4aView.setUint16(18, 16, false); // sample size
-  mp4aView.setUint32(24, (sampleRate & 0xffff) << 16, false);
-  const mp4a = buildIsoBox('mp4a', [mp4aHeader, esds]);
-
-  const stsdPayload = new Uint8Array(4 + mp4a.byteLength);
+  const stsdPayload = new Uint8Array(4 + sampleEntryBox.byteLength);
   new DataView(stsdPayload.buffer).setUint32(0, 1, false);
-  stsdPayload.set(mp4a, 4);
-  const stsd = buildFullBox('stsd', 0, 0, stsdPayload);
+  stsdPayload.set(sampleEntryBox, 4);
+  const stsd = buildFullIsoBox('stsd', 0, 0, stsdPayload);
   const emptyCountBox = new Uint8Array(4);
-  const stts = buildFullBox('stts', 0, 0, emptyCountBox);
-  const stsc = buildFullBox('stsc', 0, 0, emptyCountBox);
-  const stsz = buildFullBox('stsz', 0, 0, new Uint8Array(8));
-  const stco = buildFullBox('stco', 0, 0, emptyCountBox);
+  const stts = buildFullIsoBox('stts', 0, 0, emptyCountBox);
+  const stsc = buildFullIsoBox('stsc', 0, 0, emptyCountBox);
+  const stsz = buildFullIsoBox('stsz', 0, 0, new Uint8Array(8));
+  const stco = buildFullIsoBox('stco', 0, 0, emptyCountBox);
   const stbl = buildIsoBox('stbl', [stsd, stts, stsc, stsz, stco]);
 
   const minf = buildIsoBox('minf', [smhd, dinf, stbl]);
@@ -262,8 +247,8 @@ function buildAacFmp4InitSegment({ objectType, freqIndex, sampleRate, channelCon
   const trexView = new DataView(trexBody.buffer);
   trexView.setUint32(0, AUDIO_TRACK_ID, false);
   trexView.setUint32(4, 1, false); // default_sample_description_index
-  trexView.setUint32(8, AAC_SAMPLES_PER_FRAME, false); // default_sample_duration
-  const trex = buildFullBox('trex', 0, 0, trexBody);
+  trexView.setUint32(8, defaultSampleDuration, false); // default_sample_duration
+  const trex = buildFullIsoBox('trex', 0, 0, trexBody);
   const mvex = buildIsoBox('mvex', [trex]);
 
   const moov = buildIsoBox('moov', [mvhd, trak, mvex]);
@@ -274,48 +259,102 @@ function buildAacFmp4InitSegment({ objectType, freqIndex, sampleRate, channelCon
 }
 
 /**
- * Wraps one segment's raw AAC frames inside a self-contained fMP4 fragment (moof + mdat).
+ * Builds an ISO BMFF `'soun'` initialization segment matching ADTS AAC parameters.
+ * @param {{ objectType: number, freqIndex: number, sampleRate: number, channelConfig: number }} params
+ * @returns {Uint8Array}
+ */
+function buildAacFmp4InitSegment({ objectType, freqIndex, sampleRate, channelConfig }) {
+  // 2-byte AudioSpecificConfig: 5 bits objectType | 4 bits freqIndex | 4 bits channelConfig | 3 bits 0
+  const ascByte0 = ((objectType & 0x1f) << 3) | ((freqIndex >> 1) & 0x07);
+  const ascByte1 = ((freqIndex & 0x01) << 7) | ((channelConfig & 0x0f) << 3);
+  const esdsPayload = new Uint8Array([
+    0x03, 25, 0x00, AUDIO_TRACK_ID, 0x00,
+    0x04, 17, 0x40, 0x15, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x05, 2, ascByte0, ascByte1,
+    0x06, 1, 0x02
+  ]);
+  const esds = buildFullIsoBox('esds', 0, 0, esdsPayload);
+
+  const mp4aHeader = new Uint8Array(28);
+  const mp4aView = new DataView(mp4aHeader.buffer);
+  mp4aView.setUint16(6, 1, false); // data_reference_index
+  mp4aView.setUint16(16, channelConfig, false);
+  mp4aView.setUint16(18, 16, false); // sample size
+  mp4aView.setUint32(24, (sampleRate & 0xffff) << 16, false);
+  const mp4a = buildIsoBox('mp4a', [mp4aHeader, esds]);
+
+  return buildSoundFmp4InitSegment({
+    sampleRate,
+    defaultSampleDuration: AAC_SAMPLES_PER_FRAME,
+    sampleEntryBox: mp4a
+  });
+}
+
+/**
+ * Wraps one segment's raw audio frames inside a self-contained fMP4 fragment (moof + mdat).
+ * Supports fixed defaultSampleDuration or per-sample durations when sampleDurations is provided.
  * @param {Array<Uint8Array>} rawFrames
  * @param {number} sequenceNumber
  * @param {number} baseDecodeTimeSamples
+ * @param {number} [defaultSampleDuration=AAC_SAMPLES_PER_FRAME]
+ * @param {Array<number> | null} [sampleDurations=null]
  * @returns {Uint8Array}
  */
-function buildAacFmp4Fragment(rawFrames, sequenceNumber, baseDecodeTimeSamples) {
+export function buildSoundFmp4Fragment(
+  rawFrames,
+  sequenceNumber,
+  baseDecodeTimeSamples,
+  defaultSampleDuration = AAC_SAMPLES_PER_FRAME,
+  sampleDurations = null
+) {
   const mfhdPayload = new Uint8Array(4);
   new DataView(mfhdPayload.buffer).setUint32(0, sequenceNumber, false);
-  const mfhd = buildFullBox('mfhd', 0, 0, mfhdPayload);
+  const mfhd = buildFullIsoBox('mfhd', 0, 0, mfhdPayload);
 
+  const hasPerSampleDurations = Array.isArray(sampleDurations) && sampleDurations.length === rawFrames.length;
   // default-base-is-moof (0x020000) | default-sample-duration-present (0x000008)
-  const tfhdBody = new Uint8Array(8);
+  const tfhdFlags = hasPerSampleDurations ? 0x020000 : 0x020008;
+  const tfhdBody = new Uint8Array(hasPerSampleDurations ? 4 : 8);
   const tfhdView = new DataView(tfhdBody.buffer);
   tfhdView.setUint32(0, AUDIO_TRACK_ID, false);
-  tfhdView.setUint32(4, AAC_SAMPLES_PER_FRAME, false);
-  const tfhd = buildFullBox('tfhd', 0, 0x020008, tfhdBody);
+  if (!hasPerSampleDurations) {
+    tfhdView.setUint32(4, defaultSampleDuration, false);
+  }
+  const tfhd = buildFullIsoBox('tfhd', 0, tfhdFlags, tfhdBody);
 
   // tfdt version 1 (64-bit baseMediaDecodeTime)
   const tfdtBody = new Uint8Array(8);
   const tfdtView = new DataView(tfdtBody.buffer);
   tfdtView.setBigUint64(0, BigInt(Math.max(0, Math.floor(baseDecodeTimeSamples))), false);
-  const tfdt = buildFullBox('tfdt', 1, 0, tfdtBody);
+  const tfdt = buildFullIsoBox('tfdt', 1, 0, tfdtBody);
 
-  // trun flags: data-offset-present (0x000001) | sample-size-present (0x000200)
-  const trunBody = new Uint8Array(8 + (rawFrames.length * 4));
+  // trun flags: data-offset-present (0x000001) | [sample-duration (0x000100)] | sample-size (0x000200)
+  const trunFlags = hasPerSampleDurations ? 0x000301 : 0x000201;
+  const entryBytes = hasPerSampleDurations ? 8 : 4;
+  const trunBody = new Uint8Array(8 + (rawFrames.length * entryBytes));
   const trunView = new DataView(trunBody.buffer);
   trunView.setUint32(0, rawFrames.length, false);
   trunView.setInt32(4, 0, false); // placeholder data_offset patched once moof size is known
   let mdatPayloadBytes = 0;
   for (let i = 0; i < rawFrames.length; i += 1) {
-    trunView.setUint32(8 + (i * 4), rawFrames[i].byteLength, false);
+    const rowPos = 8 + (i * entryBytes);
+    if (hasPerSampleDurations) {
+      trunView.setUint32(rowPos, sampleDurations[i], false);
+      trunView.setUint32(rowPos + 4, rawFrames[i].byteLength, false);
+    } else {
+      trunView.setUint32(rowPos, rawFrames[i].byteLength, false);
+    }
     mdatPayloadBytes += rawFrames[i].byteLength;
   }
-  const trun = buildFullBox('trun', 0, 0x000201, trunBody);
+  const trun = buildFullIsoBox('trun', 0, trunFlags, trunBody);
 
   const traf = buildIsoBox('traf', [tfhd, tfdt, trun]);
   const moof = buildIsoBox('moof', [mfhd, traf]);
   const dataOffset = moof.byteLength + 8;
 
-  // Patch trun.data_offset directly inside assembled moof
-  const trunDataOffsetPos = moof.byteLength - (rawFrames.length * 4) - 4;
+  // trun starts after 16-byte tfhd/tfdt/... header end; data_offset is 16 bytes into trun box
+  const trunBoxSize = trun.byteLength;
+  const trunDataOffsetPos = moof.byteLength - trunBoxSize + 16;
   new DataView(moof.buffer, moof.byteOffset).setInt32(trunDataOffsetPos, dataOffset, false);
 
   const mdat = new Uint8Array(8 + mdatPayloadBytes);
@@ -332,6 +371,10 @@ function buildAacFmp4Fragment(rawFrames, sequenceNumber, baseDecodeTimeSamples) 
   fragment.set(moof, 0);
   fragment.set(mdat, moof.byteLength);
   return fragment;
+}
+
+function buildAacFmp4Fragment(rawFrames, sequenceNumber, baseDecodeTimeSamples) {
+  return buildSoundFmp4Fragment(rawFrames, sequenceNumber, baseDecodeTimeSamples, AAC_SAMPLES_PER_FRAME);
 }
 
 /**

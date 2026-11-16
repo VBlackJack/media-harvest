@@ -1363,24 +1363,83 @@ function findMatchingStreamForDirectUrl(directUrl, streams) {
   return null;
 }
 
+const IDENTITY_QUERY_PARAMS = Object.freeze([
+  'id',
+  'docid',
+  'vid',
+  'media_id',
+  'asset_id',
+  'clip_id',
+  'item_id'
+]);
+
+function extractUrlIdentityParam(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    for (const key of IDENTITY_QUERY_PARAMS) {
+      const val = parsed.searchParams.get(key);
+      if (val && val.length >= 4) {
+        return `${key}:${val}`;
+      }
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
+function getUrlPathnameLeaf(rawUrl) {
+  try {
+    const parts = new URL(rawUrl).pathname.split('/').filter(Boolean);
+    return parts.length > 0 ? parts[parts.length - 1].toLowerCase() : '';
+  } catch {
+    return '';
+  }
+}
+
 function findCompanionAudioUrl(videoUrl, networkItems) {
   if (!videoUrl || !Array.isArray(networkItems)) {
     return '';
   }
   const videoDir = getUrlDirectoryPrefix(videoUrl);
-  if (!videoDir) {
+  const videoMediaId = extractMediaId(videoUrl);
+  const videoIdentity = extractUrlIdentityParam(videoUrl);
+  const videoLeaf = getUrlPathnameLeaf(videoUrl);
+
+  const audioCandidates = networkItems.filter((item) => (
+    item
+    && item.url
+    && item.url !== videoUrl
+    && !item.isStream
+    && (item.type === MEDIA_TYPES.AUDIO || /\/DASH_AUDIO|[?&](?:mime|type|track)=audio\b/i.test(item.url))
+  ));
+  if (audioCandidates.length === 0) {
     return '';
   }
-  const match = networkItems.find((item) => {
-    if (!item || !item.url || item.url === videoUrl || item.isStream) {
-      return false;
+
+  const exactMatch = audioCandidates.find((item) => {
+    if (videoDir && getUrlDirectoryPrefix(item.url) === videoDir) {
+      return true;
     }
-    if (getUrlDirectoryPrefix(item.url) !== videoDir) {
-      return false;
+    if (videoMediaId && extractMediaId(item.url) === videoMediaId) {
+      return true;
     }
-    return item.type === MEDIA_TYPES.AUDIO || /\/DASH_AUDIO/i.test(item.url);
+    if (videoIdentity && extractUrlIdentityParam(item.url) === videoIdentity) {
+      return true;
+    }
+    return false;
   });
-  return match ? match.url : '';
+  if (exactMatch) {
+    return exactMatch.url;
+  }
+
+  if (videoLeaf === 'videoplayback' && isLikelyVideoOnlyDirectUrl(videoUrl)) {
+    const queryAudio = audioCandidates.find((item) => getUrlPathnameLeaf(item.url) === 'videoplayback');
+    if (queryAudio) {
+      return queryAudio.url;
+    }
+  }
+  return '';
 }
 
 /**

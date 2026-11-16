@@ -68,6 +68,10 @@ function createMockNode(tagName) {
       attrs.delete(k);
     },
     addEventListener: (ev, fn) => listeners.set(ev, fn),
+    dispatchEvent: (ev) => {
+      const fn = listeners.get(ev && ev.type);
+      return fn ? fn(ev) : undefined;
+    },
     appendChild: (c) => children.push(c),
     replaceChildren: (...nodes) => {
       children.length = 0;
@@ -277,4 +281,127 @@ test('toggleVideoPreview plays audio cards inline, rejects live HLS, and refresh
   videoEntry.item.url = 'https://cdn.example.com/video_hd.mp4';
   await refreshOpenPreview(videoEntry);
   assert.equal(videoEntry.previewBox.querySelector('video').src, 'https://cdn.example.com/video_hd.mp4');
+
+  // Video element error swaps player with preview_unavailable note
+  const errTarget = videoEntry.previewBox.querySelector('video');
+  errTarget.dispatchEvent({ type: 'error' });
+  assert.equal(videoEntry.previewBox.children[0].textContent, 'popup_preview_unavailable');
+});
+
+test('buildStreamPreviewUrl handles master HLS AES-128 byte-ranges, progressive DASH, and error states', async () => {
+  const aesKeyBytes = Uint8Array.from({ length: 16 }, (_, idx) => idx + 1);
+  const cryptoKey = await crypto.subtle.importKey('raw', aesKeyBytes, 'AES-CBC', false, ['encrypt']);
+  const iv = new Uint8Array(16);
+  const plainChunk = new Uint8Array([0x00, 0x00, 0x00, 0x10, 0x6d, 0x6f, 0x6f, 0x66]);
+  const encryptedChunk = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CBC', iv }, cryptoKey, plainChunk));
+  const combined200 = new Uint8Array(32 + encryptedChunk.byteLength);
+  combined200.set(encryptedChunk, 8);
+  const initBytes = new Uint8Array([0x00, 0x00, 0x00, 0x08, 0x66, 0x74, 0x79, 0x70]);
+
+  globalThis.fetch = async (url, opts = {}) => {
+    const target = String(url);
+    if (target.endsWith('master_enc.m3u8')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: async () => [
+          '#EXTM3U',
+          '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360',
+          'variant_enc.m3u8'
+        ].join('\n')
+      };
+    }
+    if (target.endsWith('variant_enc.m3u8')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: async () => [
+          '#EXTM3U',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="8@0"',
+          '#EXT-X-KEY:METHOD=AES-128,URI="https://cdn.example.com/aes.key"',
+          '#EXTINF:2.0,',
+          `#EXT-X-BYTERANGE:${encryptedChunk.byteLength}@8`,
+          'bundle.mp4',
+          '#EXT-X-ENDLIST'
+        ].join('\n')
+      };
+    }
+    if (target.endsWith('aes.key')) {
+      return { ok: true, status: 200, headers: new Headers(), arrayBuffer: async () => aesKeyBytes.buffer };
+    }
+    if (target.endsWith('init.mp4')) {
+      return { ok: true, status: 206, headers: new Headers(), arrayBuffer: async () => initBytes.buffer };
+    }
+    if (target.endsWith('bundle.mp4')) {
+      assert.ok(opts.headers && opts.headers.Range);
+      return { ok: true, status: 200, headers: new Headers(), arrayBuffer: async () => combined200.buffer };
+    }
+    if (target.endsWith('prog_dash.mpd')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: async () => '<MPD type="static"><Period><AdaptationSet mimeType="video/mp4"><Representation id="v1" bandwidth="500000"><BaseURL>https://cdn.example.com/clip_prog.mp4</BaseURL></Representation></AdaptationSet></Period></MPD>'
+      };
+    }
+    if (target.endsWith('empty.m3u8')) {
+      return { ok: true, status: 200, headers: new Headers(), text: async () => '#EXTM3U\n#EXT-X-ENDLIST' };
+    }
+    throw new Error(`Unexpected preview fetch: ${target}`);
+  };
+
+  const hlsBlob = await buildStreamPreviewUrl(
+    'https://cdn.example.com/hls/master_enc.m3u8',
+    'https://cdn.example.com/hls/master_enc.m3u8'
+  );
+  assert.equal(hlsBlob, 'blob:preview-test/1');
+
+  const dashDirect = await buildStreamPreviewUrl(
+    'https://cdn.example.com/dash/prog_dash.mpd',
+    'https://cdn.example.com/dash/prog_dash.mpd'
+  );
+  assert.equal(dashDirect, 'https://cdn.example.com/clip_prog.mp4');
+
+  // toggleVideoPreview surfaces ENCRYPTED_STREAM, LIVE_STREAM, and detached card cleanups
+  globalThis.fetch = async (url) => ({
+    ok: true,
+    status: 200,
+    headers: new Headers(),
+    text: async () => (String(url).includes('live')
+      ? '#EXTM3U\n#EXTINF:2.0,\nseg.ts'
+      : '#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI="skd://k"\n#EXTINF:2.0,\nseg.ts')
+  });
+  const makeEntry = (streamUrl, connected = true) => {
+    const entry = {
+      item: { url: streamUrl, isStream: true, type: 'stream' },
+      card: { ...createMockNode('article'), isConnected: connected },
+      thumbEl: createMockNode('button'),
+      previewBtn: createMockNode('button'),
+      previewBox: createMockNode('div'),
+      qualitySelect: createMockNode('select'),
+      previewBlobUrl: ''
+    };
+    entry.previewBox.classList.add('hidden');
+    entry.qualitySelect.classList.add('hidden');
+    return entry;
+  };
+
+  const encEntry = makeEntry('https://cdn.example.com/enc.m3u8');
+  await toggleVideoPreview(encEntry);
+  assert.equal(encEntry.previewBox.children[0].textContent, 'popup_error_encrypted_stream');
+
+  const liveEntry = makeEntry('https://cdn.example.com/live.m3u8');
+  await toggleVideoPreview(liveEntry);
+  assert.equal(liveEntry.previewBox.children[0].textContent, 'popup_error_live_stream');
+
+  const detachedEntry = makeEntry('https://cdn.example.com/live.m3u8', false);
+  await toggleVideoPreview(detachedEntry);
+  assert.equal(detachedEntry.previewBtn.disabled, false);
+
+  await assert.rejects(
+    buildStreamPreviewUrl('https://cdn.example.com/empty.m3u8', 'https://cdn.example.com/empty.m3u8'),
+    /ENCRYPTED_STREAM|LIVE_STREAM|PREVIEW_UNAVAILABLE/
+  );
 });

@@ -1558,4 +1558,89 @@ test('offscreen muxes dual-track WebM MSE streams, DASH WebM audio, HLS fMP4+ADT
   const siblingSubBuf = await createdBlobs.get(siblingSubResp.blobUrl).arrayBuffer();
   assert.equal(countTracksInInit(siblingSubBuf), 2);
   assert.equal(hasAudioTrackInInit(siblingSubBuf), true);
+
+  // Mixed MSE: fMP4 video + WebM Opus audio -> muxed 2-track MP4
+  const opusHead = new Uint8Array(19);
+  opusHead.set(new TextEncoder().encode('OpusHead'), 0);
+  opusHead[8] = 1;
+  opusHead[9] = 2;
+  new DataView(opusHead.buffer).setUint16(10, 312, true);
+  new DataView(opusHead.buffer).setUint32(12, 48000, true);
+  const opusWebmAudio = new Uint8Array(Buffer.concat([
+    buildEbmlElement(0x1a45dfa3, [buildEbmlElement(0x4286, [new Uint8Array([1])])]),
+    buildEbmlElement(0x18538067, [
+      buildEbmlElement(0x1549a966, [buildEbmlElement(0x2ad7b1, [new Uint8Array([0x0f, 0x42, 0x40])])]),
+      buildEbmlElement(0x1654ae6b, [
+        buildEbmlElement(0xae, [
+          buildEbmlElement(0xd7, [new Uint8Array([1])]),
+          buildEbmlElement(0x83, [new Uint8Array([2])]),
+          buildEbmlElement(0x86, [new TextEncoder().encode('A_OPUS')]),
+          buildEbmlElement(0x63a2, [opusHead])
+        ])
+      ]),
+      buildEbmlElement(0x1f43b675, [
+        buildEbmlElement(0xe7, [new Uint8Array([0])]),
+        buildEbmlElement(0xa3, [new Uint8Array([0x81, 0x00, 0x00, 0x80, 16 << 3, 0xaa])])
+      ])
+    ])
+  ]));
+
+  await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_MSE_BLOB,
+    action: 'append',
+    requestId: 'mse-mixed-mp4-opus',
+    track: 'video',
+    chunkBase64: toB64(progVideo)
+  });
+  await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_MSE_BLOB,
+    action: 'append',
+    requestId: 'mse-mixed-mp4-opus',
+    track: 'audio',
+    chunkBase64: toB64(opusWebmAudio)
+  });
+  const mixedMp4Resp = await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_MSE_BLOB,
+    action: 'finalize',
+    requestId: 'mse-mixed-mp4-opus',
+    videoMime: 'video/mp4; codecs="avc1.42e01e"',
+    audioMime: 'audio/webm; codecs="opus"'
+  });
+  assert.equal(mixedMp4Resp.ok, true);
+  assert.equal(mixedMp4Resp.outputExtension, 'mp4');
+  const mixedMp4Bytes = await createdBlobs.get(mixedMp4Resp.blobUrl).arrayBuffer();
+  assert.equal(countTracksInInit(mixedMp4Bytes), 2);
+  assert.equal(hasAudioTrackInInit(mixedMp4Bytes), true);
+
+  // Mixed MSE: WebM video + fMP4 audio -> muxed 2-track MKV
+  await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_MSE_BLOB,
+    action: 'append',
+    requestId: 'mse-mixed-webm-aac',
+    track: 'video',
+    chunkBase64: toB64(webmVideo)
+  });
+  await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_MSE_BLOB,
+    action: 'append',
+    requestId: 'mse-mixed-webm-aac',
+    track: 'audio',
+    chunkBase64: toB64(progAudio)
+  });
+  const mixedMkvResp = await dispatchOffscreenMessage({
+    target: 'offscreen',
+    type: MESSAGE_TYPES.OFFSCREEN_BUILD_MSE_BLOB,
+    action: 'finalize',
+    requestId: 'mse-mixed-webm-aac',
+    videoMime: 'video/webm; codecs="vp9"',
+    audioMime: 'audio/mp4; codecs="mp4a.40.2"'
+  });
+  assert.equal(mixedMkvResp.ok, true);
+  assert.equal(mixedMkvResp.outputExtension, 'mkv');
+  assert.equal(countTracksInWebmInit(await createdBlobs.get(mixedMkvResp.blobUrl).arrayBuffer()), 2);
 });

@@ -967,4 +967,111 @@ test('service_worker DOWNLOAD_TWEET_VIDEO and DOWNLOAD_SITE_VIDEO prefer master 
   const siteMasterMsg = offscreenMessages.find((m) => m.requestId === 'site_master_req');
   assert.ok(siteMasterMsg);
   assert.equal(siteMasterMsg.playlistUrl, 'https://cdn.example.com/hls/master.m3u8');
+
+  // Cross-CDN query identity / videoplayback companion audio pairing without shared folder prefix
+  offscreenMessages.length = 0;
+  sessionStore.set(`${STORAGE_KEYS.TAB_MEDIA_PREFIX}106`, [
+    {
+      url: 'https://rr1---edge.example.com/videoplayback?id=clip-998877&mime=video/mp4',
+      type: 'video',
+      ext: 'mp4',
+      isStream: false
+    },
+    {
+      url: 'https://rr2---edge.example.com/videoplayback?id=clip-998877&mime=audio/mp4',
+      type: 'audio',
+      ext: 'm4a',
+      isStream: false
+    }
+  ]);
+  const respCrossCdn = await dispatchRuntimeMessage(
+    {
+      type: MESSAGE_TYPES.DOWNLOAD_SITE_VIDEO,
+      payload: {
+        requestId: 'site_cross_cdn',
+        siteId: 'youtube',
+        pageUrl: 'https://www.youtube.com/watch?v=test',
+        directVideoUrl: 'https://rr1---edge.example.com/videoplayback?id=clip-998877&mime=video/mp4'
+      }
+    },
+    { tab: { id: 106, url: 'https://www.youtube.com/watch?v=test' } }
+  );
+  assert.equal(respCrossCdn.ok, true);
+  const crossCdnMsg = offscreenMessages.find((m) => m.requestId === 'site_cross_cdn');
+  assert.ok(crossCdnMsg);
+  assert.equal(crossCdnMsg.progressiveMux, true);
+  assert.equal(crossCdnMsg.audioUrl, 'https://rr2---edge.example.com/videoplayback?id=clip-998877&mime=audio/mp4');
+});
+
+test('service_worker handles OPEN_STREAM_SAVER, EXPORT_BATCH_ZIP, STOP_LIVE_RECORD, and GET_MEDIA error validation', async () => {
+  const createdTabs = [];
+  globalThis.chrome.tabs.create = async (opts) => {
+    const tab = { id: 707, ...opts };
+    createdTabs.push(tab);
+    return tab;
+  };
+  try {
+    const saverResp = await dispatchRuntimeMessage({
+      type: MESSAGE_TYPES.OPEN_STREAM_SAVER,
+      payload: {
+        url: 'https://cdn.example.com/huge.m3u8',
+        playlistUrl: 'https://cdn.example.com/huge.m3u8',
+        audioUrl: 'https://cdn.example.com/huge_audio.m3u8',
+        isStream: true,
+        referer: 'https://example.com/watch',
+        filename: 'Huge Stream.mp4'
+      }
+    });
+    assert.equal(saverResp.ok, true);
+    assert.equal(createdTabs.length, 1);
+    assert.ok(sessionStore.has(`${STORAGE_KEYS.STREAM_SAVER_JOB_PREFIX}${saverResp.jobId}`));
+
+    offscreenMessages.length = 0;
+    const zipResp = await dispatchRuntimeMessage({
+      type: MESSAGE_TYPES.EXPORT_BATCH_ZIP,
+      payload: {
+        requestId: 'zip_req_1',
+        items: [{ url: 'https://cdn.example.com/pic1.png', ext: 'png', filename: 'pic1.png' }],
+        renameMode: 'sequential',
+        filename: 'pack.zip'
+      }
+    });
+    assert.equal(zipResp.ok, true);
+    const zipMsg = offscreenMessages.find((m) => m.type === MESSAGE_TYPES.OFFSCREEN_BUILD_ZIP_BLOB);
+    assert.ok(zipMsg);
+    assert.equal(zipMsg.renameMode, 'sequential');
+
+    offscreenMessages.length = 0;
+    const stopLiveResp = await dispatchRuntimeMessage({
+      type: MESSAGE_TYPES.STOP_LIVE_RECORD,
+      requestId: 'live_req_9'
+    });
+    assert.equal(stopLiveResp.ok, true);
+    assert.ok(offscreenMessages.some((m) => m.type === MESSAGE_TYPES.OFFSCREEN_STOP_LIVE_RECORD));
+
+    const badGet = await dispatchRuntimeMessage({
+      type: MESSAGE_TYPES.GET_MEDIA_FOR_TAB,
+      tabId: 88,
+      tabUrl: 'chrome://settings'
+    });
+    assert.equal(badGet.ok, false);
+    assert.equal(badGet.error, 'RESTRICTED_PAGE');
+
+    offscreenMessages.length = 0;
+    const cancelResp = await dispatchRuntimeMessage({
+      type: MESSAGE_TYPES.CANCEL_DOWNLOAD,
+      requestId: ''
+    });
+    assert.equal(cancelResp.ok, true);
+    assert.ok(offscreenMessages.some((m) => m.type === MESSAGE_TYPES.OFFSCREEN_CANCEL_BUILD));
+
+    const prevNative = globalThis.chrome.runtime.sendNativeMessage;
+    delete globalThis.chrome.runtime.sendNativeMessage;
+    const compUnavailable = await dispatchRuntimeMessage({ type: MESSAGE_TYPES.CHECK_COMPANION });
+    globalThis.chrome.runtime.sendNativeMessage = prevNative;
+    assert.equal(compUnavailable.ok, true);
+    assert.equal(compUnavailable.available, false);
+  } finally {
+    delete globalThis.chrome.tabs.create;
+  }
 });

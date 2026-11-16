@@ -34,7 +34,7 @@ function toUint8(input) {
   return input instanceof Uint8Array ? input : new Uint8Array(input);
 }
 
-function concatUint8Parts(parts) {
+export function concatUint8Parts(parts) {
   if (parts.length === 1) {
     return toUint8(parts[0]);
   }
@@ -88,7 +88,7 @@ function readVintId(bytes, offset, end) {
  * @param {number} end
  * @returns {{ value: number, length: number, unknown: boolean } | null}
  */
-function readVintValue(bytes, offset, end) {
+export function readVintValue(bytes, offset, end) {
   if (offset >= end) {
     return null;
   }
@@ -126,7 +126,7 @@ function readVintValue(bytes, offset, end) {
  * @param {number} id
  * @returns {Uint8Array}
  */
-function encodeEbmlId(id) {
+export function encodeEbmlId(id) {
   if (id <= 0xff) {
     return new Uint8Array([id]);
   }
@@ -150,7 +150,7 @@ function encodeEbmlId(id) {
  * @param {number} value
  * @returns {Uint8Array}
  */
-function encodeVintValue(value) {
+export function encodeVintValue(value) {
   const safeVal = Math.max(0, Math.floor(value));
   for (let length = 1; length <= 8; length += 1) {
     const maxData = (2 ** (length * 7)) - 2;
@@ -173,7 +173,7 @@ function encodeVintValue(value) {
  * @param {number} value
  * @returns {Uint8Array}
  */
-function encodeUintPayload(value) {
+export function encodeUintPayload(value) {
   const safe = Math.max(0, Math.floor(value));
   if (safe === 0) {
     return new Uint8Array([0]);
@@ -194,7 +194,7 @@ function encodeUintPayload(value) {
  * @param {number} end
  * @returns {number}
  */
-function readUintPayload(bytes, start, end) {
+export function readUintPayload(bytes, start, end) {
   let out = 0;
   for (let i = start; i < end; i += 1) {
     out = (out * 256) + bytes[i];

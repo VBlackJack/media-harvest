@@ -236,6 +236,7 @@ function createFakePopupDocument() {
   makeTracked('button', 'clearBtn');
   makeTracked('button', 'sidePanelBtn');
   makeTracked('button', 'optionsBtn');
+  makeTracked('button', 'companionPageBtn', ['hidden']);
   makeTracked('span', 'countAll');
   makeTracked('span', 'countVideos');
   makeTracked('span', 'countImages');
@@ -1262,4 +1263,99 @@ test('popup controller filters by orientation, recolors SVGs in Lightbox Pro, an
   const opusDl = sentMessages.find((m) => m.type === MESSAGE_TYPES.DOWNLOAD_MEDIA && m.payload.audioOnly);
   assert.ok(opusDl);
   assert.equal(opusDl.payload.filename, 'story_audio.opus');
+});
+
+test('popup controller handles subtitle downloads, companion actions, batchCancelBtn, sidePanel, options, and storage updates', async () => {
+  const doc = createFakePopupDocument();
+  const sentMessages = [];
+  const storageListeners = [];
+  let openedOptions = false;
+  let openedSidePanelWindowId = null;
+
+  const items = [
+    {
+      url: 'https://cdn.example.com/master_sub.m3u8',
+      type: 'stream',
+      ext: 'mp4',
+      isStream: true,
+      source: 'network',
+      suggestedFilename: 'movie.mp4'
+    }
+  ];
+
+  const controller = createPopupController({
+    documentRef: doc,
+    windowRef: { addEventListener: () => {}, close: () => {} },
+    chromeApi: {
+      tabs: { query: async () => [{ id: 21, windowId: 77, url: 'https://example.com/watch', title: 'Watch' }] },
+      runtime: {
+        openOptionsPage: () => { openedOptions = true; },
+        sendMessage: async (msg) => {
+          sentMessages.push(msg);
+          if (msg.type === MESSAGE_TYPES.GET_MEDIA_FOR_TAB) {
+            return { ok: true, items };
+          }
+          if (msg.type === MESSAGE_TYPES.CHECK_COMPANION) {
+            return { ok: true, available: true, ytDlpVersion: '2026.01.01', ffmpegAvailable: true };
+          }
+          if (msg.type === MESSAGE_TYPES.INSPECT_HLS) {
+            return {
+              ok: true,
+              variants: [{ url: 'https://cdn.example.com/v1080.m3u8', resolution: '1920x1080', bandwidth: 2500000 }],
+              audioTracks: [],
+              subtitles: [{ url: 'https://cdn.example.com/subs/en.m3u8', language: 'en', name: 'English', isDefault: true }],
+              isDynamic: false,
+              encrypted: false
+            };
+          }
+          return { ok: true, downloadId: 909 };
+        }
+      },
+      sidePanel: {
+        open: async ({ windowId }) => {
+          openedSidePanelWindowId = windowId;
+        }
+      },
+      storage: {
+        onChanged: {
+          addListener: (fn) => storageListeners.push(fn)
+        },
+        sync: { get: async () => ({}) }
+      }
+    },
+    loadSettingsFn: async () => DEFAULT_SETTINGS,
+    translateFn: (k, args = []) => (args.length ? `${k}:${args.join(',')}` : k),
+    getUiLanguageFn: () => 'en',
+    applyTranslationsFn: () => {}
+  });
+
+  await controller.init();
+  await new Promise((resolve) => setTimeout(resolve, 25));
+
+  const streamEntry = controller.state.cardsByUrl.get('https://cdn.example.com/master_sub.m3u8');
+  assert.ok(streamEntry.subtitleBtn);
+  await streamEntry.subtitleBtn.dispatchEvent({ type: 'click' });
+  const subMsg = sentMessages.find((m) => m.type === MESSAGE_TYPES.DOWNLOAD_HLS_SUBTITLE);
+  assert.ok(subMsg);
+  assert.equal(subMsg.payload.subtitleUrl, 'https://cdn.example.com/subs/en.m3u8');
+
+  await controller.els.companionPageBtn.dispatchEvent({ type: 'click' });
+  const compMsg = sentMessages.find((m) => m.type === MESSAGE_TYPES.DOWNLOAD_WITH_COMPANION);
+  assert.ok(compMsg);
+  assert.equal(compMsg.payload.url, 'https://example.com/watch');
+
+  controller.els.batchConfirmBar.classList.remove('hidden');
+  await controller.els.batchCancelBtn.dispatchEvent({ type: 'click' });
+  assert.equal(controller.els.batchConfirmBar.classList.contains('hidden'), true);
+
+  await controller.els.optionsBtn.dispatchEvent({ type: 'click' });
+  assert.equal(openedOptions, true);
+
+  await controller.els.sidePanelBtn.dispatchEvent({ type: 'click' });
+  assert.equal(openedSidePanelWindowId, 77);
+
+  for (const listener of storageListeners) {
+    listener({ [STORAGE_KEYS.USER_SETTINGS]: { newValue: { largeStreamWarningMb: 1 } } }, 'sync');
+  }
+  assert.equal(controller.state.settings.largeStreamWarningMb, 1);
 });

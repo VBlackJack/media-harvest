@@ -50,6 +50,10 @@ import {
   looksLikeAdtsAudio,
   transmuxAdtsSegmentsToFmp4Parts
 } from '../shared/adts_transmuxer.js';
+import {
+  mergeWebmVideoAndFmp4AacParts,
+  transmuxWebmOpusToFmp4Parts
+} from '../shared/mixed_mse_muxer.js';
 import { mergeWebmVideoAndAudioParts } from '../shared/webm_muxer.js';
 import { parseHlsPlaylist, selectBestVariant } from '../shared/hls_parser.js';
 import {
@@ -273,20 +277,19 @@ function resolveDashAudioTrack(audioTracks, isWebm, preferredAudioUrl, selectedA
   if (!Array.isArray(audioTracks) || audioTracks.length === 0) {
     return null;
   }
-  const compatible = audioTracks.filter((track) => {
-    if (!track || !Array.isArray(track.segments) || track.segments.length === 0) {
-      return false;
-    }
+  const usable = audioTracks.filter((track) => track && Array.isArray(track.segments) && track.segments.length > 0);
+  if (usable.length === 0) {
+    return null;
+  }
+  const sameContainer = usable.filter((track) => {
     const trackIsWebm = (track.mimeType || '').toLowerCase() === 'audio/webm';
     return isWebm ? trackIsWebm : !trackIsWebm;
   });
-  if (compatible.length === 0) {
-    return null;
-  }
+  const pool = sameContainer.length > 0 ? sameContainer : usable;
   return (
-    (selectedAudioId && compatible.find((a) => a.id === selectedAudioId)) ||
-    (preferredAudioUrl && compatible.find((a) => a.url === preferredAudioUrl)) ||
-    compatible[0]
+    (selectedAudioId && pool.find((a) => a.id === selectedAudioId)) ||
+    (preferredAudioUrl && pool.find((a) => a.url === preferredAudioUrl)) ||
+    pool[0]
   );
 }
 
@@ -548,6 +551,10 @@ function resolveAudioTransmuxedParts(audioBuffers, hasInitAudio, audioDiscontinu
   if (!Array.isArray(audioBuffers) || audioBuffers.length === 0) {
     return null;
   }
+  if (looksLikeWebmBuffer(audioBuffers[0])) {
+    const opusFmp4 = transmuxWebmOpusToFmp4Parts(audioBuffers);
+    return { initSegment: opusFmp4.initSegment, dataChunks: opusFmp4.dataChunks };
+  }
   if (hasInitAudio && audioBuffers.length > 1) {
     return {
       initSegment: audioBuffers[0] instanceof Uint8Array ? audioBuffers[0] : new Uint8Array(audioBuffers[0]),
@@ -743,7 +750,7 @@ function assembleOutputParts(mediaPlaylist, audioPlaylist, videoBuffers, audioBu
   }
 
   if (hasInitVideo && hasAudioBuffers) {
-    if (hasInitAudio) {
+    if (hasInitAudio && !looksLikeWebmBuffer(audioBuffers[0])) {
       return tryAssembleFmp4Parts(videoBuffers, audioBuffers);
     }
     try {
@@ -1589,6 +1596,30 @@ function handleMseBlobMessage(message) {
         outputParts = mergeWebmVideoAndAudioParts(session.videoChunks, session.audioChunks);
         outputExtension = DEFAULT_FILENAMES.WEBM_EXT;
         mimeType = 'video/webm';
+      } catch {
+        outputParts = session.videoChunks;
+        outputExtension = DEFAULT_FILENAMES.WEBM_EXT;
+        mimeType = 'video/webm';
+      }
+    } else if (hasVideo && hasAudio && !videoIsWebm && audioIsWebm) {
+      const videoBuf = concatUint8Arrays(session.videoChunks);
+      try {
+        const splitVideo = splitFmp4InitAndFragments(videoBuf);
+        const opusAudio = transmuxWebmOpusToFmp4Parts(session.audioChunks);
+        outputParts = mergeFmp4VideoAndAudioParts(
+          splitVideo.initSegment,
+          splitVideo.fragments,
+          opusAudio.initSegment,
+          opusAudio.dataChunks
+        );
+      } catch {
+        outputParts = [videoBuf];
+      }
+    } else if (hasVideo && hasAudio && videoIsWebm && !audioIsWebm) {
+      try {
+        outputParts = mergeWebmVideoAndFmp4AacParts(session.videoChunks, session.audioChunks);
+        outputExtension = 'mkv';
+        mimeType = 'video/x-matroska';
       } catch {
         outputParts = session.videoChunks;
         outputExtension = DEFAULT_FILENAMES.WEBM_EXT;
