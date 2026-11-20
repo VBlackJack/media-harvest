@@ -985,6 +985,18 @@
     "message": "Télécharger",
     "description": "Bouton pour télécharger l'image ou le SVG affiché dans la visionneuse."
   },
+  "popup_lightbox_reset_colors": {
+    "message": "Réinitialiser",
+    "description": "Bouton pour restaurer les couleurs d'origine du SVG après recoloration."
+  },
+  "popup_action_load_more": {
+    "message": "Afficher plus ($1 restants)",
+    "description": "Bouton pour afficher la tranche suivante de cartes médias sur les pages denses."
+  },
+  "popup_action_subtitle_srt": {
+    "message": "SRT",
+    "description": "Libellé d'action pour télécharger les sous-titres convertis au format SRT."
+  },
   "options_jpg_quality_label": {
     "message": "Qualité d'export JPG (%)",
     "description": "Libellé pour le pourcentage de compression JPG."

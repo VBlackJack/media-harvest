@@ -99,6 +99,7 @@ export function collectPopupElements(doc) {
     lightboxPaletteBar: doc.getElementById('lightboxPaletteBar'),
     lightboxPaletteSwatches: doc.getElementById('lightboxPaletteSwatches'),
     lightboxCurrentColorBtn: doc.getElementById('lightboxCurrentColorBtn'),
+    lightboxResetColorsBtn: doc.getElementById('lightboxResetColorsBtn'),
     downloadAllBtn: doc.getElementById('downloadAllBtn'),
     companionPageBtn: doc.getElementById('companionPageBtn'),
     stopBatchBtn: doc.getElementById('stopBatchBtn'),
@@ -145,6 +146,10 @@ export function createPopupController(deps = {}) {
   const batchDelayMs = typeof deps.batchDelayMs === 'number'
     ? deps.batchDelayMs
     : LIMITS.BATCH_DOWNLOAD_DELAY_MS;
+  const searchDebounceMs = typeof deps.searchDebounceMs === 'number' ? deps.searchDebounceMs : 0;
+  const renderPageSize = typeof deps.renderPageSize === 'number' && deps.renderPageSize > 0
+    ? deps.renderPageSize
+    : 40;
 
   const state = {
     activeTabId: null,
@@ -152,6 +157,9 @@ export function createPopupController(deps = {}) {
     activeTabTitle: '',
     filter: 'all',
     searchQuery: '',
+    searchDebounceTimer: null,
+    renderLimit: renderPageSize,
+    activeCompanionUrl: '',
     sortBy: SORT_MODES.DEFAULT,
     viewMode: POPUP_VIEW_MODES.LIST,
     imageConvertFormat: IMAGE_CONVERT_FORMATS.ORIGINAL,
@@ -818,14 +826,24 @@ export function createPopupController(deps = {}) {
     if (!resolvedUrl) {
       return;
     }
+    if (state.activeCompanionUrl && state.activeCompanionUrl === resolvedUrl) {
+      chromeApi.runtime.sendMessage({
+        type: MESSAGE_TYPES.CANCEL_COMPANION_DOWNLOAD,
+        url: resolvedUrl
+      }).catch(() => {});
+      return;
+    }
+    state.activeCompanionUrl = resolvedUrl;
+    const prevCardCompanionLabel = entry && entry.companionBtn ? entry.companionBtn.textContent : '';
+    const prevPageCompanionLabel = els.companionPageBtn && !entry ? els.companionPageBtn.textContent : '';
     if (entry && entry.companionBtn) {
-      entry.companionBtn.disabled = true;
+      entry.companionBtn.textContent = translateFn('popup_action_cancel');
     }
     if (entry && entry.audioExtractBtn) {
       entry.audioExtractBtn.disabled = true;
     }
     if (els.companionPageBtn && !entry) {
-      els.companionPageBtn.disabled = true;
+      els.companionPageBtn.textContent = translateFn('popup_action_cancel');
     }
     setStatusBanner(translateFn('popup_status_companion_started'));
     try {
@@ -851,14 +869,19 @@ export function createPopupController(deps = {}) {
     } catch (err) {
       setStatusBanner(localizeError(err && err.message, translateFn), true);
     } finally {
+      if (state.activeCompanionUrl === resolvedUrl) {
+        state.activeCompanionUrl = '';
+      }
       if (entry && entry.companionBtn) {
         entry.companionBtn.disabled = false;
+        entry.companionBtn.textContent = prevCardCompanionLabel;
       }
       if (entry && entry.audioExtractBtn) {
         entry.audioExtractBtn.disabled = false;
       }
       if (els.companionPageBtn && !entry) {
         els.companionPageBtn.disabled = false;
+        els.companionPageBtn.textContent = prevPageCompanionLabel;
       }
     }
   }
@@ -1132,7 +1155,15 @@ export function createPopupController(deps = {}) {
       existingEmpty.remove();
     }
 
-    const visibleUrls = new Set(visible.map((item) => item.url));
+    const existingLoadMore = els.mediaList.querySelector('.load-more-btn');
+    if (existingLoadMore) {
+      existingLoadMore.remove();
+    }
+
+    const renderedSlice = visible.length > state.renderLimit
+      ? visible.slice(0, state.renderLimit)
+      : visible;
+    const visibleUrls = new Set(renderedSlice.map((item) => item.url));
     for (const [url, entry] of state.cardsByUrl.entries()) {
       if (!visibleUrls.has(url)) {
         closeCardPreview(entry);
@@ -1140,7 +1171,7 @@ export function createPopupController(deps = {}) {
       }
     }
 
-    const orderedEntries = visible.map((item) => {
+    const orderedEntries = renderedSlice.map((item) => {
       let entry = state.cardsByUrl.get(item.url);
       if (entry) {
         updateCardEntry(entry, item, cardContext);
@@ -1197,6 +1228,18 @@ export function createPopupController(deps = {}) {
           }
         }
       }
+    }
+    if (visible.length > renderedSlice.length) {
+      const remaining = visible.length - renderedSlice.length;
+      const loadMoreBtn = doc.createElement('button');
+      loadMoreBtn.type = 'button';
+      loadMoreBtn.className = 'btn btn-secondary btn-compact load-more-btn';
+      loadMoreBtn.textContent = translateFn('popup_action_load_more', [String(remaining)]);
+      loadMoreBtn.addEventListener('click', () => {
+        state.renderLimit += renderPageSize;
+        renderList();
+      });
+      els.mediaList.appendChild(loadMoreBtn);
     }
   }
 
@@ -1716,6 +1759,28 @@ export function createPopupController(deps = {}) {
     if (!event) {
       return;
     }
+    if (
+      (event.key === 'ArrowLeft' || event.key === 'ArrowRight') &&
+      els.imageLightbox &&
+      !els.imageLightbox.classList.contains('hidden') &&
+      state.lightboxEntry
+    ) {
+      const imageEntries = getVisibleItems()
+        .filter((item) => item.type === MEDIA_TYPES.IMAGE)
+        .map((item) => state.cardsByUrl.get(item.url))
+        .filter(Boolean);
+      const currentIdx = imageEntries.indexOf(state.lightboxEntry);
+      if (imageEntries.length > 1 && currentIdx >= 0) {
+        if (typeof event.preventDefault === 'function') {
+          event.preventDefault();
+        }
+        const delta = event.key === 'ArrowRight' ? 1 : -1;
+        const nextEntry = imageEntries[(currentIdx + delta + imageEntries.length) % imageEntries.length];
+        openLightbox(nextEntry);
+      }
+      return;
+    }
+
     if (event.key === 'Escape') {
       if (els.imageLightbox && !els.imageLightbox.classList.contains('hidden')) {
         closeLightbox();
@@ -1833,8 +1898,17 @@ export function createPopupController(deps = {}) {
     if (els.searchInput) {
       els.searchInput.addEventListener('input', () => {
         state.searchQuery = els.searchInput.value || '';
+        state.renderLimit = renderPageSize;
         hideBatchConfirm();
-        renderList();
+        if (searchDebounceMs > 0) {
+          clearTimeout(state.searchDebounceTimer);
+          state.searchDebounceTimer = setTimeout(() => {
+            state.searchDebounceTimer = null;
+            renderList();
+          }, searchDebounceMs);
+        } else {
+          renderList();
+        }
       });
     }
 
@@ -2097,5 +2171,5 @@ export function createPopupController(deps = {}) {
 }
 
 if (typeof document !== 'undefined' && document.getElementById('mediaList')) {
-  createPopupController().init();
+  createPopupController({ searchDebounceMs: 120 }).init();
 }

@@ -130,9 +130,29 @@ export function createLightboxController({
     els.lightboxPaletteBar.classList.remove('hidden');
   }
 
+  function updateResetColorsButton() {
+    if (!els.lightboxResetColorsBtn) {
+      return;
+    }
+    const entry = state.lightboxEntry;
+    const isModified = Boolean(
+      entry &&
+      typeof entry._originalSvgMarkup === 'string' &&
+      entry._originalSvgMarkup &&
+      entry.item &&
+      entry.item.svgMarkup !== entry._originalSvgMarkup
+    );
+    els.lightboxResetColorsBtn.classList.toggle('hidden', !isModified);
+  }
+
   function applyRecoloredSvgToLightbox(updatedSvg) {
     if (!state.lightboxEntry || !state.lightboxEntry.item || !updatedSvg) {
       return;
+    }
+    if (typeof state.lightboxEntry._originalSvgMarkup !== 'string') {
+      state.lightboxEntry._originalSvgMarkup = state.lightboxSvgMarkup || state.lightboxEntry.item.svgMarkup || '';
+      state.lightboxEntry._originalUrl = state.lightboxEntry.item.url || '';
+      state.lightboxEntry._originalSvgSymbolId = state.lightboxEntry.item.svgSymbolId || '';
     }
     state.lightboxSvgMarkup = updatedSvg;
     const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(updatedSvg)}`;
@@ -146,6 +166,26 @@ export function createLightboxController({
       state.lightboxEntry.thumbEl.src = dataUrl;
     }
     renderLightboxPalette(updatedSvg);
+    updateResetColorsButton();
+  }
+
+  function resetLightboxSvgColors() {
+    const entry = state.lightboxEntry;
+    if (!entry || !entry.item || typeof entry._originalSvgMarkup !== 'string') {
+      return;
+    }
+    entry.item.svgMarkup = entry._originalSvgMarkup;
+    entry.item.url = entry._originalUrl || entry.item.url;
+    entry.item.svgSymbolId = entry._originalSvgSymbolId || '';
+    state.lightboxSvgMarkup = entry._originalSvgMarkup;
+    if (els.lightboxImg) {
+      els.lightboxImg.src = entry.item.url || '';
+    }
+    if (entry.thumbEl) {
+      entry.thumbEl.src = entry.item.url || '';
+    }
+    renderLightboxPalette(entry._originalSvgMarkup);
+    updateResetColorsButton();
   }
 
   async function copyLightboxContent() {
@@ -227,6 +267,7 @@ export function createLightboxController({
       }
     }
     applyLightboxBg(state.lightboxBg);
+    updateResetColorsButton();
     els.imageLightbox.classList.remove('hidden');
     if (els.lightboxCloseBtn && typeof els.lightboxCloseBtn.focus === 'function') {
       els.lightboxCloseBtn.focus();
@@ -307,6 +348,9 @@ export function createLightboxController({
         }
         applyRecoloredSvgToLightbox(convertSvgToCurrentColor(state.lightboxSvgMarkup));
       });
+    }
+    if (els.lightboxResetColorsBtn) {
+      els.lightboxResetColorsBtn.addEventListener('click', resetLightboxSvgColors);
     }
     if (els.lightboxDownloadBtn) {
       els.lightboxDownloadBtn.addEventListener('click', () => {

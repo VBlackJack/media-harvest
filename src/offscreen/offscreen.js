@@ -71,6 +71,7 @@ import {
   isSvgDataUrl
 } from '../shared/media_classifier.js';
 import { clampInteger } from '../shared/settings.js';
+import { convertWebVttToSrt } from '../shared/subtitle_utils.js';
 import { splitSvgSpriteUrl } from '../shared/svg_utils.js';
 import { decodeMediaPartsToAudioBlob } from './audio_transcoder.js';
 import {
@@ -1289,13 +1290,25 @@ async function buildSubtitleBlob(payload) {
         throw new Error(CANCEL_REASON);
       }
       const mergedVtt = mergeWebVttSegments(segmentBuffers);
-      blob = new Blob([mergedVtt], { type: 'text/vtt;charset=utf-8' });
+      if (payload.subtitleFormat === 'srt') {
+        const srtText = convertWebVttToSrt(mergedVtt);
+        outputExtension = 'srt';
+        blob = new Blob([srtText], { type: 'application/x-subrip;charset=utf-8' });
+      } else {
+        blob = new Blob([mergedVtt], { type: 'text/vtt;charset=utf-8' });
+      }
     } else {
       const ext = extractUrlExtension(subtitleUrl);
-      if (ext) {
-        outputExtension = ext;
+      if (payload.subtitleFormat === 'srt' && (!ext || ext === 'vtt')) {
+        const srtText = convertWebVttToSrt(manifestText);
+        outputExtension = 'srt';
+        blob = new Blob([srtText || manifestText], { type: 'application/x-subrip;charset=utf-8' });
+      } else {
+        if (ext) {
+          outputExtension = ext;
+        }
+        blob = new Blob([manifestText], { type: 'text/plain;charset=utf-8' });
       }
-      blob = new Blob([manifestText], { type: 'text/plain;charset=utf-8' });
     }
 
     const blobUrl = URL.createObjectURL(blob);

@@ -1292,7 +1292,7 @@ async function handleDownloadHlsSubtitle(payload) {
     requestId,
     targetUrl: payload.subtitleUrl,
     rawStem,
-    fallbackExt: DEFAULT_FILENAMES.SUBTITLE_EXT,
+    fallbackExt: payload.subtitleFormat === 'srt' ? 'srt' : DEFAULT_FILENAMES.SUBTITLE_EXT,
     saveAs: Boolean(payload.saveAs),
     allowFolders: Boolean(payload.allowFolders),
     tabId: -1,
@@ -1301,6 +1301,7 @@ async function handleDownloadHlsSubtitle(payload) {
       type: MESSAGE_TYPES.OFFSCREEN_BUILD_SUBTITLE_BLOB,
       requestId,
       subtitleUrl: payload.subtitleUrl,
+      subtitleFormat: payload.subtitleFormat === 'srt' ? 'srt' : 'vtt',
       concurrency: settings.hlsFetchConcurrency
     })
   });

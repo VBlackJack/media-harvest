@@ -985,6 +985,18 @@
     "message": "Download",
     "description": "Lightbox button to download the previewed image or SVG."
   },
+  "popup_lightbox_reset_colors": {
+    "message": "Reset colors",
+    "description": "Lightbox button to restore original SVG colors after recoloring."
+  },
+  "popup_action_load_more": {
+    "message": "Show more ($1 remaining)",
+    "description": "Button to render the next page of media cards when a page has many items."
+  },
+  "popup_action_subtitle_srt": {
+    "message": "SRT",
+    "description": "Action label to download subtitles converted to SubRip SRT format."
+  },
   "options_jpg_quality_label": {
     "message": "JPG export quality (%)",
     "description": "Options label for JPG compression quality percentage."
