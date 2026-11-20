@@ -54,9 +54,11 @@
         "https://twitter.com/*"
       ],
       "js": [
+        "src/content/overlay_common.js",
         "src/content/x_overlay.js"
       ],
       "css": [
+        "src/content/overlay_common.css",
         "src/content/x_overlay.css"
       ],
       "run_at": "document_idle"
@@ -70,9 +72,11 @@
         "https://twitter.com/*"
       ],
       "js": [
+        "src/content/overlay_common.js",
         "src/content/site_overlay.js"
       ],
       "css": [
+        "src/content/overlay_common.css",
         "src/content/site_overlay.css"
       ],
       "run_at": "document_idle"

@@ -72,6 +72,16 @@ import {
   withTemporaryRefererRule
 } from './dnr_manager.js';
 import {
+  cancelCompanionDownload,
+  checkCompanionStatus,
+  downloadWithCompanion
+} from './companion_client.js';
+import {
+  clearDownloadHistory,
+  getDownloadHistory,
+  recordDownloadHistory
+} from './download_history.js';
+import {
   applyFilenameTemplate,
   isFolderFilenameTemplate,
   loadSettings
@@ -79,7 +89,6 @@ import {
 
 const tabWriteQueues = new Map();
 const activeBuilds = new Map();
-const activeCompanionPorts = new Map();
 let offscreenLifecycleQueue = Promise.resolve();
 let activeOffscreenBuilds = 0;
 
@@ -1396,142 +1405,6 @@ async function handleSiteVideoDownload(tabId, payload, fallbackPageUrl = '') {
 }
 
 /**
- * Queries the optional Windows Native Messaging companion host availability.
- * @returns {Promise<{ available: boolean, ytDlpVersion: string, ffmpegAvailable: boolean, error: string }>}
- */
-async function checkCompanionStatus() {
-  if (!chrome.runtime || typeof chrome.runtime.sendNativeMessage !== 'function') {
-    return { available: false, ytDlpVersion: '', ffmpegAvailable: false, error: 'UNAVAILABLE' };
-  }
-  try {
-    const res = await chrome.runtime.sendNativeMessage(NATIVE_HOST.NAME, {
-      action: NATIVE_HOST.ACTION_PING
-    });
-    return {
-      available: Boolean(res && res.ok),
-      ytDlpVersion: (res && res.ytDlpVersion) || '',
-      ffmpegAvailable: Boolean(res && res.ffmpegAvailable),
-      error: (res && res.error) || ''
-    };
-  } catch (err) {
-    return {
-      available: false,
-      ytDlpVersion: '',
-      ffmpegAvailable: false,
-      error: (err && err.message) || 'COMPANION_UNAVAILABLE'
-    };
-  }
-}
-
-/**
- * Delegates a URL or page URL download to the local yt-dlp/ffmpeg Native Messaging companion.
- * Uses connectNative for live progress streaming when available, with sendNativeMessage fallback.
- * @param {{ url: string, referer?: string, filename?: string, quality?: string }} payload
- * @returns {Promise<object>}
- */
-async function downloadWithCompanion(payload) {
-  if (!payload || !isHttpUrl(payload.url)) {
-    throw new Error('INVALID_URL');
-  }
-  const hasConnect = Boolean(chrome.runtime && typeof chrome.runtime.connectNative === 'function');
-  const hasSend = Boolean(chrome.runtime && typeof chrome.runtime.sendNativeMessage === 'function');
-  if (!hasConnect && !hasSend) {
-    throw new Error('COMPANION_UNAVAILABLE');
-  }
-  const settings = await loadSettings().catch(() => ({}));
-  const detectedCookieBrowser = typeof navigator !== 'undefined' && /Edg\//i.test(navigator.userAgent || '')
-    ? 'edge'
-    : 'chrome';
-  const requestPayload = {
-    action: NATIVE_HOST.ACTION_DOWNLOAD,
-    url: payload.url,
-    referer: typeof payload.referer === 'string' ? payload.referer : '',
-    filename: typeof payload.filename === 'string' ? payload.filename : '',
-    quality: typeof payload.quality === 'string' ? payload.quality : 'best',
-    audioOnly: Boolean(payload.audioOnly),
-    audioFormat: typeof payload.audioFormat === 'string' ? payload.audioFormat : 'mp3',
-    cookiesBrowser: settings && settings.enableCompanionCookies ? detectedCookieBrowser : ''
-  };
-
-  if (hasConnect) {
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      let port = null;
-      const companionKey = payload.url;
-      try {
-        port = chrome.runtime.connectNative(NATIVE_HOST.NAME);
-      } catch (err) {
-        settled = true;
-        reject(new Error((err && err.message) || 'COMPANION_FAILED'));
-        return;
-      }
-      activeCompanionPorts.set(companionKey, port);
-
-      const cleanup = () => {
-        if (activeCompanionPorts.get(companionKey) === port) {
-          activeCompanionPorts.delete(companionKey);
-        }
-        if (port && typeof port.disconnect === 'function') {
-          try {
-            port.disconnect();
-          } catch {
-            // Ignore disconnect error
-          }
-        }
-      };
-
-      port.onMessage.addListener((message) => {
-        if (!message || typeof message !== 'object') {
-          return;
-        }
-        if (message.event === NATIVE_HOST.EVENT_PROGRESS) {
-          chrome.runtime.sendMessage({
-            type: MESSAGE_TYPES.COMPANION_PROGRESS,
-            url: payload.url,
-            percent: Number.isFinite(message.percent) ? message.percent : 0
-          }).catch(() => {
-            // Popup may be closed
-          });
-          return;
-        }
-        if (message.event === NATIVE_HOST.EVENT_DONE || typeof message.ok === 'boolean') {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          cleanup();
-          if (message.ok) {
-            resolve(message);
-          } else {
-            reject(new Error(message.error || 'COMPANION_FAILED'));
-          }
-        }
-      });
-
-      port.onDisconnect.addListener(() => {
-        if (activeCompanionPorts.get(companionKey) === port) {
-          activeCompanionPorts.delete(companionKey);
-        }
-        if (settled) {
-          return;
-        }
-        settled = true;
-        const runtimeErr = chrome.runtime && chrome.runtime.lastError && chrome.runtime.lastError.message;
-        reject(new Error(runtimeErr || 'COMPANION_FAILED'));
-      });
-
-      port.postMessage({ ...requestPayload, streamProgress: true });
-    });
-  }
-
-  const res = await chrome.runtime.sendNativeMessage(NATIVE_HOST.NAME, requestPayload);
-  if (!res || !res.ok) {
-    throw new Error((res && res.error) || 'COMPANION_FAILED');
-  }
-  return res;
-}
-
-/**
  * Converts an image or SVG via offscreen canvas to PNG or JPG and initiates download.
  * @param {object} payload
  * @param {string} rawStem
@@ -1765,67 +1638,6 @@ async function handleOpenStreamSaver(payload) {
   return { jobId, tabId: saverTabId };
 }
 
-let historyWriteChain = Promise.resolve();
-
-/**
- * Reads recorded recent download history from chrome.storage.local.
- * @returns {Promise<Array<object>>}
- */
-async function getDownloadHistory() {
-  if (!chrome.storage || !chrome.storage.local || typeof chrome.storage.local.get !== 'function') {
-    return [];
-  }
-  const stored = await chrome.storage.local.get(STORAGE_KEYS.DOWNLOAD_HISTORY);
-  const list = stored && stored[STORAGE_KEYS.DOWNLOAD_HISTORY];
-  return Array.isArray(list) ? list : [];
-}
-
-/**
- * Clears all entries in recent download history storage.
- * @returns {Promise<void>}
- */
-async function clearDownloadHistory() {
-  if (!chrome.storage || !chrome.storage.local || typeof chrome.storage.local.remove !== 'function') {
-    return;
-  }
-  await chrome.storage.local.remove(STORAGE_KEYS.DOWNLOAD_HISTORY);
-}
-
-/**
- * Appends a completed or failed download record to recent history capped to LIMITS.MAX_DOWNLOAD_HISTORY.
- * @param {object} entry
- * @returns {Promise<void>}
- */
-function recordDownloadHistory(entry) {
-  if (!chrome.storage || !chrome.storage.local || typeof chrome.storage.local.set !== 'function') {
-    return Promise.resolve();
-  }
-  const item = {
-    id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    url: typeof entry.url === 'string' ? entry.url : '',
-    playlistUrl: typeof entry.playlistUrl === 'string' ? entry.playlistUrl : '',
-    audioUrl: typeof entry.audioUrl === 'string' ? entry.audioUrl : '',
-    referer: typeof entry.referer === 'string' ? entry.referer : '',
-    filename: typeof entry.filename === 'string' ? entry.filename : '',
-    isStream: Boolean(entry.isStream),
-    isMse: Boolean(entry.isMse),
-    audioOnly: Boolean(entry.audioOnly),
-    qualityPreference: typeof entry.qualityPreference === 'string' ? entry.qualityPreference : '',
-    ok: Boolean(entry.ok),
-    error: typeof entry.error === 'string' ? entry.error : '',
-    timestamp: Date.now()
-  };
-  historyWriteChain = historyWriteChain
-    .then(async () => {
-      const prev = await getDownloadHistory();
-      const deduped = prev.filter((p) => !(p.url === item.url && p.filename === item.filename && Boolean(p.audioOnly) === item.audioOnly));
-      const next = [item, ...deduped].slice(0, LIMITS.MAX_DOWNLOAD_HISTORY);
-      await chrome.storage.local.set({ [STORAGE_KEYS.DOWNLOAD_HISTORY]: next });
-    })
-    .catch(() => {});
-  return historyWriteChain;
-}
-
 /**
  * Dispatches a validated download payload to the appropriate pipeline.
  * @param {object} payload
@@ -2056,15 +1868,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === MESSAGE_TYPES.CANCEL_COMPANION_DOWNLOAD) {
-    const targetUrl = typeof message.url === 'string' ? message.url : '';
-    const port = targetUrl ? activeCompanionPorts.get(targetUrl) : null;
-    if (port && typeof port.postMessage === 'function') {
-      try {
-        port.postMessage({ action: NATIVE_HOST.ACTION_CANCEL });
-      } catch {
-        // Port may already be closed
-      }
-    }
+    cancelCompanionDownload(message.url);
     sendResponse({ ok: true });
     return false;
   }

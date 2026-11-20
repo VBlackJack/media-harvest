@@ -109,12 +109,21 @@
     }
   ]);
 
+  const OVERLAY_COMMON = typeof globalThis !== 'undefined' && globalThis.__mediaHarvestOverlayCommon
+    ? globalThis.__mediaHarvestOverlayCommon
+    : null;
+
   const SITE_ERROR_KEY_MAP = Object.freeze({
     PLAY_FIRST: 'x_btn_play_first',
-    DOWNLOAD_CANCELLED: 'x_btn_cancelled'
+    ENCRYPTED_STREAM: 'x_btn_encrypted',
+    DRM_PROTECTED: 'x_btn_encrypted',
+    STREAM_TOO_LARGE: 'x_btn_too_large',
+    FETCH_TIMEOUT: 'x_btn_timeout',
+    DOWNLOAD_CANCELLED: 'x_btn_cancelled',
+    NO_AUDIO_TRACK: 'popup_error_no_audio_track'
   });
 
-  const msg = (key, substitutions) => chrome.i18n.getMessage(key, substitutions) || key;
+  const msg = OVERLAY_COMMON ? OVERLAY_COMMON.msg : ((key, substitutions) => chrome.i18n.getMessage(key, substitutions) || key);
 
   function findSiteAdapter(hostname) {
     const cleanHost = (hostname || '').toLowerCase();
@@ -411,12 +420,22 @@
         menu.appendChild(optionBtn);
       }
 
-      toggleBtn.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const isOpen = qualityWrap.classList.toggle('mh-is-open');
-        toggleBtn.setAttribute('aria-expanded', String(isOpen));
-      });
+      if (OVERLAY_COMMON && typeof OVERLAY_COMMON.bindQualityMenu === 'function') {
+        OVERLAY_COMMON.bindQualityMenu({
+          qualityWrap,
+          toggleBtn,
+          menu,
+          openClass: 'mh-is-open'
+        });
+      } else {
+        toggleBtn.setAttribute('aria-haspopup', 'menu');
+        toggleBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const isOpen = qualityWrap.classList.toggle('mh-is-open');
+          toggleBtn.setAttribute('aria-expanded', String(isOpen));
+        });
+      }
 
       qualityWrap.append(toggleBtn, menu);
       host.append(btn, qualityWrap);

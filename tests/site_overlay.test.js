@@ -21,6 +21,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
+const OVERLAY_COMMON_CODE = fs.readFileSync(path.join(ROOT, 'src/content/overlay_common.js'), 'utf8');
 const SITE_OVERLAY_CODE = fs.readFileSync(path.join(ROOT, 'src/content/site_overlay.js'), 'utf8');
 
 function createSiteHarness({
@@ -211,6 +212,7 @@ function createSiteHarness({
     Date
   };
 
+  vm.runInNewContext(OVERLAY_COMMON_CODE, sandbox, { filename: 'overlay_common.js' });
   vm.runInNewContext(SITE_OVERLAY_CODE, sandbox, { filename: 'site_overlay.js' });
 
   return {

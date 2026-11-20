@@ -21,6 +21,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
+const OVERLAY_COMMON_CODE = fs.readFileSync(path.join(ROOT, 'src/content/overlay_common.js'), 'utf8');
 const OVERLAY_CODE = fs.readFileSync(path.join(ROOT, 'src/content/x_overlay.js'), 'utf8');
 
 function createDomHarness({ initialEnableXOverlay = true } = {}) {
@@ -231,7 +232,8 @@ function createDomHarness({ initialEnableXOverlay = true } = {}) {
     }
   };
 
-  vm.runInNewContext(OVERLAY_CODE, context);
+  vm.runInNewContext(OVERLAY_COMMON_CODE, context, { filename: 'overlay_common.js' });
+  vm.runInNewContext(OVERLAY_CODE, context, { filename: 'x_overlay.js' });
   return {
     body,
     actionBar,

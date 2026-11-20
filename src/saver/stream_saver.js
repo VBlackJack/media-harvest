@@ -44,7 +44,7 @@ import {
   rewriteAudioClusterForMux,
   splitWebmInitAndClusters
 } from '../shared/webm_muxer.js';
-import { parseHlsPlaylist, selectBestVariant } from '../shared/hls_parser.js';
+import { resolveStreamPlan } from '../shared/stream_planner.js';
 import { applyTranslations, getUiLanguage, t } from '../shared/i18n.js';
 import { isHttpUrl } from '../shared/media_classifier.js';
 import { clampInteger } from '../shared/settings.js';
@@ -599,84 +599,28 @@ export async function streamPlaylistToWritable(job, writable, options = {}) {
     return streamProgressiveResponseToWritable(preferredVariantUrl, writable, options);
   }
 
-  const rootRes = await fetchWithRetry(fetchFn, rootUrl, { signal });
-  const rootText = await rootRes.text();
   const qualityPref = job.qualityPreference || QUALITY_PREFERENCES.BEST;
-
-  let mediaPlaylist;
-  let audioPlaylist = null;
-  const pickVariant = (variants) => {
-    if (!Array.isArray(variants) || variants.length === 0) {
-      return null;
+  const plan = await resolveStreamPlan({
+    masterOrMediaUrl: rootUrl,
+    preferredVariantUrl,
+    qualityPreference: qualityPref,
+    preferredAudioUrl,
+    allowLiveHls: true,
+    allowLiveDash: true,
+    encryptedErrorCode: 'DRM_PROTECTED',
+    fetchText: async (url) => {
+      const res = await fetchWithRetry(fetchFn, url, { signal });
+      return res.text();
     }
-    const explicit = variants.find((v) => v.url === preferredVariantUrl);
-    if (explicit) {
-      return explicit;
-    }
-    return qualityPref === QUALITY_PREFERENCES.LOWEST
-      ? variants[variants.length - 1]
-      : selectBestVariant(variants);
-  };
-  if (isDashDescriptor(rootUrl) || looksLikeDashXml(rootText)) {
-    const dash = parseDashManifest(rootText, rootUrl);
-    if (dash.encrypted || dash.drmEncrypted) {
-      throw new Error('DRM_PROTECTED');
-    }
-    const chosen = pickVariant(dash.variants);
-    if (!chosen) {
-      throw new Error('EMPTY_PLAYLIST');
-    }
-    mediaPlaylist = chosen;
-    const isWebm = chosen.mimeType === 'video/webm';
-    const usableAudio = (dash.audioTracks || []).filter((track) => (
-      track && Array.isArray(track.segments) && track.segments.length > 0
-    ));
-    const sameContainer = usableAudio.filter((track) => {
-      const trackIsWebm = (track.mimeType || '').toLowerCase() === 'audio/webm';
-      return isWebm ? trackIsWebm : !trackIsWebm;
-    });
-    const audioPool = sameContainer.length > 0 ? sameContainer : (!isWebm ? usableAudio : []);
-    audioPlaylist = (
-      (preferredAudioUrl && audioPool.find((a) => a.url === preferredAudioUrl)) ||
-      audioPool[0] ||
-      null
-    );
-  } else {
-    const parsed = parseHlsPlaylist(rootText, rootUrl);
-    if (parsed.isMaster) {
-      const chosen = pickVariant(parsed.variants);
-      if (!chosen) {
-        throw new Error('EMPTY_PLAYLIST');
-      }
-      const subRes = await fetchWithRetry(fetchFn, chosen.url, { signal });
-      mediaPlaylist = parseHlsPlaylist(await subRes.text(), chosen.url);
-      const groupTracks = chosen.audioGroup
-        ? (parsed.audioTracks || []).filter((a) => a.groupId === chosen.audioGroup && a.url)
-        : [];
-      const matchedAudio = (
-        (preferredAudioUrl && (parsed.audioTracks || []).find((a) => a.url === preferredAudioUrl)) ||
-        groupTracks.find((a) => a.isDefault) ||
-        groupTracks[0] ||
-        (parsed.audioTracks || []).find((a) => a.url && a.isDefault) ||
-        (parsed.audioTracks || []).find((a) => a.url) ||
-        null
-      );
-      if (matchedAudio && matchedAudio.url && matchedAudio.url !== chosen.url) {
-        const audioRes = await fetchWithRetry(fetchFn, matchedAudio.url, { signal }).catch(() => null);
-        if (audioRes && audioRes.ok) {
-          const candidateAudio = parseHlsPlaylist(await audioRes.text(), matchedAudio.url);
-          if (
-            !candidateAudio.drmEncrypted &&
-            (!candidateAudio.encrypted || candidateAudio.decryptableAes128) &&
-            candidateAudio.segments.length > 0
-          ) {
-            audioPlaylist = candidateAudio;
-          }
-        }
-      }
-    } else {
-      mediaPlaylist = parsed;
-    }
+  });
+  const mediaPlaylist = plan.mediaPlaylist;
+  let audioPlaylist = plan.audioPlaylist;
+  if (
+    mediaPlaylist.mimeType === 'video/webm' &&
+    audioPlaylist &&
+    (audioPlaylist.mimeType || '').toLowerCase() !== 'audio/webm'
+  ) {
+    audioPlaylist = null;
   }
 
   if (mediaPlaylist.drmEncrypted || (mediaPlaylist.encrypted && !mediaPlaylist.decryptableAes128)) {

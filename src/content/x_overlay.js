@@ -43,7 +43,10 @@
     DOWNLOAD_CANCELLED: 'x_btn_cancelled'
   });
 
-  const msg = (key, substitutions) => chrome.i18n.getMessage(key, substitutions) || key;
+  const OVERLAY_COMMON = typeof globalThis !== 'undefined' && globalThis.__mediaHarvestOverlayCommon
+    ? globalThis.__mediaHarvestOverlayCommon
+    : null;
+  const msg = OVERLAY_COMMON ? OVERLAY_COMMON.msg : ((key, substitutions) => chrome.i18n.getMessage(key, substitutions) || key);
 
   /**
    * Creates the inline SVG download icon element.
@@ -316,12 +319,22 @@
         menu.appendChild(optionBtn);
       }
 
-      toggleBtn.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const isOpen = qualityWrap.classList.toggle('mh-is-open');
-        toggleBtn.setAttribute('aria-expanded', String(isOpen));
-      });
+      if (OVERLAY_COMMON && typeof OVERLAY_COMMON.bindQualityMenu === 'function') {
+        OVERLAY_COMMON.bindQualityMenu({
+          qualityWrap,
+          toggleBtn,
+          menu,
+          openClass: 'mh-is-open'
+        });
+      } else {
+        toggleBtn.setAttribute('aria-haspopup', 'menu');
+        toggleBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const isOpen = qualityWrap.classList.toggle('mh-is-open');
+          toggleBtn.setAttribute('aria-expanded', String(isOpen));
+        });
+      }
 
       qualityWrap.append(toggleBtn, menu);
       actionBar.append(btn, qualityWrap);
