@@ -2,6 +2,31 @@
 
 All notable engineering changes to Media Harvest are documented in this file.
 
+## [1.4.0] - 2026-11-20
+
+### Added
+- OPFS disk-backed chunk spooling (`src/offscreen/opfs_spool.js`) with transparent in-memory fallback wired into Tab Capture (`src/offscreen/tab_capture.js`) and automatic temp-file cleanup on Blob revocation, allowing long recordings to exceed RAM caps.
+- Streaming protocol upgrades: DASH multi-Period segment concatenation and `SegmentBase` support (`src/shared/dash_parser.js`), plus per-segment `#EXT-X-MAP` tracking across discontinuities and LL-HLS `#EXT-X-PART` support (`src/shared/hls_parser.js`).
+- WebVTT to SubRip (`.srt`) subtitle conversion (`src/shared/subtitle_utils.js`, wired into `buildSubtitleBlob` and `handleDownloadHlsSubtitle`).
+- Lightbox Pro keyboard gallery navigation (`ArrowLeft`/`ArrowRight`), SVG color reset button (`popup_lightbox_reset_colors`), focus trap, and focus restoration (`src/popup/lightbox_controller.js`, `src/popup/popup.js`).
+- Real-time Native Messaging companion download cancellation (`CANCEL_COMPANION_DOWNLOAD` / `action: 'cancel'`) with process-tree termination (`companion/media_harvest_host.py`, `src/background/companion_client.js`, `src/popup/popup.js`).
+- Incremental popup card pagination (40-card batches with Show more button) and debounced search input (`120` ms) for dense media pages (`src/popup/popup.js`).
+- Deterministic sorted ZIP packaging with optional Firefox MV3 target (`scripts/package_extension.mjs --target firefox`), static JS type-check configuration (`tsconfig.check.json`), and strict CI E2E mode (`scripts/e2e_chromium.mjs --strict`).
+
+### Changed
+- Extracted shared `src/shared/stream_planner.js` (unifying HLS/DASH manifest planning across `offscreen.js` and `stream_saver.js`), `src/content/overlay_common.js` + `overlay_common.css` (unifying X and site overlay menus with keyboard navigation and outside-click/`Escape` dismissal), `src/background/companion_client.js`, `src/background/download_history.js`, `src/offscreen/audio_transcoder.js`, and `src/offscreen/tab_capture.js`.
+- Switched `buildZipBlob` and `buildZipBlobAsync` (`src/shared/zip_builder.js`) to zero-copy part-based `Blob` assembly to halve peak RAM during batch ZIP exports.
+- Updated `scripts/check_syntax.mjs` to validate Python syntax via `ast.parse` without generating `__pycache__` artifacts and added `npm run package` to `.github/workflows/ci.yml`.
+
+### Fixed
+- Fixed inverted `trun.data_offset` shift in `extractAudioOnlyFromFmp4Parts` (`src/shared/fmp4_muxer.js`) when stripping video `traf` boxes from multi-`traf` fMP4 fragments.
+- Hardened the MAIN-to-ISOLATED MSE bridge (`src/content/mse_hook.js`, `src/content/mse_bridge.js`) with a private `MessageChannel` handshake, schema/byte-cap validation, and global SPA LRU eviction caps.
+- Persisted MV3 session DNR rules (`downloadId` and Stream Saver `tabIds` scope) across service worker suspensions with startup orphan pruning (`src/background/dnr_manager.js`), added `OFFSCREEN_GET_ACTIVE_BUILDS` keep-alive queries before closing the offscreen document, and isolated privileged runtime messages from content scripts (`src/background/service_worker.js`, `src/offscreen/offscreen.js`).
+- Fixed dead wall-clock timeout, pipe disconnect crashes, `%` output template injection, and Windows reserved filename handling in `companion/media_harvest_host.py`, plus Edge browser cookie detection and safe JSON escaping in `companion/install_companion.sh`.
+- Fixed SVG sanitization (`<script>`, `<foreignObject>`, `javascript:` hrefs) and browser UTF-8 base64 decoding (`src/shared/svg_utils.js`, `src/content/dom_scanner.js`), XML entity double-unescaping (`src/shared/dash_parser.js`), ADTS ID3v2/resync/88.2-96 kHz `mp4a` handling (`src/shared/adts_transmuxer.js`), `trun.data_offset` in `src/shared/mixed_mse_muxer.js`, RFC 7845 Opus channel mapping (`src/shared/ogg_opus_muxer.js`), and `stream_saver.js` fetch timeout/backoff.
+- Fixed Lightbox palette CSS variables, WCAG AA contrast on recording and dirty save buttons, image orientation filter reset, localized history error messages, and `site_overlay.js` layout reflow short-circuiting.
+- Expanded automated suite to `169/169` passing tests.
+
 ## [1.3.1] - 2026-11-16
 
 ### Fixed
