@@ -79,10 +79,15 @@ import {
   rasterizeImageToBlob,
   resolveSvgSourceText
 } from './image_processor.js';
+import {
+  startTabCaptureRecording as runTabCaptureRecording,
+  stopTabCaptureSessions as runStopTabCaptureSessions
+} from './tab_capture.js';
 import { transmuxTsSegmentsToMp4Parts } from '../shared/ts_transmuxer.js';
 import { buildZipBlobAsync, resolveZipEntryFilename } from '../shared/zip_builder.js';
 
 const activeBlobUrls = new Set();
+const blobCleanupByUrl = new Map();
 const activeBuildControllers = new Map();
 const activeLiveRecorders = new Map();
 const activeTabCaptures = new Map();
@@ -1785,242 +1790,18 @@ const TAB_CAPTURE_MIME_CANDIDATES = Object.freeze([
   'video/mp4'
 ]);
 
-/**
- * Selects the best supported MediaRecorder MIME type for tab recording.
- * @returns {string}
- */
-function selectTabCaptureMimeType() {
-  if (typeof MediaRecorder !== 'function' || typeof MediaRecorder.isTypeSupported !== 'function') {
-    return 'video/webm';
-  }
-  for (const candidate of TAB_CAPTURE_MIME_CANDIDATES) {
-    if (MediaRecorder.isTypeSupported(candidate)) {
-      return candidate;
-    }
-  }
-  return 'video/webm';
-}
-
-/**
- * Releases media stream tracks and optional WebAudio pass-through resources cleanly.
- * @param {{ stream?: MediaStream, audioCtx?: AudioContext }} session
- */
-function releaseTabCaptureMedia(session) {
-  if (!session) {
-    return;
-  }
-  if (session.stream && typeof session.stream.getTracks === 'function') {
-    for (const track of session.stream.getTracks()) {
-      try {
-        track.stop();
-      } catch {
-        // Ignore already stopped track
-      }
-    }
-  }
-  if (session.audioCtx && typeof session.audioCtx.close === 'function') {
-    session.audioCtx.close().catch(() => {});
-  }
-}
-
-/**
- * Captures live video and audio from a Chrome tab MediaStream ID until stopped or cancelled.
- * @param {{ streamId: string, originalUrl: string, requestId: string }} payload
- * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number }>}
- */
-async function startTabCaptureRecording(payload) {
-  const { streamId, originalUrl = '', requestId, tabCaptureBitrateMbps } = payload || {};
-  if (
-    !streamId ||
-    typeof navigator === 'undefined' ||
-    !navigator.mediaDevices ||
-    typeof navigator.mediaDevices.getUserMedia !== 'function' ||
-    typeof MediaRecorder !== 'function'
-  ) {
-    throw new Error('TAB_CAPTURE_UNAVAILABLE');
-  }
-
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        mandatory: {
-          chromeMediaSource: 'tab',
-          chromeMediaSourceId: streamId
-        }
-      },
-      video: {
-        mandatory: {
-          chromeMediaSource: 'tab',
-          chromeMediaSourceId: streamId
-        }
-      }
-    });
-  } catch {
-    throw new Error('TAB_CAPTURE_FAILED');
-  }
-
-  let audioCtx = null;
-  if (typeof AudioContext === 'function' && typeof stream.getAudioTracks === 'function' && stream.getAudioTracks().length > 0) {
-    try {
-      audioCtx = new AudioContext();
-      const source = audioCtx.createMediaStreamSource(stream);
-      source.connect(audioCtx.destination);
-    } catch {
-      audioCtx = null;
-    }
-  }
-
-  const mimeType = selectTabCaptureMimeType();
-  const bitrateMbps = clampInteger(
-    tabCaptureBitrateMbps,
-    LIMITS.DEFAULT_TAB_CAPTURE_BITRATE_MBPS,
-    LIMITS.TAB_CAPTURE_BITRATE_MIN_MBPS,
-    LIMITS.TAB_CAPTURE_BITRATE_MAX_MBPS
-  );
-  const recorderOptions = {
-    ...(mimeType ? { mimeType } : {}),
-    videoBitsPerSecond: bitrateMbps * 1000 * 1000
-  };
-  const outputExtension = mimeType.includes('mp4')
-    ? DEFAULT_FILENAMES.HLS_FMP4_EXT
-    : DEFAULT_FILENAMES.WEBM_EXT;
-
-  let recorder;
-  try {
-    recorder = new MediaRecorder(stream, recorderOptions);
-  } catch {
-    releaseTabCaptureMedia({ stream, audioCtx });
-    throw new Error('TAB_CAPTURE_FAILED');
-  }
-
-  const chunks = [];
-  let totalBytes = 0;
-  const startedAt = Date.now();
-  const session = {
-    requestId,
-    recorder,
-    stream,
-    audioCtx,
-    cancelled: false
-  };
-  activeTabCaptures.set(requestId, session);
-
-  const buildController = new AbortController();
-  buildController.signal.addEventListener('abort', () => {
-    session.cancelled = buildController.signal.reason === CANCEL_REASON;
-    if (recorder.state !== 'inactive') {
-      try {
-        recorder.stop();
-      } catch {
-        // Ignore stop race
-      }
-    }
-  }, { once: true });
-  activeBuildControllers.set(requestId, buildController);
-
-  notifyProgress(requestId, originalUrl, 0, 0, {
-    isLiveRecord: true,
-    isTabCapture: true,
-    bytes: 0
-  });
-
-  return new Promise((resolve, reject) => {
-    const finalizeError = (code) => {
-      activeTabCaptures.delete(requestId);
-      activeBuildControllers.delete(requestId);
-      releaseTabCaptureMedia(session);
-      reject(new Error(code));
-    };
-
-    recorder.ondataavailable = (event) => {
-      if (!event || !event.data || event.data.size === 0) {
-        return;
-      }
-      if (totalBytes + event.data.size > LIMITS.MAX_HLS_BUFFER_BYTES) {
-        if (recorder.state !== 'inactive') {
-          try {
-            recorder.stop();
-          } catch {
-            // Stop at max buffer ceiling
-          }
-        }
-        return;
-      }
-      chunks.push(event.data);
-      totalBytes += event.data.size;
-      const elapsedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-      notifyProgress(requestId, originalUrl, elapsedSec, 0, {
-        isLiveRecord: true,
-        isTabCapture: true,
-        bytes: totalBytes
-      });
-    };
-
-    recorder.onerror = () => finalizeError('TAB_CAPTURE_FAILED');
-
-    recorder.onstop = () => {
-      activeTabCaptures.delete(requestId);
-      activeBuildControllers.delete(requestId);
-      releaseTabCaptureMedia(session);
-      if (session.cancelled) {
-        reject(new Error(CANCEL_REASON));
-        return;
-      }
-      if (chunks.length === 0) {
-        reject(new Error('TAB_CAPTURE_FAILED'));
-        return;
-      }
-      const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
-      chunks.length = 0;
-      const blobUrl = URL.createObjectURL(blob);
-      activeBlobUrls.add(blobUrl);
-      resolve({
-        blobUrl,
-        outputExtension,
-        byteLength: blob.size
-      });
-    };
-
-    if (typeof stream.getVideoTracks === 'function') {
-      for (const track of stream.getVideoTracks()) {
-        track.addEventListener('ended', () => {
-          if (recorder.state !== 'inactive') {
-            try {
-              recorder.stop();
-            } catch {
-              // Ignore track ended stop error
-            }
-          }
-        }, { once: true });
-      }
-    }
-
-    try {
-      recorder.start(LIMITS.TAB_CAPTURE_TIMESLICE_MS);
-    } catch {
-      finalizeError('TAB_CAPTURE_FAILED');
-    }
+function startTabCaptureRecording(payload) {
+  return runTabCaptureRecording(payload, {
+    activeTabCaptures,
+    activeBuildControllers,
+    activeBlobUrls,
+    blobCleanupByUrl,
+    notifyProgress
   });
 }
 
-/**
- * Stops one or all active MediaRecorder tab capture sessions cleanly.
- * @param {string} [requestId='']
- */
 function stopTabCaptureSessions(requestId = '') {
-  const targets = requestId
-    ? [activeTabCaptures.get(requestId)].filter(Boolean)
-    : Array.from(activeTabCaptures.values());
-  for (const session of targets) {
-    if (session.recorder && session.recorder.state !== 'inactive') {
-      try {
-        session.recorder.stop();
-      } catch {
-        // Ignore already stopped recorder
-      }
-    }
-  }
+  runStopTabCaptureSessions(activeTabCaptures, requestId);
 }
 
 function isOffscreenExtensionSender(sender) {
@@ -2275,6 +2056,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.blobUrl && activeBlobUrls.has(message.blobUrl)) {
       URL.revokeObjectURL(message.blobUrl);
       activeBlobUrls.delete(message.blobUrl);
+      const cleanup = blobCleanupByUrl.get(message.blobUrl);
+      if (typeof cleanup === 'function') {
+        blobCleanupByUrl.delete(message.blobUrl);
+        cleanup().catch(() => {});
+      }
     }
     sendResponse({ ok: true });
     return false;

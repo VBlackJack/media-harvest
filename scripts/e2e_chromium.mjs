@@ -321,8 +321,12 @@ async function createTargetSession(cdp, url) {
 }
 
 async function runE2E() {
+  const strictMode = process.argv.includes('--strict') || process.env.CI_E2E_STRICT === '1';
   const chromePath = findChromeBinary();
   if (!chromePath) {
+    if (strictMode) {
+      throw new Error('STRICT_E2E_FAILED: Chrome/Edge binary not found.');
+    }
     console.log('SKIP: Chrome/Edge binary not found for E2E test.');
     return;
   }
