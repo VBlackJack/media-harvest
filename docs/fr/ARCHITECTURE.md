@@ -66,7 +66,7 @@ Les types de messages sont centralisés dans `src/config/constants.js` (`MESSAGE
 
 ## Assemblage des flux et limites de sécurité
 
-- Les flux chiffrés (`#EXT-X-KEY` hors `METHOD=NONE`, `#EXT-X-SESSION-KEY`, ou `ContentProtection` DASH) et les manifestes DASH dynamiques (`type="dynamic"`) sont explicitement refusés.
+- Les flux protégés par DRM (`#EXT-X-KEY` en `SAMPLE-AES` / `SAMPLE-AES-CTR` / méthodes non supportées, `#EXT-X-SESSION-KEY` DRM ou `ContentProtection` DASH) sont explicitement refusés. Les flux HLS `AES-128` non-DRM sont déchiffrés via Web Crypto (`src/shared/hls_crypto.js`), et les flux HLS live / DASH dynamiques sont pris en charge en enregistrement DVR (`recordLiveHlsBlob`).
 - Seuls les schémas `http:` et `https:` sont acceptés pour les manifestes et segments.
 - L'assemblage en mémoire dans `offscreen.js` vérifie les en-têtes `Content-Length` et le cumul d'octets reçus face au plafond `LIMITS.MAX_HLS_BUFFER_BYTES` (`512` Mo), et interrompt immédiatement les requêtes parallèles en cas de dépassement.
 - Si un serveur `#EXT-X-BYTERANGE` ignore l'en-tête `Range` et répond en HTTP `200`, les requêtes concurrentes sur la même URL partagent un unique téléchargement mis en cache pour cette opération.

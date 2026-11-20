@@ -153,7 +153,9 @@ function createZipBuffer(files) {
 /**
  * Packages the extension into a distributable zip archive.
  */
-export function packageExtension() {
+export function packageExtension(options = {}) {
+  const target = options.target === 'firefox' ? 'firefox' : 'chromium';
+  const outDir = options.outDir || DIST_DIR;
   const manifestPath = path.join(ROOT_DIR, 'manifest.json');
   if (!fs.existsSync(manifestPath)) {
     throw new Error('Missing manifest.json');
@@ -161,6 +163,25 @@ export function packageExtension() {
 
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const version = manifest.version || '1.0.0';
+  let manifestBytes = fs.readFileSync(manifestPath);
+
+  if (target === 'firefox') {
+    const ffManifest = {
+      ...manifest,
+      browser_specific_settings: {
+        gecko: {
+          id: 'media-harvest@julienbombled.dev',
+          strict_min_version: '121.0'
+        }
+      },
+      background: {
+        scripts: [manifest.background.service_worker],
+        type: 'module'
+      }
+    };
+    delete ffManifest.side_panel;
+    manifestBytes = Buffer.from(`${JSON.stringify(ffManifest, null, 2)}\n`, 'utf8');
+  }
 
   const includeRoots = ['_locales', 'assets', 'src'];
   const zipEntries = [];
@@ -168,10 +189,10 @@ export function packageExtension() {
   // Add manifest.json at zip root
   zipEntries.push({
     zipPath: 'manifest.json',
-    data: fs.readFileSync(manifestPath)
+    data: manifestBytes
   });
 
-  // Collect files from included directories
+  // Collect files from included directories in deterministic sorted order
   for (const root of includeRoots) {
     const fullRoot = path.join(ROOT_DIR, root);
     const files = collectFiles(fullRoot, root);
@@ -182,23 +203,26 @@ export function packageExtension() {
       });
     }
   }
+  zipEntries.sort((a, b) => a.zipPath.localeCompare(b.zipPath, 'en'));
 
-  if (!fs.existsSync(DIST_DIR)) {
-    fs.mkdirSync(DIST_DIR, { recursive: true });
+  if (!fs.existsSync(outDir)) {
+    fs.mkdirSync(outDir, { recursive: true });
   }
 
   const zipBuffer = createZipBuffer(zipEntries);
-  const zipFileName = `media-harvest-v${version}.zip`;
-  const zipFilePath = path.join(DIST_DIR, zipFileName);
+  const suffix = target === 'firefox' ? '-firefox' : '';
+  const zipFileName = `media-harvest-v${version}${suffix}.zip`;
+  const zipFilePath = path.join(outDir, zipFileName);
   fs.writeFileSync(zipFilePath, zipBuffer);
 
   const hash = crypto.createHash('sha256').update(zipBuffer).digest('hex');
 
-  console.log(`Packaged ${zipEntries.length} files -> ${zipFilePath}`);
+  console.log(`Packaged ${zipEntries.length} files (${target}) -> ${zipFilePath}`);
   console.log(`Size: ${(zipBuffer.length / 1024).toFixed(1)} KB`);
   console.log(`SHA-256: ${hash}`);
 
   return {
+    target,
     version,
     zipFilePath,
     fileCount: zipEntries.length,
@@ -208,5 +232,7 @@ export function packageExtension() {
 }
 
 if (process.argv[1] && process.argv[1].endsWith('package_extension.mjs')) {
-  packageExtension();
+  const targetIdx = process.argv.indexOf('--target');
+  const target = targetIdx >= 0 && process.argv[targetIdx + 1] ? process.argv[targetIdx + 1] : 'chromium';
+  packageExtension({ target });
 }

@@ -66,7 +66,7 @@ All message type constants are defined in `src/config/constants.js` (`MESSAGE_TY
 
 ## Stream Assembly & Safety Limits
 
-- Encrypted streams (`#EXT-X-KEY` other than `METHOD=NONE`, `#EXT-X-SESSION-KEY`, or DASH `ContentProtection`) and dynamic live DASH manifests (`type="dynamic"`) are refused explicitly.
+- DRM-protected streams (`#EXT-X-KEY` with `SAMPLE-AES` / `SAMPLE-AES-CTR` / unsupported methods, `#EXT-X-SESSION-KEY` DRM, or DASH `ContentProtection`) are refused explicitly. Non-DRM HLS `AES-128` streams are decrypted via Web Crypto (`src/shared/hls_crypto.js`), and live HLS / dynamic DASH manifests are supported through DVR recording (`recordLiveHlsBlob`).
 - Only `http:` and `https:` URLs are accepted for manifest/segment fetches.
 - In-memory segment assembly in `offscreen.js` checks both declared `Content-Length` headers and running accumulated byte counts against `LIMITS.MAX_HLS_BUFFER_BYTES` (`512` MB), aborting sibling requests cleanly on overflow.
 - When an `#EXT-X-BYTERANGE` server ignores `Range` headers and returns HTTP `200`, concurrent segment probes coalesce on a single full-buffer cache entry per URL within that build instead of re-downloading the file per segment.

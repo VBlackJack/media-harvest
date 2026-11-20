@@ -59,7 +59,7 @@ test('en and fr locale files have matching valid Chrome i18n keys used by popup.
     assert.ok(fr[key].message.length > 0, `Empty fr message for ${key}`);
   }
 
-  const htmlPaths = ['src/popup/popup.html', 'src/options/options.html'];
+  const htmlPaths = ['src/popup/popup.html', 'src/options/options.html', 'src/saver/stream_saver.html'];
   for (const relHtml of htmlPaths) {
     const html = fs.readFileSync(path.join(ROOT, relHtml), 'utf8');
     const htmlKeys = [...html.matchAll(/data-i18n(?:-title|-aria|-placeholder)?="([^"]+)"/g)].map((m) => m[1]);
@@ -151,5 +151,13 @@ test('no forbidden typographic characters exist in tracked text files (recursive
   assert.ok(
     scannedFiles.includes('companion/install_companion.sh'),
     'Recursive typography guard must traverse companion Shell installer'
+  );
+  assert.ok(
+    scannedFiles.includes('docs/fr/ARCHITECTURE.md'),
+    'Recursive typography guard must traverse docs/fr/'
+  );
+  assert.ok(
+    scannedFiles.includes('docs/release-notes/v1.3.1.md'),
+    'Recursive typography guard must traverse docs/release-notes/'
   );
 });

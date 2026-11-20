@@ -98,7 +98,7 @@ Use **Check status** in Extension Options to verify the connection. Downloads tr
 
 ## Tests, CI & Distribution
 
-Zero external runtime or dev npm packages are required; syntax checking, packaging, and tests use Node.js built-in `node --check`, `node:test`, and `node:assert/strict` (`129` tests in `tests/`, also executed in CI on Node 22 via `.github/workflows/ci.yml`), plus a headless Chromium/Edge MV3 E2E runner (`npm run test:e2e`):
+Zero external runtime or dev npm packages are required; syntax checking, packaging, and tests use Node.js built-in `node --check`, `node:test`, and `node:assert/strict` (`tests/`, also executed in CI on Node 22 via `.github/workflows/ci.yml`), plus a headless Chromium/Edge MV3 E2E runner (`npm run test:e2e`):
 
 ```powershell
 npm run check

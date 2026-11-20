@@ -98,7 +98,7 @@ Le bouton **Tester la connexion** dans les Options vérifie que l'hôte répond.
 
 ## Tests, intégration continue et distribution
 
-Aucune dépendance npm externe n'est nécessaire : la vérification syntaxique, l'empaquetage et la suite de tests reposent uniquement sur `node --check`, `node:test` et `node:assert/strict` (`129` tests dans `tests/`, exécutés aussi en CI sous Node 22 via `.github/workflows/ci.yml`), ainsi qu'un test E2E MV3 sous Chromium/Edge headless (`npm run test:e2e`) :
+Aucune dépendance npm externe n'est nécessaire : la vérification syntaxique, l'empaquetage et la suite de tests reposent uniquement sur `node --check`, `node:test` et `node:assert/strict` (`tests/`, exécutés aussi en CI sous Node 22 via `.github/workflows/ci.yml`), ainsi qu'un test E2E MV3 sous Chromium/Edge headless (`npm run test:e2e`) :
 
 ```powershell
 npm run check

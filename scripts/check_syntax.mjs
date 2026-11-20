@@ -61,10 +61,11 @@ function checkPythonSyntax() {
   if (!fs.existsSync(pyScript)) {
     return true;
   }
-  for (const candidate of [['python', []], ['py', ['-3']]]) {
+  const parseExpr = "import ast, sys; ast.parse(open(sys.argv[1], encoding='utf-8').read(), filename=sys.argv[1])";
+  for (const candidate of [['python3', []], ['python', []], ['py', ['-3']]]) {
     const probe = spawnSync(candidate[0], [...candidate[1], '--version'], { stdio: 'ignore' });
     if (probe.status === 0) {
-      const res = spawnSync(candidate[0], [...candidate[1], '-m', 'py_compile', pyScript], { stdio: 'inherit' });
+      const res = spawnSync(candidate[0], [...candidate[1], '-B', '-c', parseExpr, pyScript], { stdio: 'inherit' });
       return res.status === 0;
     }
   }
