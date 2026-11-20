@@ -176,9 +176,14 @@ export function createLightboxController({
     }
   }
 
+  let lastFocusedEl = null;
+
   function openLightbox(entry) {
     if (!entry || !entry.item || !els.imageLightbox || !els.lightboxImg) {
       return;
+    }
+    if (!lastFocusedEl && doc && doc.activeElement && typeof doc.activeElement.focus === 'function') {
+      lastFocusedEl = doc.activeElement;
     }
     const { item } = entry;
     state.lightboxEntry = entry;
@@ -239,9 +244,44 @@ export function createLightboxController({
     if (els.lightboxImg) {
       els.lightboxImg.src = '';
     }
+    const returnFocus = lastFocusedEl;
+    lastFocusedEl = null;
+    if (returnFocus && typeof returnFocus.focus === 'function') {
+      returnFocus.focus();
+    }
+  }
+
+  function trapLightboxFocus(event) {
+    if (
+      !event ||
+      event.key !== 'Tab' ||
+      !els.imageLightbox ||
+      els.imageLightbox.classList.contains('hidden') ||
+      typeof els.imageLightbox.querySelectorAll !== 'function'
+    ) {
+      return;
+    }
+    const focusables = Array.from(
+      els.imageLightbox.querySelectorAll('button:not([disabled]):not(.hidden), input:not([disabled]):not(.hidden)')
+    ).filter((el) => !el.closest || !el.closest('.hidden'));
+    if (focusables.length === 0) {
+      return;
+    }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (event.shiftKey && doc.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && doc.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 
   function bindLightboxEvents(onDownloadEntry) {
+    if (els.imageLightbox) {
+      els.imageLightbox.addEventListener('keydown', trapLightboxFocus);
+    }
     if (els.lightboxCloseBtn) {
       els.lightboxCloseBtn.addEventListener('click', closeLightbox);
     }

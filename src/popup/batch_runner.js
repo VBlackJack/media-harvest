@@ -89,6 +89,7 @@ export async function runBatchDownloads({
   let failedCount = 0;
   let lastError = '';
 
+  let wasAborted = false;
   try {
     for (let i = 0; i < batchItems.length; i += 1) {
       const item = batchItems[i];
@@ -192,7 +193,7 @@ export async function runBatchDownloads({
       }
     }
   } finally {
-    const wasAborted = Boolean(state.batchAbortRequested);
+    wasAborted = Boolean(state.batchAbortRequested);
     state.activeBatchRequestId = '';
     state.batchRunning = false;
     state.batchAbortRequested = false;
@@ -202,11 +203,11 @@ export async function runBatchDownloads({
     if (typeof renderList === 'function') {
       renderList();
     }
-    return {
-      startedCount,
-      failedCount,
-      lastError,
-      aborted: wasAborted
-    };
   }
+  return {
+    startedCount,
+    failedCount,
+    lastError,
+    aborted: wasAborted
+  };
 }

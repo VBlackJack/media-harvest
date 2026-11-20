@@ -27,14 +27,24 @@ export function decodeXmlEntities(raw) {
   if (typeof raw !== 'string' || !raw.includes('&')) {
     return raw || '';
   }
-  return raw
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number.parseInt(dec, 10)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(Number.parseInt(hex, 16)));
+  const safeFromCodePoint = (value, fallback) => (
+    Number.isInteger(value) && value >= 0 && value <= 0x10ffff
+      ? String.fromCodePoint(value)
+      : fallback
+  );
+  return raw.replace(
+    /&(amp|lt|gt|quot|apos|#(\d+)|#x([0-9a-fA-F]+));/g,
+    (match, entity, dec, hex) => {
+      if (entity === 'amp') return '&';
+      if (entity === 'lt') return '<';
+      if (entity === 'gt') return '>';
+      if (entity === 'quot') return '"';
+      if (entity === 'apos') return "'";
+      if (dec) return safeFromCodePoint(Number.parseInt(dec, 10), match);
+      if (hex) return safeFromCodePoint(Number.parseInt(hex, 16), match);
+      return match;
+    }
+  );
 }
 
 /**

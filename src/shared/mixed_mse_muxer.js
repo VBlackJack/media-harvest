@@ -553,15 +553,26 @@ function extractFmp4AudioClusterGroups(fragmentBytes, info, targetTimestampScale
         : dv.getUint32(12, false);
     }
 
-    const trunFlags = (trun.data[9] << 16) | (trun.data[10] << 8) | trun.data[11];
+    const trunFlags = (trun.data[9] << 16) | (trun.data[10] << 8) | (trun.data[11]);
     const rv = new DataView(trun.data.buffer, trun.data.byteOffset, trun.data.byteLength);
     const sampleCount = rv.getUint32(12, false);
     let rPos = 16;
-    if (trunFlags & 0x000001) rPos += 4;
+    let trunDataOffset = null;
+    if ((trunFlags & 0x000001) && rPos + 4 <= trun.data.byteLength) {
+      trunDataOffset = rv.getInt32(rPos, false);
+      rPos += 4;
+    }
     if (trunFlags & 0x000004) rPos += 4;
 
     const frames = [];
-    let dataCursor = mdat.start + BOX_HEADER_SIZE;
+    const mdatPayloadStart = mdat.start + BOX_HEADER_SIZE;
+    let dataCursor = mdatPayloadStart;
+    if (typeof trunDataOffset === 'number') {
+      const candidateCursor = moof.start + trunDataOffset;
+      if (candidateCursor >= mdatPayloadStart && candidateCursor <= mdat.end) {
+        dataCursor = candidateCursor;
+      }
+    }
     let firstTsUnits = Math.round((baseDecodeTicks * 1e9) / (info.timescale * targetTimestampScale));
     let elapsedTicks = 0;
 

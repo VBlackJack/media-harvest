@@ -38,9 +38,15 @@ export function splitSvgSpriteUrl(rawUrl) {
   if (hashIdx < 0) {
     return { baseUrl: rawUrl, symbolId: '' };
   }
+  let symbolId = rawUrl.slice(hashIdx + 1).trim();
+  try {
+    symbolId = decodeURIComponent(symbolId);
+  } catch {
+    // Keep raw fragment when percent-encoding is malformed
+  }
   return {
     baseUrl: rawUrl.slice(0, hashIdx),
-    symbolId: decodeURIComponent(rawUrl.slice(hashIdx + 1).trim())
+    symbolId
   };
 }
 
@@ -60,16 +66,33 @@ export function decodeSvgDataUrl(dataUrl) {
   const header = dataUrl.slice(0, commaIdx).toLowerCase();
   const body = dataUrl.slice(commaIdx + 1);
   if (header.includes(';base64')) {
-    return typeof atob === 'function'
-      ? atob(body)
-      : Buffer.from(body, 'base64').toString('utf8');
+    try {
+      if (typeof atob === 'function') {
+        const binary = atob(body.replace(/\s+/g, ''));
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        if (typeof TextDecoder === 'function') {
+          return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+        }
+        return binary;
+      }
+      return Buffer.from(body, 'base64').toString('utf8');
+    } catch {
+      return '';
+    }
   }
-  return decodeURIComponent(body);
+  try {
+    return decodeURIComponent(body);
+  } catch {
+    return body;
+  }
 }
 
 /**
- * Strips prologs, comments, metadata blocks, inline event attributes, empty defs,
- * and redundant inter-tag whitespace from SVG markup.
+ * Strips prologs, comments, metadata blocks, active scripts/foreignObjects,
+ * inline event attributes, javascript: hrefs, empty defs, and redundant whitespace.
  * @param {string} svgXml
  * @returns {string}
  */
@@ -83,7 +106,12 @@ export function optimizeSvgMarkup(svgXml) {
     .replace(/<!DOCTYPE[\s\S]*?>/gi, '')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<metadata\b[^>]*>[\s\S]*?<\/metadata>/gi, '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<script\b[^>]*\/\s*>/gi, '')
+    .replace(/<foreignObject\b[^>]*>[\s\S]*?<\/foreignObject>/gi, '')
+    .replace(/<foreignObject\b[^>]*\/\s*>/gi, '')
     .replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/\s+(?:xlink:)?href\s*=\s*(?:"\s*(?:javascript|vbscript|data\s*:\s*text\/html)[^"]*"|'\s*(?:javascript|vbscript|data\s*:\s*text\/html)[^']*')/gi, '')
     .replace(/<defs\b[^>]*>\s*<\/defs>/gi, '')
     .replace(/>\s+</g, '><')
     .trim();

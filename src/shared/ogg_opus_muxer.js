@@ -56,7 +56,8 @@ export function buildOpusHeadPacket(
   inputSampleRate = OPUS_SAMPLE_RATE,
   preSkip = OPUS_DEFAULT_PRESKIP
 ) {
-  const ch = Math.min(8, Math.max(1, Math.trunc(Number(channels) || 2)));
+  // RFC 7845 Section 5.1.1: channel mapping family 0 supports 1 or 2 channels only
+  const ch = Math.min(2, Math.max(1, Math.trunc(Number(channels) || 2)));
   const sr = Math.max(8000, Math.trunc(Number(inputSampleRate) || OPUS_SAMPLE_RATE));
   const skip = Math.max(0, Math.min(65535, Math.trunc(Number(preSkip) || 0)));
 

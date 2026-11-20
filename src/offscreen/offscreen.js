@@ -1811,16 +1811,6 @@ async function decodeMediaPartsToAudioBlob(mediaParts, targetFormat = AUDIO_EXPO
 }
 
 /**
- * Decodes assembled or fetched media bytes via Web Audio and encodes PCM 16-bit WAV.
- * @param {Array<ArrayBuffer | Uint8Array>} mediaParts
- * @returns {Promise<Blob>}
- */
-async function decodeMediaPartsToWavBlob(mediaParts) {
-  const { blob } = await decodeMediaPartsToAudioBlob(mediaParts, AUDIO_EXPORT_FORMATS.WAV);
-  return blob;
-}
-
-/**
  * Fetches a direct HTTP media URL and decodes its audio track to PCM WAV or compact Ogg/Opus.
  * @param {{ targetUrl: string, audioFormat?: string, requestId: string }} payload
  * @returns {Promise<{ blobUrl: string, outputExtension: string, byteLength: number }>}
@@ -2025,6 +2015,9 @@ async function buildZipBlobArchive(payload) {
         } else if (isRasterImageDataUrl(targetUrl)) {
           const rasterBlob = imageDataUrlToBlob(targetUrl, 'image/png');
           const buf = await rasterBlob.arrayBuffer();
+          if (byteTracker.bytes + buf.byteLength > LIMITS.MAX_HLS_BUFFER_BYTES) {
+            throw new Error('STREAM_TOO_LARGE');
+          }
           byteTracker.bytes += buf.byteLength;
           entryData = new Uint8Array(buf);
         } else if (isHttpUrl(targetUrl)) {

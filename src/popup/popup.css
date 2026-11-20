@@ -60,7 +60,8 @@ body {
 }
 
 button:focus-visible,
-select:focus-visible {
+select:focus-visible,
+input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -73,6 +74,7 @@ select:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
@@ -269,6 +271,7 @@ select:focus-visible {
 
 .toolbar-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -311,7 +314,7 @@ select:focus-visible {
 
 .media-list.is-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
   align-content: start;
   gap: 8px;
 }
@@ -738,9 +741,9 @@ select:focus-visible {
 }
 
 .action-capture.is-recording {
-  border-color: #dc2626;
-  color: #dc2626;
-  background: rgba(220, 38, 38, 0.12);
+  border-color: #f87171;
+  color: #fca5a5;
+  background: rgba(220, 38, 38, 0.18);
 }
 
 .lightbox-img {
@@ -756,15 +759,15 @@ select:focus-visible {
   flex-wrap: wrap;
   gap: 6px;
   padding: 6px 8px;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--surface-alt);
+  background: var(--surface);
 }
 
 .lightbox-palette-label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--muted);
 }
 
 .lightbox-palette-swatches {
@@ -781,12 +784,17 @@ select:focus-visible {
   align-items: center;
   gap: 4px;
   padding: 2px 6px;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--surface);
   font-size: 10px;
   font-family: monospace;
   cursor: pointer;
+}
+
+.lightbox-swatch-item:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .lightbox-swatch-dot {

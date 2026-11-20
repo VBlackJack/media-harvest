@@ -592,9 +592,11 @@
       }
       inlineUseSymbols(clone);
       if (typeof clone.querySelectorAll === 'function') {
-        for (const scriptNode of (clone.querySelectorAll('script') || [])) {
-          if (typeof scriptNode.remove === 'function') {
-            scriptNode.remove();
+        for (const tagName of ['script', 'foreignObject']) {
+          for (const unsafeNode of (clone.querySelectorAll(tagName) || [])) {
+            if (typeof unsafeNode.remove === 'function') {
+              unsafeNode.remove();
+            }
           }
         }
       }
@@ -609,7 +611,12 @@
       if (!markup && typeof clone.outerHTML === 'string') {
         markup = clone.outerHTML;
       }
-      return markup.replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '').trim();
+      return markup
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+        .replace(/<foreignObject\b[^>]*>[\s\S]*?<\/foreignObject>/gi, '')
+        .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+        .replace(/\s+(?:xlink:)?href\s*=\s*(?:"\s*(?:javascript|vbscript|data\s*:\s*text\/html)[^"]*"|'\s*(?:javascript|vbscript|data\s*:\s*text\/html)[^']*')/gi, '')
+        .trim();
     };
 
     for (const svg of svgCandidates) {

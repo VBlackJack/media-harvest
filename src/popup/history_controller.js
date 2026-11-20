@@ -15,6 +15,7 @@
  */
 
 import { MESSAGE_TYPES } from '../config/constants.js';
+import { localizeError } from './popup_helpers.js';
 
 /**
  * Extracts compact display basename from a saved download filename path.
@@ -91,7 +92,7 @@ export function createHistoryController({ doc, els, sendMessage, translateFn, se
       statusEl.className = `history-item-status ${entry.ok ? 'is-done' : 'is-error'}`;
       statusEl.textContent = entry.ok
         ? translateFn('popup_history_status_done')
-        : `${translateFn('popup_history_status_error')}${entry.error ? `: ${entry.error}` : ''}`;
+        : `${translateFn('popup_history_status_error')}${entry.error ? `: ${localizeError(entry.error, translateFn)}` : ''}`;
 
       info.appendChild(nameEl);
       info.appendChild(statusEl);
@@ -119,12 +120,12 @@ export function createHistoryController({ doc, els, sendMessage, translateFn, se
               }
             });
             if (!response || !response.ok) {
-              setStatusBanner((response && response.error) || translateFn('popup_error_download_failed'), true);
+              setStatusBanner(localizeError(response && response.error, translateFn), true);
             } else {
               setStatusBanner(translateFn('popup_status_download_started'));
             }
           } catch (err) {
-            setStatusBanner((err && err.message) || translateFn('popup_error_download_failed'), true);
+            setStatusBanner(localizeError(err && err.message, translateFn), true);
           } finally {
             await refreshHistory();
             retryBtn.disabled = false;

@@ -629,6 +629,7 @@ export function createPopupController(deps = {}) {
     state.searchQuery = '';
     state.minImagePx = 0;
     state.imageExtFilter = '';
+    state.imageOrientation = IMAGE_ORIENTATION_FILTERS.ALL;
     if (els.searchInput) {
       els.searchInput.value = '';
     }
@@ -1097,7 +1098,11 @@ export function createPopupController(deps = {}) {
         return;
       }
       const hasQuickImageFilters = (state.filter === 'images' || state.filter === 'svg')
-        && (state.minImagePx > 0 || state.imageExtFilter !== '');
+        && (
+          state.minImagePx > 0 ||
+          state.imageExtFilter !== '' ||
+          state.imageOrientation !== IMAGE_ORIENTATION_FILTERS.ALL
+        );
       const isFilteredEmpty = state.items.length > 0
         && (state.filter !== 'all' || state.searchQuery.trim() !== '' || hasQuickImageFilters);
       const empty = existingEmpty || doc.createElement('div');
@@ -1164,23 +1169,32 @@ export function createPopupController(deps = {}) {
       return entry;
     });
 
-    for (let i = 0; i < orderedEntries.length; i += 1) {
-      const entry = orderedEntries[i];
-      if (!entry.card.isConnected) {
-        let anchor = null;
-        for (let j = i + 1; j < orderedEntries.length; j += 1) {
-          if (orderedEntries[j].card.isConnected) {
-            anchor = orderedEntries[j].card;
-            break;
+    const hasConnected = orderedEntries.some((entry) => entry.card.isConnected);
+    if (!hasConnected && typeof doc.createDocumentFragment === 'function') {
+      const fragment = doc.createDocumentFragment();
+      for (const entry of orderedEntries) {
+        fragment.appendChild(entry.card);
+      }
+      els.mediaList.appendChild(fragment);
+    } else {
+      for (let i = 0; i < orderedEntries.length; i += 1) {
+        const entry = orderedEntries[i];
+        if (!entry.card.isConnected) {
+          let anchor = null;
+          for (let j = i + 1; j < orderedEntries.length; j += 1) {
+            if (orderedEntries[j].card.isConnected) {
+              anchor = orderedEntries[j].card;
+              break;
+            }
           }
-        }
-        els.mediaList.insertBefore(entry.card, anchor);
-      } else if (state.sortBy !== SORT_MODES.DEFAULT) {
-        const anchor = i + 1 < orderedEntries.length && orderedEntries[i + 1].card.isConnected
-          ? orderedEntries[i + 1].card
-          : null;
-        if (entry.card.nextSibling !== anchor) {
           els.mediaList.insertBefore(entry.card, anchor);
+        } else if (state.sortBy !== SORT_MODES.DEFAULT) {
+          const anchor = i + 1 < orderedEntries.length && orderedEntries[i + 1].card.isConnected
+            ? orderedEntries[i + 1].card
+            : null;
+          if (entry.card.nextSibling !== anchor) {
+            els.mediaList.insertBefore(entry.card, anchor);
+          }
         }
       }
     }

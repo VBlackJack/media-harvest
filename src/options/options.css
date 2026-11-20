@@ -165,7 +165,7 @@ input:focus-visible {
 }
 
 .btn-primary.is-dirty {
-  background: #0284c7;
+  background: #0369a1;
   box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.5);
 }
 

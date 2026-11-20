@@ -282,11 +282,11 @@
       return;
     }
     for (const video of document.querySelectorAll('video')) {
-      if (!isEligibleVideo(video)) {
-        continue;
-      }
       const host = resolveOverlayHost(video);
       if (!host || host.hasAttribute(SITE_OVERLAY_CONFIG.BUTTON_ATTR)) {
+        continue;
+      }
+      if (!isEligibleVideo(video)) {
         continue;
       }
       host.setAttribute(SITE_OVERLAY_CONFIG.BUTTON_ATTR, 'true');

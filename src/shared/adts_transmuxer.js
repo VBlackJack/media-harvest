@@ -51,7 +51,7 @@ export function skipLeadingId3v2Tags(bytes, offset = 0) {
       (bytes[cursor + 9] & 0x7f);
     const hasFooter = (bytes[cursor + 5] & 0x10) !== 0;
     const totalTagSize = 10 + syncsafeSize + (hasFooter ? 10 : 0);
-    if (totalTagSize <= 10 || cursor + totalTagSize > bytes.byteLength) {
+    if (totalTagSize < 10 || cursor + totalTagSize > bytes.byteLength) {
       break;
     }
     cursor += totalTagSize;
@@ -132,7 +132,8 @@ export function parseAdtsFrames(input) {
       frameLen < headerLen ||
       cursor + frameLen > bytes.byteLength
     ) {
-      break;
+      cursor += 1;
+      continue;
     }
 
     if (rawFrames.length === 0) {
@@ -280,7 +281,8 @@ function buildAacFmp4InitSegment({ objectType, freqIndex, sampleRate, channelCon
   mp4aView.setUint16(6, 1, false); // data_reference_index
   mp4aView.setUint16(16, channelConfig, false);
   mp4aView.setUint16(18, 16, false); // sample size
-  mp4aView.setUint32(24, (sampleRate & 0xffff) << 16, false);
+  // ISO 14496-12: 16.16 fixed-point field stores 0 when sampleRate > 65535 (carried in esds ASC)
+  mp4aView.setUint32(24, sampleRate <= 0xffff ? (sampleRate << 16) : 0, false);
   const mp4a = buildIsoBox('mp4a', [mp4aHeader, esds]);
 
   return buildSoundFmp4InitSegment({

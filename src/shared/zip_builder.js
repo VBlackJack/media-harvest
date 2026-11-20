@@ -167,88 +167,94 @@ async function maybeDeflateEntry(rawBytes, safeName) {
  * @param {Date} timestamp
  * @returns {Uint8Array}
  */
-function assembleZipArchive(prepared, timestamp) {
+function assembleZipArchiveParts(prepared, timestamp) {
   const { dosTime, dosDate } = encodeDosDateTime(timestamp);
 
-  let localTotal = 0;
-  let centralTotal = 0;
-  for (const item of prepared) {
-    localTotal += 30 + item.nameBytes.length + item.compressedSize;
-    centralTotal += 46 + item.nameBytes.length;
-  }
-
-  const out = new Uint8Array(localTotal + centralTotal + 22);
-  const view = new DataView(out.buffer);
-
   let localOffset = 0;
+  let centralTotal = 0;
+  const parts = [];
   const centralRecords = [];
+
   for (const item of prepared) {
     const entryStart = localOffset;
-    view.setUint32(localOffset, ZIP_LOCAL_HEADER_SIG, true);
-    view.setUint16(localOffset + 4, ZIP_VERSION_EXTRACT, true);
-    view.setUint16(localOffset + 6, ZIP_UTF8_FLAG, true);
-    view.setUint16(localOffset + 8, item.method, true);
-    view.setUint16(localOffset + 10, dosTime, true);
-    view.setUint16(localOffset + 12, dosDate, true);
-    view.setUint32(localOffset + 14, item.crc, true);
-    view.setUint32(localOffset + 18, item.compressedSize, true);
-    view.setUint32(localOffset + 22, item.uncompressedSize, true);
-    view.setUint16(localOffset + 26, item.nameBytes.length, true);
-    view.setUint16(localOffset + 28, 0, true);
-    out.set(item.nameBytes, localOffset + 30);
-    out.set(item.payloadBytes, localOffset + 30 + item.nameBytes.length);
-    localOffset += 30 + item.nameBytes.length + item.compressedSize;
+    const localHeader = new Uint8Array(30 + item.nameBytes.length);
+    const view = new DataView(localHeader.buffer);
+    view.setUint32(0, ZIP_LOCAL_HEADER_SIG, true);
+    view.setUint16(4, ZIP_VERSION_EXTRACT, true);
+    view.setUint16(6, ZIP_UTF8_FLAG, true);
+    view.setUint16(8, item.method, true);
+    view.setUint16(10, dosTime, true);
+    view.setUint16(12, dosDate, true);
+    view.setUint32(14, item.crc, true);
+    view.setUint32(18, item.compressedSize, true);
+    view.setUint32(22, item.uncompressedSize, true);
+    view.setUint16(26, item.nameBytes.length, true);
+    view.setUint16(28, 0, true);
+    localHeader.set(item.nameBytes, 30);
 
+    parts.push(localHeader);
+    if (item.payloadBytes.byteLength > 0) {
+      parts.push(item.payloadBytes);
+    }
+    localOffset += localHeader.byteLength + item.compressedSize;
+    centralTotal += 46 + item.nameBytes.length;
     centralRecords.push({ item, entryStart });
   }
 
-  const centralOffset = localOffset;
-  let centralPtr = centralOffset;
+  const tail = new Uint8Array(centralTotal + 22);
+  const tailView = new DataView(tail.buffer);
+  let centralPtr = 0;
   for (const { item, entryStart } of centralRecords) {
-    view.setUint32(centralPtr, ZIP_CENTRAL_HEADER_SIG, true);
-    view.setUint16(centralPtr + 4, ZIP_VERSION_MADE_BY, true);
-    view.setUint16(centralPtr + 6, ZIP_VERSION_EXTRACT, true);
-    view.setUint16(centralPtr + 8, ZIP_UTF8_FLAG, true);
-    view.setUint16(centralPtr + 10, item.method, true);
-    view.setUint16(centralPtr + 12, dosTime, true);
-    view.setUint16(centralPtr + 14, dosDate, true);
-    view.setUint32(centralPtr + 16, item.crc, true);
-    view.setUint32(centralPtr + 20, item.compressedSize, true);
-    view.setUint32(centralPtr + 24, item.uncompressedSize, true);
-    view.setUint16(centralPtr + 28, item.nameBytes.length, true);
-    view.setUint16(centralPtr + 30, 0, true);
-    view.setUint16(centralPtr + 32, 0, true);
-    view.setUint16(centralPtr + 34, 0, true);
-    view.setUint16(centralPtr + 36, 0, true);
-    view.setUint32(centralPtr + 38, 0, true);
-    view.setUint32(centralPtr + 42, entryStart, true);
-    out.set(item.nameBytes, centralPtr + 46);
+    tailView.setUint32(centralPtr, ZIP_CENTRAL_HEADER_SIG, true);
+    tailView.setUint16(centralPtr + 4, ZIP_VERSION_MADE_BY, true);
+    tailView.setUint16(centralPtr + 6, ZIP_VERSION_EXTRACT, true);
+    tailView.setUint16(centralPtr + 8, ZIP_UTF8_FLAG, true);
+    tailView.setUint16(centralPtr + 10, item.method, true);
+    tailView.setUint16(centralPtr + 12, dosTime, true);
+    tailView.setUint16(centralPtr + 14, dosDate, true);
+    tailView.setUint32(centralPtr + 16, item.crc, true);
+    tailView.setUint32(centralPtr + 20, item.compressedSize, true);
+    tailView.setUint32(centralPtr + 24, item.uncompressedSize, true);
+    tailView.setUint16(centralPtr + 28, item.nameBytes.length, true);
+    tailView.setUint16(centralPtr + 30, 0, true);
+    tailView.setUint16(centralPtr + 32, 0, true);
+    tailView.setUint16(centralPtr + 34, 0, true);
+    tailView.setUint16(centralPtr + 36, 0, true);
+    tailView.setUint32(centralPtr + 38, 0, true);
+    tailView.setUint32(centralPtr + 42, entryStart, true);
+    tail.set(item.nameBytes, centralPtr + 46);
     centralPtr += 46 + item.nameBytes.length;
   }
 
-  view.setUint32(centralPtr, ZIP_EOCD_SIG, true);
-  view.setUint16(centralPtr + 4, 0, true);
-  view.setUint16(centralPtr + 6, 0, true);
-  view.setUint16(centralPtr + 8, centralRecords.length, true);
-  view.setUint16(centralPtr + 10, centralRecords.length, true);
-  view.setUint32(centralPtr + 12, centralTotal, true);
-  view.setUint32(centralPtr + 16, centralOffset, true);
-  view.setUint16(centralPtr + 20, 0, true);
+  tailView.setUint32(centralPtr, ZIP_EOCD_SIG, true);
+  tailView.setUint16(centralPtr + 4, 0, true);
+  tailView.setUint16(centralPtr + 6, 0, true);
+  tailView.setUint16(centralPtr + 8, centralRecords.length, true);
+  tailView.setUint16(centralPtr + 10, centralRecords.length, true);
+  tailView.setUint32(centralPtr + 12, centralTotal, true);
+  tailView.setUint32(centralPtr + 16, localOffset, true);
+  tailView.setUint16(centralPtr + 20, 0, true);
+  parts.push(tail);
 
+  return parts;
+}
+
+function assembleZipArchive(prepared, timestamp) {
+  const parts = assembleZipArchiveParts(prepared, timestamp);
+  const totalBytes = parts.reduce((sum, p) => sum + p.byteLength, 0);
+  const out = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
   return out;
 }
 
-/**
- * Builds an uncompressed STORE (method 0) ZIP archive byte buffer from named binary entries.
- * @param {Array<{ name: string, data: Uint8Array | ArrayBuffer | ArrayBufferView }>} rawEntries
- * @param {Date} [timestamp=new Date()]
- * @returns {Uint8Array}
- */
-export function buildZipUint8Array(rawEntries, timestamp = new Date()) {
+function prepareStoreEntries(rawEntries) {
   const entries = Array.isArray(rawEntries) ? rawEntries : [];
   const usedNames = new Set();
-
-  const prepared = entries.map((entry, idx) => {
+  return entries.map((entry, idx) => {
     const safeName = sanitizeZipEntryName(entry && entry.name, idx, usedNames);
     const nameBytes = utf8Encoder.encode(safeName);
     const dataBytes = toUint8Array(entry && entry.data);
@@ -261,21 +267,12 @@ export function buildZipUint8Array(rawEntries, timestamp = new Date()) {
       method: ZIP_METHOD_STORE
     };
   });
-
-  return assembleZipArchive(prepared, timestamp);
 }
 
-/**
- * Builds a ZIP archive byte buffer using selective DEFLATE compression for text/SVG entries.
- * @param {Array<{ name: string, data: Uint8Array | ArrayBuffer | ArrayBufferView }>} rawEntries
- * @param {Date} [timestamp=new Date()]
- * @returns {Promise<Uint8Array>}
- */
-export async function buildZipUint8ArrayAsync(rawEntries, timestamp = new Date()) {
+async function prepareDeflateEntries(rawEntries) {
   const entries = Array.isArray(rawEntries) ? rawEntries : [];
   const usedNames = new Set();
-
-  const prepared = await Promise.all(
+  return Promise.all(
     entries.map(async (entry, idx) => {
       const safeName = sanitizeZipEntryName(entry && entry.name, idx, usedNames);
       const nameBytes = utf8Encoder.encode(safeName);
@@ -291,26 +288,49 @@ export async function buildZipUint8ArrayAsync(rawEntries, timestamp = new Date()
       };
     })
   );
-
-  return assembleZipArchive(prepared, timestamp);
 }
 
 /**
- * Builds an application/zip Blob synchronously using STORE (method 0).
+ * Builds an uncompressed STORE (method 0) ZIP archive byte buffer from named binary entries.
+ * @param {Array<{ name: string, data: Uint8Array | ArrayBuffer | ArrayBufferView }>} rawEntries
+ * @param {Date} [timestamp=new Date()]
+ * @returns {Uint8Array}
+ */
+export function buildZipUint8Array(rawEntries, timestamp = new Date()) {
+  return assembleZipArchive(prepareStoreEntries(rawEntries), timestamp);
+}
+
+/**
+ * Builds a ZIP archive byte buffer using selective DEFLATE compression for text/SVG entries.
+ * @param {Array<{ name: string, data: Uint8Array | ArrayBuffer | ArrayBufferView }>} rawEntries
+ * @param {Date} [timestamp=new Date()]
+ * @returns {Promise<Uint8Array>}
+ */
+export async function buildZipUint8ArrayAsync(rawEntries, timestamp = new Date()) {
+  return assembleZipArchive(await prepareDeflateEntries(rawEntries), timestamp);
+}
+
+/**
+ * Builds an application/zip Blob synchronously using STORE (method 0) without contiguous copying.
  * @param {Array<{ name: string, data: Uint8Array | ArrayBuffer | ArrayBufferView }>} entries
+ * @param {Date} [timestamp=new Date()]
  * @returns {Blob}
  */
-export function buildZipBlob(entries) {
-  return new Blob([buildZipUint8Array(entries)], { type: 'application/zip' });
+export function buildZipBlob(entries, timestamp = new Date()) {
+  return new Blob(assembleZipArchiveParts(prepareStoreEntries(entries), timestamp), {
+    type: 'application/zip'
+  });
 }
 
 /**
- * Builds an application/zip Blob asynchronously with selective DEFLATE compression.
+ * Builds an application/zip Blob asynchronously with selective DEFLATE compression without contiguous copying.
  * @param {Array<{ name: string, data: Uint8Array | ArrayBuffer | ArrayBufferView }>} entries
+ * @param {Date} [timestamp=new Date()]
  * @returns {Promise<Blob>}
  */
-export async function buildZipBlobAsync(entries) {
-  return new Blob([await buildZipUint8ArrayAsync(entries)], { type: 'application/zip' });
+export async function buildZipBlobAsync(entries, timestamp = new Date()) {
+  const parts = assembleZipArchiveParts(await prepareDeflateEntries(entries), timestamp);
+  return new Blob(parts, { type: 'application/zip' });
 }
 
 /**

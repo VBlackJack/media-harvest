@@ -50,16 +50,65 @@ import { isHttpUrl } from '../shared/media_classifier.js';
 import { clampInteger } from '../shared/settings.js';
 
 const RETRYABLE_HTTP_STATUS = new Set([408, 429]);
+const MAX_PENDING_DUAL_PAIRS = 8;
+
+async function waitRetryBackoff(attempt, signal) {
+  const baseMs = LIMITS.SEGMENT_RETRY_DELAY_MS || 250;
+  const delayMs = baseMs * (2 ** attempt);
+  await new Promise((resolve, reject) => {
+    if (signal && signal.aborted) {
+      reject(new Error('DOWNLOAD_CANCELLED'));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error('DOWNLOAD_CANCELLED'));
+    };
+    const timer = setTimeout(() => {
+      if (signal && typeof signal.removeEventListener === 'function') {
+        signal.removeEventListener('abort', onAbort);
+      }
+      resolve();
+    }, delayMs);
+    if (signal && typeof signal.addEventListener === 'function') {
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+}
 
 async function fetchWithRetry(fetchFn, url, options = {}) {
   const maxRetries = LIMITS.SEGMENT_FETCH_RETRIES || 2;
+  const timeoutMs = LIMITS.FETCH_TIMEOUT_MS || 20000;
   let lastError = null;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     if (options.signal && options.signal.aborted) {
       throw new Error('DOWNLOAD_CANCELLED');
     }
+    if (attempt > 0) {
+      await waitRetryBackoff(attempt - 1, options.signal);
+    }
+    const attemptController = typeof AbortController === 'function' ? new AbortController() : null;
+    let timedOut = false;
+    let timer = null;
+    const onOuterAbort = () => {
+      if (attemptController) {
+        attemptController.abort();
+      }
+    };
+    if (attemptController) {
+      if (options.signal && typeof options.signal.addEventListener === 'function') {
+        options.signal.addEventListener('abort', onOuterAbort, { once: true });
+      }
+      timer = setTimeout(() => {
+        timedOut = true;
+        attemptController.abort();
+      }, timeoutMs);
+    }
     try {
-      const response = await fetchFn(url, options);
+      const fetchOpts = attemptController
+        ? { ...options, signal: attemptController.signal }
+        : options;
+      const response = await fetchFn(url, fetchOpts);
       if (response.ok) {
         return response;
       }
@@ -68,13 +117,25 @@ async function fetchWithRetry(fetchFn, url, options = {}) {
       }
       lastError = new Error(`HTTP_${response.status}`);
     } catch (err) {
-      if (err && (err.name === 'AbortError' || err.message === 'DOWNLOAD_CANCELLED')) {
+      if (options.signal && options.signal.aborted) {
         throw new Error('DOWNLOAD_CANCELLED');
       }
-      if (err && typeof err.message === 'string' && /^HTTP_4\d\d$/.test(err.message)) {
+      if (timedOut) {
+        lastError = new Error('FETCH_TIMEOUT');
+      } else if (err && (err.name === 'AbortError' || err.message === 'DOWNLOAD_CANCELLED')) {
+        throw new Error('DOWNLOAD_CANCELLED');
+      } else if (err && typeof err.message === 'string' && /^HTTP_4\d\d$/.test(err.message)) {
         throw err;
+      } else {
+        lastError = err;
       }
-      lastError = err;
+    } finally {
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
+      if (options.signal && typeof options.signal.removeEventListener === 'function') {
+        options.signal.removeEventListener('abort', onOuterAbort);
+      }
     }
   }
   throw lastError || new Error('DOWNLOAD_FAILED');
@@ -500,10 +561,16 @@ async function streamDualMixedToWritable(mediaPlaylist, audioPlaylist, writable,
       pendingPairs.push({ vFrags, aFrags, ready: true });
       if (wroteHeader) {
         await flushHeaderAndPending();
+      } else if (pendingPairs.length > MAX_PENDING_DUAL_PAIRS) {
+        pendingPairs.length = 0;
+        throw new Error('HLS_EMPTY');
       }
       pairBuffers[i] = null;
       onProgress(completedCount, totalUnits, totalBytesWritten, true);
     }
+  }
+  if (!wroteHeader || totalBytesWritten === 0) {
+    throw new Error('HLS_EMPTY');
   }
   return totalBytesWritten;
 }

@@ -141,10 +141,15 @@ export function normalizeMimeType(mimeHeader) {
  * @returns {boolean}
  */
 export function isHttpUrl(rawUrl) {
-  if (typeof rawUrl !== 'string') {
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) {
     return false;
   }
-  return rawUrl.startsWith('https://') || rawUrl.startsWith('http://');
+  try {
+    const parsed = new URL(rawUrl.trim());
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  } catch {
+    return false;
+  }
 }
 
 /**

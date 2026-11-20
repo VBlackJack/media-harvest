@@ -738,10 +738,11 @@ export function createMediaCard(item, context = {}) {
   const row = doc.createElement('div');
   row.className = 'media-row';
 
+  const displayName = item.suggestedFilename || item.url || '';
   const selectCheckbox = doc.createElement('input');
   selectCheckbox.type = 'checkbox';
   selectCheckbox.className = 'card-select';
-  selectCheckbox.setAttribute('aria-label', translate('popup_card_select_aria'));
+  selectCheckbox.setAttribute('aria-label', `${translate('popup_card_select_aria')}: ${displayName}`);
   selectCheckbox.checked = Boolean(context.isSelected && context.isSelected(item.url));
   selectCheckbox.disabled = Boolean(item.isBlocked);
   row.appendChild(selectCheckbox);
@@ -750,12 +751,12 @@ export function createMediaCard(item, context = {}) {
   if (canPreview) {
     thumbEl.type = 'button';
     thumbEl.className = 'thumb thumb-btn is-clickable';
-    thumbEl.setAttribute('aria-label', translate('popup_action_preview'));
+    thumbEl.setAttribute('aria-label', `${translate('popup_action_preview')}: ${displayName}`);
     thumbEl.setAttribute('aria-expanded', 'false');
   } else if (canLightbox) {
     thumbEl.type = 'button';
     thumbEl.className = 'thumb thumb-btn is-clickable';
-    thumbEl.setAttribute('aria-label', translate('popup_action_lightbox_open'));
+    thumbEl.setAttribute('aria-label', `${translate('popup_action_lightbox_open')}: ${displayName}`);
   } else {
     thumbEl.className = 'thumb';
   }
