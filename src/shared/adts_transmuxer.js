@@ -382,16 +382,27 @@ function buildAacFmp4Fragment(rawFrames, sequenceNumber, baseDecodeTimeSamples) 
 /**
  * Transmuxes raw ADTS AAC segments (with optional leading ID3v2 tags) into single-track fMP4 parts.
  * @param {Array<ArrayBuffer | Uint8Array>} adtsSegments
- * @returns {{ initSegment: Uint8Array, dataChunks: Array<Uint8Array>, parts: Array<Uint8Array> }}
+ * @param {{ baseMediaDecodeTime?: number, startSequenceNumber?: number }} [options={}]
+ * @returns {{
+ *   initSegment: Uint8Array,
+ *   dataChunks: Array<Uint8Array>,
+ *   parts: Array<Uint8Array>,
+ *   nextMediaDecodeTime: number,
+ *   nextSequenceNumber: number
+ * }}
  */
-export function transmuxAdtsSegmentsToFmp4Parts(adtsSegments) {
+export function transmuxAdtsSegmentsToFmp4Parts(adtsSegments, options = {}) {
   if (!Array.isArray(adtsSegments) || adtsSegments.length === 0) {
     throw new Error('TRANSMUX_EMPTY');
   }
 
   let streamParams = null;
-  let seqNum = 1;
-  let sampleTime = 0;
+  let seqNum = Number.isFinite(options.startSequenceNumber) && options.startSequenceNumber > 0
+    ? Math.trunc(options.startSequenceNumber)
+    : 1;
+  let sampleTime = Number.isFinite(options.baseMediaDecodeTime) && options.baseMediaDecodeTime >= 0
+    ? Math.trunc(options.baseMediaDecodeTime)
+    : 0;
   const dataChunks = [];
 
   for (const seg of adtsSegments) {
@@ -416,6 +427,8 @@ export function transmuxAdtsSegmentsToFmp4Parts(adtsSegments) {
   return {
     initSegment,
     dataChunks,
-    parts: [initSegment, ...dataChunks]
+    parts: [initSegment, ...dataChunks],
+    nextMediaDecodeTime: sampleTime,
+    nextSequenceNumber: seqNum
   };
 }

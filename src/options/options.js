@@ -42,6 +42,7 @@ export function collectOptionElements(doc) {
     enableMseCapture: doc.getElementById('enableMseCapture'),
     enableCompanionCookies: doc.getElementById('enableCompanionCookies'),
     promptSaveAs: doc.getElementById('promptSaveAs'),
+    disabledOverlayHosts: doc.getElementById('disabledOverlayHosts'),
     checkCompanionBtn: doc.getElementById('checkCompanionBtn'),
     companionStatus: doc.getElementById('companionStatus'),
     resetBtn: doc.getElementById('resetBtn'),
@@ -114,7 +115,14 @@ export function createOptionsController(deps = {}) {
       return false;
     }
     const current = readFormValues();
-    const isDirty = Object.keys(baselineSettings).some((k) => baselineSettings[k] !== current[k]);
+    const isDirty = Object.keys(baselineSettings).some((k) => {
+      const a = baselineSettings[k];
+      const b = current[k];
+      if (Array.isArray(a) || Array.isArray(b)) {
+        return JSON.stringify(a) !== JSON.stringify(b);
+      }
+      return a !== b;
+    });
     if (els.dirtyIndicator) {
       els.dirtyIndicator.classList.toggle('hidden', !isDirty);
     }
@@ -258,6 +266,11 @@ export function createOptionsController(deps = {}) {
     if (els.promptSaveAs) {
       els.promptSaveAs.checked = Boolean(settings.promptSaveAs);
     }
+    if (els.disabledOverlayHosts) {
+      els.disabledOverlayHosts.value = Array.isArray(settings.disabledOverlayHosts)
+        ? settings.disabledOverlayHosts.join(', ')
+        : '';
+    }
     baselineSettings = { ...settings };
     checkDirtyState();
   }
@@ -284,7 +297,8 @@ export function createOptionsController(deps = {}) {
       enableGenericVideoOverlay: els.enableGenericVideoOverlay ? els.enableGenericVideoOverlay.checked : true,
       enableMseCapture: els.enableMseCapture ? els.enableMseCapture.checked : true,
       enableCompanionCookies: Boolean(els.enableCompanionCookies && els.enableCompanionCookies.checked),
-      promptSaveAs: Boolean(els.promptSaveAs && els.promptSaveAs.checked)
+      promptSaveAs: Boolean(els.promptSaveAs && els.promptSaveAs.checked),
+      disabledOverlayHosts: els.disabledOverlayHosts ? els.disabledOverlayHosts.value : []
     });
   }
 

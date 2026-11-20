@@ -47,6 +47,36 @@ export function clampInteger(raw, fallback, min, max) {
 }
 
 /**
+ * Normalizes a list or comma/newline-separated string of excluded overlay hostnames.
+ * @param {unknown} raw
+ * @returns {string[]}
+ */
+export function normalizeDisabledOverlayHosts(raw) {
+  const entries = Array.isArray(raw)
+    ? raw
+    : (typeof raw === 'string' ? raw.split(/[\s,;]+/) : []);
+  const seen = new Set();
+  const out = [];
+  for (const item of entries) {
+    if (typeof item !== 'string') {
+      continue;
+    }
+    const clean = item.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0].replace(/^www\./, '');
+    if (!clean || !/^[a-z0-9.-]+$/.test(clean) || !clean.includes('.')) {
+      continue;
+    }
+    if (!seen.has(clean)) {
+      seen.add(clean);
+      out.push(clean);
+      if (out.length >= LIMITS.MAX_DISABLED_OVERLAY_HOSTS) {
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Validates and normalizes user settings against defaults and safe bounds.
  * @param {object | null | undefined} raw
  * @returns {object}
@@ -116,7 +146,8 @@ export function normalizeSettings(raw) {
       : DEFAULT_SETTINGS.enableCompanionCookies,
     promptSaveAs: typeof src.promptSaveAs === 'boolean'
       ? src.promptSaveAs
-      : DEFAULT_SETTINGS.promptSaveAs
+      : DEFAULT_SETTINGS.promptSaveAs,
+    disabledOverlayHosts: normalizeDisabledOverlayHosts(src.disabledOverlayHosts)
   };
 }
 

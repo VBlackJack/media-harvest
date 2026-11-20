@@ -997,6 +997,18 @@
     "message": "SRT",
     "description": "Libellé d'action pour télécharger les sous-titres convertis au format SRT."
   },
+  "options_disabled_overlay_hosts_label": {
+    "message": "Domaines exclus des boutons intégrés",
+    "description": "Libellé pour les domaines séparés par virgule où les overlays sont désactivés."
+  },
+  "options_disabled_overlay_hosts_placeholder": {
+    "message": "youtube.com, vimeo.com",
+    "description": "Exemple de domaines exclus séparés par virgule."
+  },
+  "options_disabled_overlay_hosts_hint": {
+    "message": "Noms de domaine séparés par virgule où les boutons intégrés n'apparaîtront pas (sous-domaines inclus).",
+    "description": "Texte d'aide expliquant l'exclusion des overlays par domaine."
+  },
   "options_jpg_quality_label": {
     "message": "Qualité d'export JPG (%)",
     "description": "Libellé pour le pourcentage de compression JPG."

@@ -390,7 +390,13 @@
           return;
         }
         const settings = stored && stored[OVERLAY_CONFIG.SETTINGS_KEY];
-        if (settings && settings.enableXOverlay === false) {
+        const currentHost = typeof window !== 'undefined' && window.location ? window.location.hostname : '';
+        const hostExcluded = Boolean(
+          OVERLAY_COMMON &&
+          typeof OVERLAY_COMMON.isHostDisabledInSettings === 'function' &&
+          OVERLAY_COMMON.isHostDisabledInSettings(currentHost, settings)
+        );
+        if ((settings && settings.enableXOverlay === false) || hostExcluded) {
           disableOverlay();
           return;
         }

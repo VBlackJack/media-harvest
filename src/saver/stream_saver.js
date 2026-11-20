@@ -512,6 +512,8 @@ async function streamDualMixedToWritable(mediaPlaylist, audioPlaylist, writable,
       let vFrags = [];
       let aFrags = [];
       let convertedAudioInit = null;
+  let audioDecodeTimeTicks = 0;
+  let audioSeqNum = 1;
 
       if (vBuf) {
         if (hasVideoInit) {
@@ -528,15 +530,29 @@ async function streamDualMixedToWritable(mediaPlaylist, audioPlaylist, writable,
 
       if (aBuf) {
         if (audioIsWebmOpus && audioInitBytes) {
-          const opusFmp4 = transmuxWebmOpusToFmp4Parts([audioInitBytes, aBuf]);
-          convertedAudioInit = opusFmp4.initSegment;
+          const opusFmp4 = transmuxWebmOpusToFmp4Parts([audioInitBytes, aBuf], {
+            baseMediaDecodeTime: audioDecodeTimeTicks,
+            startSequenceNumber: audioSeqNum
+          });
+          if (!convertedAudioInit) {
+            convertedAudioInit = opusFmp4.initSegment;
+          }
           aFrags = opusFmp4.dataChunks;
+          audioDecodeTimeTicks = opusFmp4.nextMediaDecodeTime;
+          audioSeqNum = opusFmp4.nextSequenceNumber;
         } else if (hasAudioInit) {
           aFrags = [new Uint8Array(aBuf)];
         } else if (looksLikeAdtsAudio(aBuf)) {
-          const adtsParts = transmuxAdtsSegmentsToFmp4Parts([aBuf]);
-          convertedAudioInit = adtsParts.initSegment;
+          const adtsParts = transmuxAdtsSegmentsToFmp4Parts([aBuf], {
+            baseMediaDecodeTime: audioDecodeTimeTicks,
+            startSequenceNumber: audioSeqNum
+          });
+          if (!convertedAudioInit) {
+            convertedAudioInit = adtsParts.initSegment;
+          }
           aFrags = adtsParts.dataChunks;
+          audioDecodeTimeTicks = adtsParts.nextMediaDecodeTime;
+          audioSeqNum = adtsParts.nextSequenceNumber;
         } else if (audioCollector) {
           const pushed = audioCollector.pushSegment(aBuf, idx > 0 && audioDiscontinuities.has(idx), idx === audioSegReqs.length - 1);
           if (!audioInitBytes && pushed.initSegment) {

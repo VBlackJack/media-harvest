@@ -263,7 +263,7 @@ function extractClusterOpusPackets(clusterBytes) {
  * @param {ArrayBuffer | Uint8Array | Array<ArrayBuffer | Uint8Array>} webmAudioInput
  * @returns {{ initSegment: Uint8Array, dataChunks: Array<Uint8Array>, parts: Array<Uint8Array> }}
  */
-export function transmuxWebmOpusToFmp4Parts(webmAudioInput) {
+export function transmuxWebmOpusToFmp4Parts(webmAudioInput, options = {}) {
   const parsed = splitWebmInitAndClusters(webmAudioInput);
   if (parsed.clusters.length === 0) {
     throw new Error('EMPTY_WEBM_CLUSTERS');
@@ -304,8 +304,12 @@ export function transmuxWebmOpusToFmp4Parts(webmAudioInput) {
   });
 
   const dataChunks = [];
-  let seqNum = 1;
-  let runningSamples = 0;
+  let seqNum = Number.isFinite(options.startSequenceNumber) && options.startSequenceNumber > 0
+    ? Math.trunc(options.startSequenceNumber)
+    : 1;
+  let runningSamples = Number.isFinite(options.baseMediaDecodeTime) && options.baseMediaDecodeTime >= 0
+    ? Math.trunc(options.baseMediaDecodeTime)
+    : 0;
 
   for (const cluster of parsed.clusters) {
     const extracted = extractClusterOpusPackets(cluster);
@@ -336,7 +340,9 @@ export function transmuxWebmOpusToFmp4Parts(webmAudioInput) {
   return {
     initSegment,
     dataChunks,
-    parts: [initSegment, ...dataChunks]
+    parts: [initSegment, ...dataChunks],
+    nextMediaDecodeTime: runningSamples,
+    nextSequenceNumber: seqNum
   };
 }
 

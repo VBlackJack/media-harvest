@@ -81,6 +81,7 @@ import {
   getDownloadHistory,
   recordDownloadHistory
 } from './download_history.js';
+import { createBackgroundBatchQueue } from './batch_queue.js';
 import {
   applyFilenameTemplate,
   isFolderFilenameTemplate,
@@ -91,6 +92,11 @@ const tabWriteQueues = new Map();
 const activeBuilds = new Map();
 let offscreenLifecycleQueue = Promise.resolve();
 let activeOffscreenBuilds = 0;
+
+const backgroundBatchQueue = createBackgroundBatchQueue({
+  executeItem: (item) => handleDownloadMedia(item),
+  cancelRequest: (reqId) => cancelDownloadBuild(reqId)
+});
 
 pruneOrphanedSessionDnrRules().catch(() => {});
 
@@ -1922,6 +1928,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.START_BATCH_QUEUE) {
+    backgroundBatchQueue.start(message.items)
+      .then((res) => sendResponse(res))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.CANCEL_BATCH_QUEUE) {
+    backgroundBatchQueue.cancel()
+      .then((snapshot) => sendResponse({ ok: true, ...snapshot }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === MESSAGE_TYPES.GET_BATCH_QUEUE_STATE) {
+    sendResponse({ ok: true, ...backgroundBatchQueue.getSnapshot() });
+    return false;
   }
 
   if (message.type === MESSAGE_TYPES.DOWNLOAD_TWEET_VIDEO) {

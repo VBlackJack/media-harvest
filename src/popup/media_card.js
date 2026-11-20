@@ -341,6 +341,9 @@ function populateSubtitleSelector(entry, meta, doc, translate) {
   subtitleSelect.selectedIndex = defaultIdx >= 0 ? defaultIdx : 0;
   subtitleSelect.classList.remove('hidden');
   subtitleBtn.classList.remove('hidden');
+  if (entry.subtitleSrtBtn) {
+    entry.subtitleSrtBtn.classList.remove('hidden');
+  }
 }
 
 /**
@@ -869,11 +872,23 @@ export function createMediaCard(item, context = {}) {
     subtitleBtn.textContent = translate('popup_action_download_subtitle');
     subtitleBtn.addEventListener('click', () => {
       if (context.onDownloadSubtitle && subtitleSelect.value) {
-        context.onDownloadSubtitle(entry, subtitleSelect.value);
+        context.onDownloadSubtitle(entry, subtitleSelect.value, 'vtt');
       }
     });
     controls.appendChild(subtitleBtn);
     entry.subtitleBtn = subtitleBtn;
+
+    const subtitleSrtBtn = doc.createElement('button');
+    subtitleSrtBtn.type = 'button';
+    subtitleSrtBtn.className = 'action-chip subtitle-srt-btn hidden';
+    subtitleSrtBtn.textContent = translate('popup_action_subtitle_srt');
+    subtitleSrtBtn.addEventListener('click', () => {
+      if (context.onDownloadSubtitle && subtitleSelect.value) {
+        context.onDownloadSubtitle(entry, subtitleSelect.value, 'srt');
+      }
+    });
+    controls.appendChild(subtitleSrtBtn);
+    entry.subtitleSrtBtn = subtitleSrtBtn;
 
     const retryInspectBtn = doc.createElement('button');
     retryInspectBtn.type = 'button';
@@ -903,6 +918,19 @@ export function createMediaCard(item, context = {}) {
   }
 
   const itemExt = (item.ext || '').toLowerCase();
+  if (item.type === MEDIA_TYPES.SUBTITLE && !item.isStream && (itemExt === 'vtt' || !itemExt)) {
+    const directSrtBtn = doc.createElement('button');
+    directSrtBtn.type = 'button';
+    directSrtBtn.className = 'action-chip subtitle-srt-btn';
+    directSrtBtn.textContent = translate('popup_action_subtitle_srt');
+    directSrtBtn.addEventListener('click', () => {
+      if (context.onDownloadSubtitle) {
+        context.onDownloadSubtitle(entry, item.url, 'srt');
+      }
+    });
+    controls.appendChild(directSrtBtn);
+    entry.subtitleSrtBtn = directSrtBtn;
+  }
   if (item.type === MEDIA_TYPES.IMAGE && !item.isMse) {
     if (itemExt === DEFAULT_FILENAMES.SVG_EXT || isSvgDataUrl(item.url)) {
       const copySvgBtn = createCopySvgButton(entry, context.onStatus || (() => {}), doc, translate, context);

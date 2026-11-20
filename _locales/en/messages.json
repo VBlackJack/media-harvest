@@ -997,6 +997,18 @@
     "message": "SRT",
     "description": "Action label to download subtitles converted to SubRip SRT format."
   },
+  "options_disabled_overlay_hosts_label": {
+    "message": "Excluded overlay domains",
+    "description": "Options label for comma-separated domains where inline overlays are disabled."
+  },
+  "options_disabled_overlay_hosts_placeholder": {
+    "message": "youtube.com, vimeo.com",
+    "description": "Placeholder showing example comma-separated domain exclusions."
+  },
+  "options_disabled_overlay_hosts_hint": {
+    "message": "Comma-separated hostnames where inline download buttons will never appear (subdomains included).",
+    "description": "Helper hint explaining per-domain overlay exclusion behavior."
+  },
   "options_jpg_quality_label": {
     "message": "JPG export quality (%)",
     "description": "Options label for JPG compression quality percentage."

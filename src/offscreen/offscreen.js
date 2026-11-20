@@ -79,6 +79,7 @@ import {
   rasterizeImageToBlob,
   resolveSvgSourceText
 } from './image_processor.js';
+import { createOpfsSpool } from './opfs_spool.js';
 import {
   startTabCaptureRecording as runTabCaptureRecording,
   stopTabCaptureSessions as runStopTabCaptureSessions
@@ -1181,20 +1182,27 @@ async function recordLiveHlsBlob(payload) {
       audioBuffers
     );
 
-    const blob = new Blob(outputParts, { type: mimeType });
+    const spool = await createOpfsSpool(requestId, mimeType);
+    for (const part of outputParts) {
+      await spool.append(part);
+    }
     videoBuffers.length = 0;
     audioBuffers.length = 0;
     outputParts.length = 0;
     fullBodyCache.clear();
     keyCacheByUrl.clear();
 
+    const { blob, byteLength, cleanup } = await spool.finalize();
     const blobUrl = URL.createObjectURL(blob);
     activeBlobUrls.add(blobUrl);
+    if (typeof cleanup === 'function') {
+      blobCleanupByUrl.set(blobUrl, cleanup);
+    }
 
     return {
       blobUrl,
       outputExtension,
-      byteLength: blob.size
+      byteLength
     };
   } finally {
     fullBodyCache.clear();

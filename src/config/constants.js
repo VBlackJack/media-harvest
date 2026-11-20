@@ -217,6 +217,7 @@ export const LIMITS = Object.freeze({
   DNR_RULE_BASE_ID: 9000,
   DNR_MAX_RULE_OFFSET: 4000,
   OFFSCREEN_QUERY_TIMEOUT_MS: 1500,
+  MAX_DISABLED_OVERLAY_HOSTS: 100,
   MAX_DOWNLOAD_HISTORY: 15
 });
 
@@ -276,7 +277,11 @@ export const MESSAGE_TYPES = Object.freeze({
   CANCEL_COMPANION_DOWNLOAD: 'CANCEL_COMPANION_DOWNLOAD',
   COMPANION_PROGRESS: 'COMPANION_PROGRESS',
   GET_DOWNLOAD_HISTORY: 'GET_DOWNLOAD_HISTORY',
-  CLEAR_DOWNLOAD_HISTORY: 'CLEAR_DOWNLOAD_HISTORY'
+  CLEAR_DOWNLOAD_HISTORY: 'CLEAR_DOWNLOAD_HISTORY',
+  START_BATCH_QUEUE: 'START_BATCH_QUEUE',
+  CANCEL_BATCH_QUEUE: 'CANCEL_BATCH_QUEUE',
+  GET_BATCH_QUEUE_STATE: 'GET_BATCH_QUEUE_STATE',
+  BATCH_QUEUE_PROGRESS: 'BATCH_QUEUE_PROGRESS'
 });
 
 export const QUALITY_PREFERENCES = Object.freeze({
@@ -343,7 +348,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   enableGenericVideoOverlay: true,
   enableMseCapture: true,
   enableCompanionCookies: false,
-  promptSaveAs: false
+  promptSaveAs: false,
+  disabledOverlayHosts: Object.freeze([])
 });
 
 export const MSE_CONSTANTS = Object.freeze({

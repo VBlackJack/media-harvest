@@ -223,12 +223,38 @@
     };
   }
 
+  /**
+   * Checks whether a page hostname is listed in user_settings.disabledOverlayHosts.
+   * Matches exact hostname or subdomains (e.g. "youtube.com" matches "www.youtube.com").
+   * @param {string} hostname
+   * @param {object | null | undefined} settings
+   * @returns {boolean}
+   */
+  function isHostDisabledInSettings(hostname, settings) {
+    const list = settings && Array.isArray(settings.disabledOverlayHosts) ? settings.disabledOverlayHosts : [];
+    if (list.length === 0 || typeof hostname !== 'string' || !hostname) {
+      return false;
+    }
+    const cleanHost = hostname.trim().toLowerCase().replace(/^www\./, '');
+    for (const rawRule of list) {
+      if (typeof rawRule !== 'string') {
+        continue;
+      }
+      const rule = rawRule.trim().toLowerCase().replace(/^www\./, '');
+      if (rule && (cleanHost === rule || cleanHost.endsWith(`.${rule}`))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   globalThis.__mediaHarvestOverlayCommon = Object.freeze({
     msg,
     formatOverlayError,
     createDownloadIcon,
     createChevronIcon,
     bindQualityMenu,
-    closeAllMenus
+    closeAllMenus,
+    isHostDisabledInSettings
   });
 })();

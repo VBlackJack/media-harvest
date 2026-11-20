@@ -782,14 +782,18 @@ export function createPopupController(deps = {}) {
    * @param {object} entry
    * @param {string} subtitleUrl
    */
-  async function triggerSubtitleDownload(entry, subtitleUrl) {
+  async function triggerSubtitleDownload(entry, subtitleUrl, subtitleFormat = 'vtt') {
     if (!subtitleUrl) {
       return;
     }
+    const fmt = subtitleFormat === 'srt' ? 'srt' : 'vtt';
     const baseName = (entry.item.suggestedFilename || DEFAULT_FILENAMES.BASE).replace(/\.[^./\\]+$/, '');
     const stem = `${baseName}_subtitles`;
     if (entry.subtitleBtn) {
       entry.subtitleBtn.disabled = true;
+    }
+    if (entry.subtitleSrtBtn) {
+      entry.subtitleSrtBtn.disabled = true;
     }
     setStatusBanner(translateFn('popup_status_hls_preparing'));
     try {
@@ -797,6 +801,7 @@ export function createPopupController(deps = {}) {
         type: MESSAGE_TYPES.DOWNLOAD_HLS_SUBTITLE,
         payload: {
           subtitleUrl,
+          subtitleFormat: fmt,
           filename: stem,
           allowFolders: isFolderFilenameTemplate(state.settings.filenameTemplate),
           saveAs: Boolean(state.settings.promptSaveAs)
@@ -811,6 +816,9 @@ export function createPopupController(deps = {}) {
     } finally {
       if (entry.subtitleBtn) {
         entry.subtitleBtn.disabled = false;
+      }
+      if (entry.subtitleSrtBtn) {
+        entry.subtitleSrtBtn.disabled = false;
       }
     }
   }

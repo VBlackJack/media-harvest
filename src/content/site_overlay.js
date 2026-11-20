@@ -144,6 +144,14 @@
     if (!adapter) {
       return false;
     }
+    const currentHost = typeof window !== 'undefined' && window.location ? window.location.hostname : '';
+    if (
+      OVERLAY_COMMON &&
+      typeof OVERLAY_COMMON.isHostDisabledInSettings === 'function' &&
+      OVERLAY_COMMON.isHostDisabledInSettings(currentHost, settings)
+    ) {
+      return false;
+    }
     const key = adapter.isGeneric
       ? SITE_OVERLAY_CONFIG.GENERIC_SETTING_KEY
       : SITE_OVERLAY_CONFIG.SOCIAL_SETTING_KEY;
