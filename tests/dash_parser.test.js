@@ -168,3 +168,51 @@ test('parseDashManifest supports duration-based SegmentTemplate, r=-1 repeat, an
   const repeatParsed = parseDashManifest(openRepeatMpd, 'https://cdn.example.com/vod/rep.mpd');
   assert.equal(repeatParsed.variants[0].segments.length, 3);
 });
+
+test('parseDashManifest concatenates multi-Period segments and supports SegmentBase representations', () => {
+  const multiPeriodXml = `
+    <MPD type="static">
+      <Period duration="PT10S">
+        <AdaptationSet mimeType="video/mp4">
+          <Representation id="v1" width="1280" height="720" bandwidth="2000000">
+            <SegmentList>
+              <SegmentURL media="p1_seg1.m4s" />
+            </SegmentList>
+          </Representation>
+        </AdaptationSet>
+      </Period>
+      <Period duration="PT15S">
+        <AdaptationSet mimeType="video/mp4">
+          <Representation id="v1_p2" width="1280" height="720" bandwidth="2000000">
+            <SegmentList>
+              <SegmentURL media="p2_seg1.m4s" />
+            </SegmentList>
+          </Representation>
+        </AdaptationSet>
+      </Period>
+    </MPD>
+  `;
+  const multi = parseDashManifest(multiPeriodXml, 'https://cdn.example.com/dash/multi.mpd');
+  assert.equal(multi.variants.length, 1);
+  assert.equal(multi.variants[0].segments.length, 2);
+  assert.equal(multi.totalDurationSec, 25);
+
+  const segBaseXml = `
+    <MPD type="static" mediaPresentationDuration="PT30S">
+      <Period>
+        <AdaptationSet mimeType="video/mp4">
+          <BaseURL>https://cdn.example.com/dash/video_ondemand.mp4</BaseURL>
+          <Representation id="sb1" width="1920" height="1080" bandwidth="4500000">
+            <SegmentBase indexRange="800-1600">
+              <Initialization range="0-799" />
+            </SegmentBase>
+          </Representation>
+        </AdaptationSet>
+      </Period>
+    </MPD>
+  `;
+  const segBase = parseDashManifest(segBaseXml, 'https://cdn.example.com/dash/sb.mpd');
+  assert.equal(segBase.variants.length, 1);
+  assert.equal(segBase.variants[0].isProgressive, true);
+  assert.equal(segBase.variants[0].segments[0].url, 'https://cdn.example.com/dash/video_ondemand.mp4');
+});

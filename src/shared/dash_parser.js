@@ -398,6 +398,20 @@ function buildRepresentationSegments(repNode, repBaseUrl, segConfig, periodDurat
     return buildSegmentListEntries(list, repBaseUrl);
   }
 
+  const segmentBase = findChildren(repNode, 'SegmentBase')[0];
+  if (segmentBase && repBaseUrl) {
+    const initNode = findChildren(segmentBase, 'Initialization')[0];
+    return {
+      initSegmentUrl: null,
+      segments: [{ url: repBaseUrl, duration: periodDurationSec, byteRange: null }],
+      isProgressive: true,
+      segmentBase: {
+        indexRange: segmentBase.attrs.indexRange || '',
+        initRange: (initNode && initNode.attrs && initNode.attrs.range) || ''
+      }
+    };
+  }
+
   const ownBase = findChildren(repNode, 'BaseURL')[0];
   if (ownBase && ownBase.text && repBaseUrl) {
     return {
@@ -533,20 +547,66 @@ export function parseDashManifest(xmlText, baseUrl) {
     }
   };
 
-  for (const period of findChildren(mpd, 'Period')) {
-    const periodBaseUrl = resolveElementBaseUrl(period, mpdBaseUrl);
-    const periodDurationSec = parseIsoDurationSec(period.attrs.duration) || mpdDurationSec;
-    if (!totalDurationSec && periodDurationSec) {
-      totalDurationSec = periodDurationSec;
-    }
-    const periodConfig = mergeSegmentConfigs(period, mpdConfig.template, mpdConfig.list);
+  const periods = findChildren(mpd, 'Period');
+  let summedPeriodDurationSec = 0;
 
-    for (const adaptation of findChildren(period, 'AdaptationSet')) {
-      collectAdaptationTracks(
-        adaptation,
-        { baseUrl, periodBaseUrl, periodConfig, periodDurationSec },
-        { variants, audioTracks, markProtection }
-      );
+  if (periods.length <= 1) {
+    for (const period of periods) {
+      const periodBaseUrl = resolveElementBaseUrl(period, mpdBaseUrl);
+      const periodDurationSec = parseIsoDurationSec(period.attrs.duration) || mpdDurationSec;
+      if (!totalDurationSec && periodDurationSec) {
+        totalDurationSec = periodDurationSec;
+      }
+      const periodConfig = mergeSegmentConfigs(period, mpdConfig.template, mpdConfig.list);
+      for (const adaptation of findChildren(period, 'AdaptationSet')) {
+        collectAdaptationTracks(
+          adaptation,
+          { baseUrl, periodBaseUrl, periodConfig, periodDurationSec },
+          { variants, audioTracks, markProtection }
+        );
+      }
+    }
+  } else {
+    const mergedVideoByKey = new Map();
+    const mergedAudioByKey = new Map();
+    for (const period of periods) {
+      const periodBaseUrl = resolveElementBaseUrl(period, mpdBaseUrl);
+      const periodDurationSec = parseIsoDurationSec(period.attrs.duration) || 0;
+      summedPeriodDurationSec += periodDurationSec;
+      const periodConfig = mergeSegmentConfigs(period, mpdConfig.template, mpdConfig.list);
+      const periodOut = { variants: [], audioTracks: [], markProtection };
+      for (const adaptation of findChildren(period, 'AdaptationSet')) {
+        collectAdaptationTracks(
+          adaptation,
+          { baseUrl, periodBaseUrl, periodConfig, periodDurationSec },
+          periodOut
+        );
+      }
+      for (const v of periodOut.variants) {
+        const key = `${v.mimeType}|${v.width}x${v.height}`;
+        const existing = mergedVideoByKey.get(key);
+        if (existing) {
+          existing.segments.push(...v.segments);
+          existing.isProgressive = false;
+        } else {
+          mergedVideoByKey.set(key, { ...v, segments: [...v.segments] });
+        }
+      }
+      for (const a of periodOut.audioTracks) {
+        const key = `${a.mimeType}|${a.language || ''}`;
+        const existing = mergedAudioByKey.get(key);
+        if (existing) {
+          existing.segments.push(...a.segments);
+          existing.isProgressive = false;
+        } else {
+          mergedAudioByKey.set(key, { ...a, segments: [...a.segments] });
+        }
+      }
+    }
+    variants.push(...mergedVideoByKey.values());
+    audioTracks.push(...mergedAudioByKey.values());
+    if (!totalDurationSec && summedPeriodDurationSec > 0) {
+      totalDurationSec = summedPeriodDurationSec;
     }
   }
 

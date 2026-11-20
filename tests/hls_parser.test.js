@@ -186,3 +186,37 @@ test('parseHlsPlaylist parses SUBTITLES tracks and detects live/event playlists 
   assert.equal(discontVod.segments[1].discontinuity, true);
   assert.equal(discontVod.discontinuityCount, 1);
 });
+
+test('parseHlsPlaylist tracks per-segment EXT-X-MAP changes and LL-HLS EXT-X-PART segments', () => {
+  const mapSwitch = parseHlsPlaylist(
+    [
+      '#EXTM3U',
+      '#EXT-X-MAP:URI="init_a.mp4"',
+      '#EXTINF:4.0,',
+      'seg_a.m4s',
+      '#EXT-X-DISCONTINUITY',
+      '#EXT-X-MAP:URI="init_b.mp4"',
+      '#EXTINF:4.0,',
+      'seg_b.m4s',
+      '#EXT-X-ENDLIST'
+    ].join('\n'),
+    'https://cdn.example.com/hls/switch.m3u8'
+  );
+  assert.equal(mapSwitch.initSegmentUrl, 'https://cdn.example.com/hls/init_a.mp4');
+  assert.equal(mapSwitch.segments[0].initSegmentUrl, 'https://cdn.example.com/hls/init_a.mp4');
+  assert.equal(mapSwitch.segments[1].initSegmentUrl, 'https://cdn.example.com/hls/init_b.mp4');
+
+  const llHls = parseHlsPlaylist(
+    [
+      '#EXTM3U',
+      '#EXT-X-MAP:URI="init.mp4"',
+      '#EXT-X-PART:DURATION=0.5,URI="part1.m4s"',
+      '#EXT-X-PART:DURATION=0.5,URI="part2.m4s"'
+    ].join('\n'),
+    'https://cdn.example.com/hls/ll.m3u8'
+  );
+  assert.equal(llHls.isLowLatency, true);
+  assert.equal(llHls.segments.length, 2);
+  assert.equal(llHls.segments[0].url, 'https://cdn.example.com/hls/part1.m4s');
+  assert.equal(llHls.segments[1].isPartial, true);
+});

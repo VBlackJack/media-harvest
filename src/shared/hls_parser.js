@@ -225,6 +225,9 @@ export function parseHlsPlaylist(text, baseUrl) {
 
   let initSegmentUrl = null;
   let initSegmentByteRange = null;
+  let currentMapUrl = null;
+  let currentMapByteRange = null;
+  const partSegments = [];
   let pendingStreamAttrs = null;
   let pendingSegmentDuration = 0;
   let pendingByteRangeSpec = null;
@@ -320,8 +323,38 @@ export function parseHlsPlaylist(text, baseUrl) {
       const attrs = parseHlsAttributes(line.slice(HLS_TAGS.MAP.length));
       const resolvedMapUrl = attrs.URI ? resolveHlsUrl(attrs.URI, baseUrl) : '';
       if (resolvedMapUrl) {
-        initSegmentUrl = resolvedMapUrl;
-        initSegmentByteRange = attrs.BYTERANGE ? parseByteRangeSpec(attrs.BYTERANGE, 0) : null;
+        currentMapUrl = resolvedMapUrl;
+        currentMapByteRange = attrs.BYTERANGE ? parseByteRangeSpec(attrs.BYTERANGE, 0) : null;
+        if (!initSegmentUrl) {
+          initSegmentUrl = currentMapUrl;
+          initSegmentByteRange = currentMapByteRange;
+        }
+      }
+      continue;
+    }
+
+    if (line.startsWith(HLS_TAGS.PART)) {
+      const attrs = parseHlsAttributes(line.slice(HLS_TAGS.PART.length));
+      const partUrl = attrs.URI ? resolveHlsUrl(attrs.URI, baseUrl) : '';
+      if (partUrl) {
+        const partByteRange = attrs.BYTERANGE
+          ? parseByteRangeSpec(attrs.BYTERANGE, prevByteRangeEndByUrl.get(partUrl) ?? 0)
+          : null;
+        if (partByteRange) {
+          prevByteRangeEndByUrl.set(partUrl, partByteRange.offset + partByteRange.length);
+        }
+        partSegments.push({
+          url: partUrl,
+          duration: Number.parseFloat(attrs.DURATION) || 0,
+          byteRange: partByteRange,
+          sequenceNumber: mediaSequence + partSegments.length,
+          discontinuity: pendingDiscontinuity,
+          initSegmentUrl: currentMapUrl,
+          initSegmentByteRange: currentMapByteRange,
+          key: currentKey ? { ...currentKey } : null,
+          isPartial: true
+        });
+        pendingDiscontinuity = false;
       }
       continue;
     }
@@ -368,24 +401,28 @@ export function parseHlsPlaylist(text, baseUrl) {
       byteRange,
       sequenceNumber: mediaSequence + segments.length,
       discontinuity: pendingDiscontinuity,
+      initSegmentUrl: currentMapUrl,
+      initSegmentByteRange: currentMapByteRange,
       key: currentKey ? { ...currentKey } : null
     });
     pendingSegmentDuration = 0;
     pendingDiscontinuity = false;
   }
 
+  const effectiveSegments = segments.length > 0 ? segments : partSegments;
   variants.sort((a, b) => (b.width * b.height - a.width * a.height) || (b.bandwidth - a.bandwidth));
 
-  const totalDurationSec = Math.round(segments.reduce((acc, seg) => acc + (seg.duration || 0), 0));
+  const totalDurationSec = Math.round(effectiveSegments.reduce((acc, seg) => acc + (seg.duration || 0), 0));
   const isMaster = variants.length > 0;
   const isDynamic = !isMaster &&
-    segments.length > 0 &&
+    effectiveSegments.length > 0 &&
     !hasEndList &&
     (playlistType === HLS_PLAYLIST_TYPES.EVENT || playlistType !== HLS_PLAYLIST_TYPES.VOD);
   return {
     format: 'hls',
     isMaster,
     isDynamic,
+    isLowLatency: segments.length === 0 && partSegments.length > 0,
     hasEndList,
     playlistType,
     mediaSequence,
@@ -400,7 +437,7 @@ export function parseHlsPlaylist(text, baseUrl) {
     subtitles,
     initSegmentUrl,
     initSegmentByteRange,
-    segments,
+    segments: effectiveSegments,
     totalDurationSec,
     outputExtension: initSegmentUrl ? DEFAULT_FILENAMES.HLS_FMP4_EXT : DEFAULT_FILENAMES.HLS_TS_EXT
   };
