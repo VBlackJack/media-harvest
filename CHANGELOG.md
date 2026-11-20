@@ -2,6 +2,19 @@
 
 All notable engineering changes to Media Harvest are documented in this file.
 
+## [1.5.0] - 2026-11-20
+
+### Added
+- Service Worker background batch download queue (`src/background/batch_queue.js`, `START_BATCH_QUEUE`, `CANCEL_BATCH_QUEUE`, `GET_BATCH_QUEUE_STATE`, `BATCH_QUEUE_PROGRESS`) so batch downloads survive popup dismissal with live cancellation and progress snapshots.
+- Per-domain inline overlay exclusion list (`disabledOverlayHosts` in `src/shared/settings.js`, `src/options/options.html`, `src/options/options.js`, and `isHostDisabledInSettings` in `src/content/overlay_common.js`) supporting exact host and subdomain matching across X and site overlays.
+- One-click SubRip (`SRT`) subtitle download buttons (`popup_action_subtitle_srt`) on stream subtitle rows and direct `.vtt` subtitle cards (`src/popup/media_card.js`, `src/popup/popup.js`).
+- Tag-triggered GitHub Actions release workflow (`.github/workflows/release.yml`) and Firefox MV3 packaging step (`npm run package:firefox`) in `.github/workflows/ci.yml`.
+
+### Improved
+- Wired `createOpfsSpool` (`src/offscreen/opfs_spool.js`) into Live DVR (`recordLiveHlsBlob` in `src/offscreen/offscreen.js`) with automatic OPFS temp-file cleanup on Blob URL revocation.
+- Added continuous `baseMediaDecodeTime` and `startSequenceNumber` tracking in `transmuxAdtsSegmentsToFmp4Parts` (`src/shared/adts_transmuxer.js`) and `transmuxWebmOpusToFmp4Parts` (`src/shared/mixed_mse_muxer.js`), wired into `streamDualMixedToWritable` (`src/saver/stream_saver.js`) so incremental direct-to-disk audio segments preserve monotonic `tfdt` timestamps.
+- Expanded automated suite to `171/171` passing tests across `87` syntax-checked files.
+
 ## [1.4.0] - 2026-11-20
 
 ### Added
