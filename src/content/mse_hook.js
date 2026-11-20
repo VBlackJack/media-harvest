@@ -18,11 +18,19 @@
   const MSE_HOOK_CONFIG = Object.freeze({
     WINDOW_SOURCE: 'media-harvest-mse',
     URL_PREFIX: 'mse://',
+    MIN_BUFFER_CAP_BYTES: 1 * 1024 * 1024,
     DEFAULT_BUFFER_CAP_BYTES: 150 * 1024 * 1024,
+    MAX_BUFFER_CAP_BYTES: 256 * 1024 * 1024,
+    GLOBAL_BUFFER_CAP_BYTES: 300 * 1024 * 1024,
+    MAX_ACTIVE_STREAMS: 16,
+    MAX_PENDING_OUTBOUND: 16,
     DEFAULT_SLICE_BYTES: 2 * 1024 * 1024,
     NOTIFY_THROTTLE_MS: 600,
     MIN_NOTIFY_BYTES: 32 * 1024,
     EVENTS: Object.freeze({
+      HANDSHAKE_INIT: 'MSE_HANDSHAKE_INIT',
+      HANDSHAKE_READY: 'MSE_HANDSHAKE_READY',
+      HANDSHAKE_ACK: 'MSE_HANDSHAKE_ACK',
       CONFIG: 'MSE_CONFIG',
       STREAM_UPDATED: 'MSE_STREAM_UPDATED',
       EXPORT_REQUEST: 'MSE_EXPORT_REQUEST',
@@ -43,17 +51,94 @@
 
   window.__mediaHarvestMseHookInstalled = true;
 
+  // Capture native messaging primitives at document_start before page scripts can wrap them
+  const nativeAddEventListener = typeof window.addEventListener === 'function'
+    ? window.addEventListener.bind(window)
+    : null;
+  const nativeRemoveEventListener = typeof window.removeEventListener === 'function'
+    ? window.removeEventListener.bind(window)
+    : null;
+  const nativeWindowPostMessage = typeof window.postMessage === 'function'
+    ? window.postMessage.bind(window)
+    : null;
+  const nativeStopImmediatePropagation = typeof Event !== 'undefined' && Event.prototype
+    && typeof Event.prototype.stopImmediatePropagation === 'function'
+    ? Event.prototype.stopImmediatePropagation
+    : null;
+  const nativePortPostMessage = typeof MessagePort !== 'undefined' && MessagePort.prototype
+    && typeof MessagePort.prototype.postMessage === 'function'
+    ? MessagePort.prototype.postMessage
+    : null;
+
   let captureEnabled = true;
   let bufferCapBytes = MSE_HOOK_CONFIG.DEFAULT_BUFFER_CAP_BYTES;
   let streamCounter = 0;
+  let globalCapturedBytes = 0;
+  let bridgePort = null;
+  const pendingOutbound = [];
 
   const mediaSourceMap = new WeakMap();
   const sourceBufferMeta = new WeakMap();
   const streamsById = new Map();
 
+  function releaseStreamEntry(entry) {
+    if (!entry) {
+      return;
+    }
+    if (entry.notifyTimer) {
+      clearTimeout(entry.notifyTimer);
+      entry.notifyTimer = null;
+    }
+    globalCapturedBytes = Math.max(0, globalCapturedBytes - entry.totalBytes);
+    entry.videoChunks.length = 0;
+    entry.audioChunks.length = 0;
+    entry.videoBytes = 0;
+    entry.audioBytes = 0;
+    entry.totalBytes = 0;
+    streamsById.delete(entry.mseId);
+  }
+
+  function evictOldestStream(excludeMseId = '') {
+    let candidate = null;
+    for (const entry of streamsById.values()) {
+      if (entry.mseId === excludeMseId) {
+        continue;
+      }
+      const isStale = Boolean(entry.revokedAt) || (entry.mediaSource && entry.mediaSource.readyState === 'closed');
+      if (!candidate) {
+        candidate = { entry, isStale };
+        continue;
+      }
+      if (isStale && !candidate.isStale) {
+        candidate = { entry, isStale };
+      } else if (isStale === candidate.isStale && entry.lastActivityAt < candidate.entry.lastActivityAt) {
+        candidate = { entry, isStale };
+      }
+    }
+    if (!candidate) {
+      return false;
+    }
+    releaseStreamEntry(candidate.entry);
+    return true;
+  }
+
+  function enforceGlobalStreamCaps(incomingBytes, currentMseId) {
+    while (streamsById.size > MSE_HOOK_CONFIG.MAX_ACTIVE_STREAMS) {
+      if (!evictOldestStream(currentMseId)) {
+        break;
+      }
+    }
+    while (globalCapturedBytes + incomingBytes > MSE_HOOK_CONFIG.GLOBAL_BUFFER_CAP_BYTES && streamsById.size > 1) {
+      if (!evictOldestStream(currentMseId)) {
+        break;
+      }
+    }
+  }
+
   function getOrCreateStreamEntry(mediaSource) {
     let entry = mediaSourceMap.get(mediaSource);
-    if (entry) {
+    if (entry && streamsById.has(entry.mseId)) {
+      entry.lastActivityAt = Date.now();
       return entry;
     }
     streamCounter += 1;
@@ -74,24 +159,51 @@
       hasAudioFragment: false,
       lastNotifiedBytes: 0,
       lastNotifiedAt: 0,
+      lastActivityAt: Date.now(),
+      revokedAt: 0,
       notifyTimer: null,
       capped: false
     };
     mediaSourceMap.set(mediaSource, entry);
     streamsById.set(mseId, entry);
+    enforceGlobalStreamCaps(0, mseId);
     return entry;
   }
 
-  function postHookMessage(kind, payload) {
+  function sendViaPort(port, message, transferList) {
     try {
-      window.postMessage({
-        source: MSE_HOOK_CONFIG.WINDOW_SOURCE,
-        kind,
-        payload
-      }, '*');
+      if (nativePortPostMessage && typeof port.postMessage === 'function') {
+        if (transferList && transferList.length > 0) {
+          nativePortPostMessage.call(port, message, transferList);
+        } else {
+          nativePortPostMessage.call(port, message);
+        }
+      } else if (typeof port.postMessage === 'function') {
+        if (transferList && transferList.length > 0) {
+          port.postMessage(message, transferList);
+        } else {
+          port.postMessage(message);
+        }
+      }
     } catch {
-      // Ignore postMessage failures on restricted contexts
+      // Ignore postMessage failures on detached ports
     }
+  }
+
+  function postHookMessage(kind, payload, transferList = null) {
+    const message = {
+      source: MSE_HOOK_CONFIG.WINDOW_SOURCE,
+      kind,
+      payload
+    };
+    if (bridgePort) {
+      sendViaPort(bridgePort, message, transferList);
+      return;
+    }
+    if (pendingOutbound.length >= MSE_HOOK_CONFIG.MAX_PENDING_OUTBOUND) {
+      pendingOutbound.shift();
+    }
+    pendingOutbound.push({ message, transferList });
   }
 
   function emitStreamSummary(entry, force = false) {
@@ -206,11 +318,13 @@
 
   function resetTrackBuffer(entry, trackKind) {
     if (trackKind === 'audio') {
+      globalCapturedBytes = Math.max(0, globalCapturedBytes - entry.audioBytes);
       entry.totalBytes = Math.max(0, entry.totalBytes - entry.audioBytes);
       entry.audioChunks.length = 0;
       entry.audioBytes = 0;
       entry.hasAudioFragment = false;
     } else {
+      globalCapturedBytes = Math.max(0, globalCapturedBytes - entry.videoBytes);
       entry.totalBytes = Math.max(0, entry.totalBytes - entry.videoBytes);
       entry.videoChunks.length = 0;
       entry.videoBytes = 0;
@@ -224,16 +338,18 @@
   NativeSourceBuffer.prototype.appendBuffer = function wrappedAppendBuffer(data) {
     if (captureEnabled) {
       const meta = sourceBufferMeta.get(this);
-      if (meta) {
+      if (meta && streamsById.has(meta.entry.mseId)) {
         const copy = copyBufferSlice(data);
         if (copy && copy.byteLength > 0) {
           const entry = meta.entry;
+          entry.lastActivityAt = Date.now();
           const isAudio = meta.trackKind === 'audio';
           const hadFragment = isAudio ? entry.hasAudioFragment : entry.hasVideoFragment;
           if (hadFragment && looksLikeInitHeader(copy)) {
             resetTrackBuffer(entry, meta.trackKind);
           }
           if (!entry.capped) {
+            enforceGlobalStreamCaps(copy.byteLength, entry.mseId);
             if (entry.totalBytes + copy.byteLength <= bufferCapBytes) {
               if (isAudio) {
                 entry.audioChunks.push(copy);
@@ -249,6 +365,7 @@
                 }
               }
               entry.totalBytes += copy.byteLength;
+              globalCapturedBytes += copy.byteLength;
               scheduleStreamNotify(entry);
             } else {
               entry.capped = true;
@@ -267,7 +384,7 @@
       const res = origEndOfStream.apply(this, arguments);
       if (captureEnabled) {
         const entry = mediaSourceMap.get(this);
-        if (entry && entry.totalBytes > 0) {
+        if (entry && streamsById.has(entry.mseId) && entry.totalBytes > 0) {
           if (entry.notifyTimer) {
             clearTimeout(entry.notifyTimer);
             entry.notifyTimer = null;
@@ -286,11 +403,26 @@
       if (captureEnabled && obj instanceof NativeMediaSource) {
         const entry = getOrCreateStreamEntry(obj);
         entry.blobUrl = resultUrl;
+        entry.revokedAt = 0;
         if (entry.totalBytes > 0) {
           emitStreamSummary(entry, true);
         }
       }
       return resultUrl;
+    };
+  }
+
+  if (window.URL && typeof window.URL.revokeObjectURL === 'function') {
+    const origRevokeObjectUrl = window.URL.revokeObjectURL.bind(window.URL);
+    window.URL.revokeObjectURL = function wrappedRevokeObjectUrl(url) {
+      if (typeof url === 'string' && url) {
+        for (const entry of streamsById.values()) {
+          if (entry.blobUrl === url) {
+            entry.revokedAt = Date.now();
+          }
+        }
+      }
+      return origRevokeObjectUrl(url);
     };
   }
 
@@ -305,35 +437,32 @@
           requestId,
           track,
           buffer: sliceCopy
-        });
+        }, [sliceCopy]);
         offset = end;
       }
     }
   }
 
-  window.addEventListener('message', (event) => {
-    if (!event || event.source !== window || !event.data) {
+  function handleBridgeCommand(data) {
+    if (!data || data.source !== MSE_HOOK_CONFIG.WINDOW_SOURCE || !data.payload) {
       return;
     }
-    const { source, kind, payload } = event.data;
-    if (source !== MSE_HOOK_CONFIG.WINDOW_SOURCE || !payload) {
-      return;
-    }
+    const { kind, payload } = data;
 
     if (kind === MSE_HOOK_CONFIG.EVENTS.CONFIG) {
       if (typeof payload.enabled === 'boolean') {
         captureEnabled = payload.enabled;
         if (!captureEnabled) {
-          for (const entry of streamsById.values()) {
-            entry.videoChunks.length = 0;
-            entry.audioChunks.length = 0;
-            entry.totalBytes = 0;
+          for (const entry of Array.from(streamsById.values())) {
+            releaseStreamEntry(entry);
           }
-          streamsById.clear();
         }
       }
       if (Number.isFinite(payload.bufferCapBytes) && payload.bufferCapBytes > 0) {
-        bufferCapBytes = payload.bufferCapBytes;
+        bufferCapBytes = Math.min(
+          MSE_HOOK_CONFIG.MAX_BUFFER_CAP_BYTES,
+          Math.max(MSE_HOOK_CONFIG.MIN_BUFFER_CAP_BYTES, Math.floor(payload.bufferCapBytes))
+        );
       }
       return;
     }
@@ -350,7 +479,7 @@
         return;
       }
       const chunkLimit = Number.isFinite(sliceBytes) && sliceBytes > 0
-        ? sliceBytes
+        ? Math.min(MSE_HOOK_CONFIG.MAX_BUFFER_CAP_BYTES, Math.floor(sliceBytes))
         : MSE_HOOK_CONFIG.DEFAULT_SLICE_BYTES;
       exportTrackChunks(requestId, 'video', entry.videoChunks, chunkLimit);
       exportTrackChunks(requestId, 'audio', entry.audioChunks, chunkLimit);
@@ -365,5 +494,60 @@
         capped: entry.capped
       });
     }
-  });
+  }
+
+  function onHandshakeMessage(event) {
+    if (bridgePort || !event || event.source !== window || !event.data) {
+      return;
+    }
+    if (
+      event.data.source !== MSE_HOOK_CONFIG.WINDOW_SOURCE ||
+      event.data.kind !== MSE_HOOK_CONFIG.EVENTS.HANDSHAKE_INIT ||
+      !event.ports ||
+      !event.ports[0]
+    ) {
+      return;
+    }
+    if (nativeStopImmediatePropagation) {
+      try {
+        nativeStopImmediatePropagation.call(event);
+      } catch {
+        // Ignore if event cannot be stopped
+      }
+    }
+    bridgePort = event.ports[0];
+    if (nativeRemoveEventListener) {
+      nativeRemoveEventListener('message', onHandshakeMessage, true);
+    }
+    bridgePort.onmessage = (portEvent) => {
+      handleBridgeCommand(portEvent && portEvent.data);
+    };
+    if (typeof bridgePort.start === 'function') {
+      bridgePort.start();
+    }
+    sendViaPort(bridgePort, {
+      source: MSE_HOOK_CONFIG.WINDOW_SOURCE,
+      kind: MSE_HOOK_CONFIG.EVENTS.HANDSHAKE_ACK,
+      payload: {}
+    });
+    while (pendingOutbound.length > 0) {
+      const queued = pendingOutbound.shift();
+      sendViaPort(bridgePort, queued.message, queued.transferList);
+    }
+  }
+
+  if (nativeAddEventListener) {
+    nativeAddEventListener('message', onHandshakeMessage, true);
+  }
+  if (nativeWindowPostMessage) {
+    try {
+      nativeWindowPostMessage({
+        source: MSE_HOOK_CONFIG.WINDOW_SOURCE,
+        kind: MSE_HOOK_CONFIG.EVENTS.HANDSHAKE_READY,
+        payload: {}
+      }, '*');
+    } catch {
+      // Ignore postMessage failures on restricted contexts
+    }
+  }
 })();

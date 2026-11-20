@@ -24,7 +24,40 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 const HOOK_CODE = fs.readFileSync(path.join(ROOT, 'src/content/mse_hook.js'), 'utf8');
 const BRIDGE_CODE = fs.readFileSync(path.join(ROOT, 'src/content/mse_bridge.js'), 'utf8');
 
-function createMseHarness({ enableMseCapture = true } = {}) {
+function createFakeMessageChannel() {
+  class FakeMessagePort {
+    constructor() {
+      this.onmessage = null;
+      this.peer = null;
+      this.closed = false;
+    }
+    start() {}
+    close() {
+      this.closed = true;
+    }
+    postMessage(data) {
+      if (this.closed || !this.peer || this.peer.closed) {
+        return;
+      }
+      const target = this.peer;
+      queueMicrotask(() => {
+        if (!target.closed && typeof target.onmessage === 'function') {
+          target.onmessage({ data });
+        }
+      });
+    }
+  }
+  return class FakeMessageChannel {
+    constructor() {
+      this.port1 = new FakeMessagePort();
+      this.port2 = new FakeMessagePort();
+      this.port1.peer = this.port2;
+      this.port2.peer = this.port1;
+    }
+  };
+}
+
+function createMseHarness({ enableMseCapture = true, loadOrder = 'bridge-first' } = {}) {
   const messageListeners = [];
   const runtimeListeners = [];
   const storageListeners = [];
@@ -38,11 +71,14 @@ function createMseHarness({ enableMseCapture = true } = {}) {
   class FakeMediaSource {
     constructor() {
       this.duration = 42.4;
+      this.readyState = 'open';
     }
     addSourceBuffer() {
       return new FakeSourceBuffer();
     }
-    endOfStream() {}
+    endOfStream() {
+      this.readyState = 'ended';
+    }
   }
 
   const fakeWindow = {
@@ -50,26 +86,50 @@ function createMseHarness({ enableMseCapture = true } = {}) {
     MediaSource: FakeMediaSource,
     SourceBuffer: FakeSourceBuffer,
     URL: {
-      createObjectURL: () => 'blob:https://player.example.com/1111'
+      createObjectURL: () => 'blob:https://player.example.com/1111',
+      revokeObjectURL: () => {}
     },
     addEventListener: (ev, fn) => {
       if (ev === 'message') {
         messageListeners.push(fn);
       }
     },
-    postMessage: (data) => {
+    removeEventListener: (ev, fn) => {
+      if (ev === 'message') {
+        const idx = messageListeners.indexOf(fn);
+        if (idx >= 0) {
+          messageListeners.splice(idx, 1);
+        }
+      }
+    },
+    postMessage: (data, _origin, transfer) => {
       postedMessages.push(data);
+      const ports = Array.isArray(transfer) ? transfer : [];
       queueMicrotask(() => {
-        for (const fn of messageListeners) {
-          fn({ source: fakeWindow, data });
+        let stopped = false;
+        const event = {
+          source: fakeWindow,
+          data,
+          ports,
+          stopImmediatePropagation() {
+            stopped = true;
+          }
+        };
+        for (const fn of [...messageListeners]) {
+          if (stopped) {
+            break;
+          }
+          fn(event);
         }
       });
     }
   };
 
+  const FakeMessageChannel = createFakeMessageChannel();
   const sandbox = {
     window: fakeWindow,
     document: { title: 'Test Player Stream' },
+    MessageChannel: FakeMessageChannel,
     chrome: {
       storage: {
         sync: {
@@ -107,8 +167,13 @@ function createMseHarness({ enableMseCapture = true } = {}) {
   };
   fakeWindow.window = fakeWindow;
 
-  vm.runInNewContext(BRIDGE_CODE, sandbox, { filename: 'mse_bridge.js' });
-  vm.runInNewContext(HOOK_CODE, sandbox, { filename: 'mse_hook.js' });
+  if (loadOrder === 'hook-first') {
+    vm.runInNewContext(HOOK_CODE, sandbox, { filename: 'mse_hook.js' });
+    vm.runInNewContext(BRIDGE_CODE, sandbox, { filename: 'mse_bridge.js' });
+  } else {
+    vm.runInNewContext(BRIDGE_CODE, sandbox, { filename: 'mse_bridge.js' });
+    vm.runInNewContext(HOOK_CODE, sandbox, { filename: 'mse_hook.js' });
+  }
 
   const dispatchExport = (msg) => new Promise((resolve) => {
     let handled = false;
@@ -278,4 +343,38 @@ test('mse_bridge swallows synchronous invalidated-context throws and surfaces ap
   harness.sandbox.chrome.runtime.sendMessage = prevSendMessage;
   assert.equal(failedExport.ok, false);
   assert.match(failedExport.error, /OFFSCREEN_DISCONNECTED/);
+});
+
+test('mse_hook and mse_bridge establish MessageChannel in hook-first order and reject spoofed window.postMessage', async () => {
+  const harness = createMseHarness({ loadOrder: 'hook-first' });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  // Hostile page attempts to spoof STREAM_UPDATED and disable capture via window.postMessage
+  harness.fakeWindow.postMessage({
+    source: 'media-harvest-mse',
+    kind: 'MSE_STREAM_UPDATED',
+    payload: { mseId: 'spoofed_1', totalBytes: 999999 }
+  });
+  harness.fakeWindow.postMessage({
+    source: 'media-harvest-mse',
+    kind: 'MSE_CONFIG',
+    payload: { enabled: false }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(
+    harness.runtimeMessages.filter((m) => m.type === 'MSE_STREAM_UPDATED' && m.stream.mseId === 'spoofed_1').length,
+    0
+  );
+
+  // Legitimate MediaSource capture still works over the private MessagePort
+  const ms = new harness.fakeWindow.MediaSource();
+  harness.fakeWindow.URL.createObjectURL(ms);
+  const videoSb = ms.addSourceBuffer('video/mp4');
+  videoSb.appendBuffer(new Uint8Array(40 * 1024));
+  await new Promise((resolve) => setTimeout(resolve, 650));
+
+  const realUpdates = harness.runtimeMessages.filter((m) => m.type === 'MSE_STREAM_UPDATED');
+  assert.ok(realUpdates.length >= 1);
+  assert.notEqual(realUpdates[realUpdates.length - 1].stream.mseId, 'spoofed_1');
 });

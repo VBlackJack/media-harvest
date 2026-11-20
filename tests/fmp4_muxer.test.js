@@ -240,6 +240,74 @@ test('extractAudioOnlyFromFmp4Parts isolates soun track from muxed fMP4 and reje
   );
 });
 
+test('extractAudioOnlyFromFmp4Parts shifts trun data_offset negatively when stripping video traf from multi-traf moof', () => {
+  const muxedInit = makeTypedInit([
+    { trackId: 1, handlerType: 'vide' },
+    { trackId: 2, handlerType: 'soun' }
+  ]);
+  const videoTfhdBody = new Uint8Array(8);
+  new DataView(videoTfhdBody.buffer).setUint32(4, 1, false);
+  const videoTrunBody = new Uint8Array(12);
+  videoTrunBody[3] = 0x01;
+  new DataView(videoTrunBody.buffer).setUint32(4, 1, false);
+  const videoTraf = buildIsoBox('traf', [
+    buildIsoBox('tfhd', [videoTfhdBody]),
+    buildIsoBox('trun', [videoTrunBody])
+  ]);
+
+  const audioTfhdBody = new Uint8Array(8);
+  new DataView(audioTfhdBody.buffer).setUint32(4, 2, false);
+  const audioTrunBody = new Uint8Array(12);
+  audioTrunBody[3] = 0x01; // data-offset-present
+  new DataView(audioTrunBody.buffer).setUint32(4, 1, false);
+  const audioTraf = buildIsoBox('traf', [
+    buildIsoBox('tfhd', [audioTfhdBody]),
+    buildIsoBox('trun', [audioTrunBody])
+  ]);
+
+  const rawMoof = buildIsoBox('moof', [videoTraf, audioTraf]);
+  // Video payload (4 bytes) followed by audio payload (4 bytes) inside mdat
+  const mdatPayload = new Uint8Array([0x11, 0x11, 0x11, 0x11, 0xaa, 0xbb, 0xcc, 0xdd]);
+  const mdat = buildIsoBox('mdat', [mdatPayload]);
+  const origAudioDataOffset = rawMoof.byteLength + 8 + 4;
+
+  // Patch the audio traf's trun data_offset inside rawMoof
+  const moofBoxes = parseIsoBoxes(rawMoof, 8, rawMoof.byteLength);
+  const audioTrafBox = moofBoxes[1];
+  const audioTrafChildren = parseIsoBoxes(rawMoof, audioTrafBox.start + 8, audioTrafBox.end);
+  const audioTrunBox = audioTrafChildren.find((b) => b.type === 'trun');
+  new DataView(rawMoof.buffer, rawMoof.byteOffset + audioTrunBox.start + 16, 4).setInt32(0, origAudioDataOffset, false);
+
+  const combinedFrag = new Uint8Array(rawMoof.byteLength + mdat.byteLength);
+  combinedFrag.set(rawMoof, 0);
+  combinedFrag.set(mdat, rawMoof.byteLength);
+
+  const audioParts = extractAudioOnlyFromFmp4Parts(muxedInit, [combinedFrag]);
+  const totalLen = audioParts.reduce((sum, p) => sum + p.byteLength, 0);
+  const out = new Uint8Array(totalLen);
+  let pos = 0;
+  for (const part of audioParts) {
+    out.set(part, pos);
+    pos += part.byteLength;
+  }
+
+  const outBoxes = parseIsoBoxes(out);
+  const outMoof = outBoxes.find((b) => b.type === 'moof');
+  const outMdat = outBoxes.find((b) => b.type === 'mdat');
+  assert.ok(outMoof && outMdat);
+  assert.ok(outMoof.data.byteLength < rawMoof.byteLength);
+
+  const outTraf = parseIsoBoxes(out, outMoof.start + 8, outMoof.end).find((b) => b.type === 'traf');
+  const outTrun = parseIsoBoxes(out, outTraf.start + 8, outTraf.end).find((b) => b.type === 'trun');
+  const newDataOffset = new DataView(out.buffer, out.byteOffset + outTrun.start + 16, 4).getInt32(0, false);
+
+  assert.equal(newDataOffset, outMoof.data.byteLength + 8 + 4);
+  assert.deepEqual(
+    Array.from(out.subarray(outMoof.start + newDataOffset, outMoof.start + newDataOffset + 4)),
+    [0xaa, 0xbb, 0xcc, 0xdd]
+  );
+});
+
 test('normalizeFmp4Fragment strips base-data-offset-present and updates trun data_offset safely', () => {
   const tfhdBody = new Uint8Array(16);
   tfhdBody[0] = 0; // version

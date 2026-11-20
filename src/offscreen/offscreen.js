@@ -1512,7 +1512,17 @@ function concatUint8Arrays(chunks) {
  * @param {object} message
  * @returns {{ ok: boolean, blobUrl?: string, outputExtension?: string, byteLength?: number, error?: string }}
  */
+function pruneStaleMseAssemblies() {
+  const cutoff = Date.now() - LIMITS.MSE_ASSEMBLY_TTL_MS;
+  for (const [id, session] of activeMseAssemblies.entries()) {
+    if (session && typeof session.updatedAt === 'number' && session.updatedAt < cutoff) {
+      activeMseAssemblies.delete(id);
+    }
+  }
+}
+
 function handleMseBlobMessage(message) {
+  pruneStaleMseAssemblies();
   const requestId = message.requestId;
   if (!requestId) {
     return { ok: false, error: 'INVALID_REQUEST' };
@@ -1526,7 +1536,7 @@ function handleMseBlobMessage(message) {
   if (message.action === 'append') {
     let session = activeMseAssemblies.get(requestId);
     if (!session) {
-      session = { videoChunks: [], audioChunks: [], totalBytes: 0 };
+      session = { videoChunks: [], audioChunks: [], totalBytes: 0, updatedAt: Date.now() };
       activeMseAssemblies.set(requestId, session);
     }
     const bytes = decodeBase64ToBytes(message.chunkBase64);
@@ -1540,6 +1550,7 @@ function handleMseBlobMessage(message) {
       session.videoChunks.push(bytes);
     }
     session.totalBytes += bytes.byteLength;
+    session.updatedAt = Date.now();
     return { ok: true };
   }
 
@@ -2307,8 +2318,55 @@ function stopTabCaptureSessions(requestId = '') {
   }
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+function isOffscreenExtensionSender(sender) {
+  if (!sender || typeof sender !== 'object') {
+    return true;
+  }
+  const extOrigin = typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.getURL === 'function'
+    ? chrome.runtime.getURL('')
+    : '';
+  if (sender.id && typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id && sender.id !== chrome.runtime.id) {
+    return false;
+  }
+  if (sender.tab) {
+    return Boolean(extOrigin && typeof sender.url === 'string' && sender.url.startsWith(extOrigin));
+  }
+  if (typeof sender.url === 'string' && sender.url && extOrigin) {
+    return sender.url.startsWith(extOrigin);
+  }
+  return true;
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.target !== 'offscreen') {
+    return false;
+  }
+
+  const fromExtension = isOffscreenExtensionSender(sender);
+  if (!fromExtension && message.type !== MESSAGE_TYPES.OFFSCREEN_BUILD_MSE_BLOB) {
+    sendResponse({ ok: false, error: 'FORBIDDEN_SENDER' });
+    return false;
+  }
+
+  if (message.type === MESSAGE_TYPES.OFFSCREEN_GET_ACTIVE_BUILDS) {
+    pruneStaleMseAssemblies();
+    const builds = [];
+    for (const requestId of activeLiveRecorders.keys()) {
+      builds.push({ requestId, url: '', done: 0, total: 0, isLiveRecord: true, isTabCapture: false, bytes: 0 });
+    }
+    for (const requestId of activeTabCaptures.keys()) {
+      builds.push({ requestId, url: '', done: 0, total: 0, isLiveRecord: false, isTabCapture: true, bytes: 0 });
+    }
+    const activeCount = activeBuildControllers.size
+      + activeLiveRecorders.size
+      + activeTabCaptures.size
+      + activeMseAssemblies.size;
+    sendResponse({
+      ok: true,
+      activeCount,
+      activeBlobCount: activeBlobUrls.size,
+      builds
+    });
     return false;
   }
 
@@ -2404,7 +2462,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             byteLength: outAudioBlob.size
           });
         })
-        .catch((err) => sendResponse({ ok: false, error: (err && err.message) || 'NO_AUDIO_TRACK' }));
+        .catch((err) => {
+          URL.revokeObjectURL(mseResult.blobUrl);
+          activeBlobUrls.delete(mseResult.blobUrl);
+          sendResponse({ ok: false, error: (err && err.message) || 'NO_AUDIO_TRACK' });
+        });
       return true;
     }
     sendResponse(mseResult);

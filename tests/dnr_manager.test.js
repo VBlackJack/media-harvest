@@ -19,7 +19,10 @@ import assert from 'node:assert/strict';
 import {
   addTemporaryRefererRule,
   attachDownloadDnrRule,
+  attachSaverTabDnrRule,
   detachDownloadDnrRule,
+  detachSaverTabDnrRule,
+  pruneOrphanedSessionDnrRules,
   removeTemporaryRefererRule,
   withTemporaryRefererRule
 } from '../src/background/dnr_manager.js';
@@ -87,6 +90,57 @@ test('addTemporaryRefererRule, attach/detach, and withTemporaryRefererRule manag
     );
     assert.equal(executed, true);
     assert.equal(addedRules.length, 2);
+  } finally {
+    globalThis.chrome = originalChrome;
+  }
+});
+
+test('dnr_manager persists saver tab rules and prunes orphaned session rules', async () => {
+  const originalChrome = globalThis.chrome;
+  const sessionStore = new Map();
+  let activeSessionRules = [{ id: 9055, priority: 1 }, { id: 9056, priority: 1 }];
+
+  globalThis.chrome = {
+    runtime: { id: 'test_extension_id' },
+    storage: {
+      session: {
+        get: async (key) => {
+          if (key === null) {
+            return Object.fromEntries(sessionStore.entries());
+          }
+          return { [key]: sessionStore.get(key) };
+        },
+        set: async (obj) => {
+          for (const [k, v] of Object.entries(obj)) {
+            sessionStore.set(k, v);
+          }
+        },
+        remove: async (keys) => {
+          for (const k of Array.isArray(keys) ? keys : [keys]) {
+            sessionStore.delete(k);
+          }
+        }
+      }
+    },
+    declarativeNetRequest: {
+      getSessionRules: async () => [...activeSessionRules],
+      updateSessionRules: async ({ addRules = [], removeRuleIds = [] }) => {
+        activeSessionRules = activeSessionRules.filter((r) => !removeRuleIds.includes(r.id));
+        activeSessionRules.push(...addRules);
+      }
+    }
+  };
+
+  try {
+    sessionStore.set('stream_saver_job_job1', { jobId: 'job1' });
+    await attachSaverTabDnrRule(42, 9055, 'job1');
+    await pruneOrphanedSessionDnrRules();
+    // 9055 is tracked by saver tab 42; 9056 is orphaned and pruned
+    assert.deepEqual(activeSessionRules.map((r) => r.id), [9055]);
+
+    await detachSaverTabDnrRule(42);
+    assert.deepEqual(activeSessionRules, []);
+    assert.equal(sessionStore.has('stream_saver_job_job1'), false);
   } finally {
     globalThis.chrome = originalChrome;
   }

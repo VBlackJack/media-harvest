@@ -48,11 +48,22 @@ else
   )
 fi
 
-MANIFEST_CONTENT=$(cat <<EOF
+if command -v python3 >/dev/null 2>&1; then
+  MANIFEST_CONTENT="$(python3 -c 'import json, sys; print(json.dumps({
+    "name": sys.argv[1],
+    "description": "Media Harvest Native Messaging companion for yt-dlp and ffmpeg",
+    "path": sys.argv[2],
+    "type": "stdio",
+    "allowed_origins": [f"chrome-extension://{sys.argv[3]}/"]
+  }, indent=2))' "${HOST_NAME}" "${HOST_SCRIPT}" "${EXTENSION_ID}")"
+else
+  ESCAPED_HOST_SCRIPT="${HOST_SCRIPT//\\/\\\\}"
+  ESCAPED_HOST_SCRIPT="${ESCAPED_HOST_SCRIPT//\"/\\\"}"
+  MANIFEST_CONTENT=$(cat <<EOF
 {
   "name": "${HOST_NAME}",
   "description": "Media Harvest Native Messaging companion for yt-dlp and ffmpeg",
-  "path": "${HOST_SCRIPT}",
+  "path": "${ESCAPED_HOST_SCRIPT}",
   "type": "stdio",
   "allowed_origins": [
     "chrome-extension://${EXTENSION_ID}/"
@@ -60,6 +71,7 @@ MANIFEST_CONTENT=$(cat <<EOF
 }
 EOF
 )
+fi
 
 for target_dir in "${TARGET_DIRS[@]}"; do
   mkdir -p "${target_dir}"

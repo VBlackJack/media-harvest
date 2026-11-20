@@ -23,7 +23,7 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 const HOST_SCRIPT = path.join(ROOT, 'companion', 'media_harvest_host.py');
 
 function detectPythonCommand() {
-  for (const candidate of [['python', []], ['py', ['-3']]]) {
+  for (const candidate of [['python3', []], ['python', []], ['py', ['-3']]]) {
     const res = spawnSync(candidate[0], [...candidate[1], '--version'], { encoding: 'utf8' });
     if (res.status === 0) {
       return candidate;
@@ -50,6 +50,9 @@ assert mod.is_valid_http_url('file:///etc/passwd') is False
 assert mod.is_valid_http_url('javascript:alert(1)') is False
 
 assert mod.sanitize_output_stem('../../bad:name?.mp4') == 'bad_name'
+assert '%' not in mod.sanitize_output_stem('video_%(id)s_100%.mp4')
+assert mod.sanitize_output_stem('CON.mp4') == '_CON'
+assert mod.sanitize_output_stem('nul.webm') == '_nul'
 cmd = mod.build_ytdlp_command('C:\\\\tools\\\\yt-dlp.exe', '', {
     'url': 'https://example.com/v',
     'referer': 'https://example.com/',
@@ -97,4 +100,46 @@ print('PY_COMPANION_OK')
   const result = spawnSync(py[0], [...py[1], '-c', script], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.ok(result.stdout.includes('PY_COMPANION_OK'));
+});
+
+test('companion host stream_download enforces wall-clock timeout and cleans up hanging child process', (t) => {
+  const py = detectPythonCommand();
+  if (!py) {
+    t.skip('Python 3 runtime not available on test runner');
+    return;
+  }
+
+  const script = `
+import io, importlib.util, shutil, sys
+spec = importlib.util.spec_from_file_location('media_harvest_host', ${JSON.stringify(HOST_SCRIPT)})
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+orig_which = shutil.which
+orig_build = mod.build_ytdlp_command
+shutil.which = lambda name: sys.executable if name == 'yt-dlp' else ''
+mod.build_ytdlp_command = lambda ytdlp, ff, payload, out_dir: [
+    sys.executable, '-u', '-c', 'import time; print("[download] 12.5%", flush=True); time.sleep(30)'
+]
+try:
+    out_buf = io.BytesIO()
+    mod.stream_download({'url': 'https://example.com/v', 'streamProgress': True}, stream=out_buf, timeout_seconds=0.4)
+    out_buf.seek(0)
+    msgs = []
+    while True:
+        m = mod.read_native_message(out_buf)
+        if m is None:
+            break
+        msgs.append(m)
+    assert any(m.get('event') == 'progress' and m.get('percent') == 12 for m in msgs), msgs
+    assert msgs[-1]['event'] == 'done' and msgs[-1]['ok'] is False and msgs[-1]['error'] == 'COMPANION_TIMEOUT', msgs
+    print('PY_TIMEOUT_OK')
+finally:
+    shutil.which = orig_which
+    mod.build_ytdlp_command = orig_build
+`;
+
+  const result = spawnSync(py[0], [...py[1], '-c', script], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.ok(result.stdout.includes('PY_TIMEOUT_OK'));
 });

@@ -18,20 +18,34 @@
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import sys
+import threading
+import time
 from urllib.parse import urlparse
 
-HOST_VERSION = '1.0.0'
+HOST_VERSION = '1.1.0'
 HOST_NAME = 'com.mediaharvest.companion'
 MAX_MESSAGE_BYTES = 1024 * 1024
 DOWNLOAD_TIMEOUT_SECONDS = 600
+VERSION_QUERY_TIMEOUT_SECONDS = 10
+PROCESS_KILL_WAIT_SECONDS = 5
+STREAM_POLL_INTERVAL_SECONDS = 0.25
+MAX_OUTPUT_STEM_LENGTH = 96
+DEFAULT_TITLE_MAX_BYTES = 100
 DOWNLOAD_SUBFOLDER = 'MediaHarvest'
 ALLOWED_COOKIE_BROWSERS = frozenset({'chrome', 'edge', 'firefox'})
 ALLOWED_AUDIO_FORMATS = frozenset({'mp3', 'm4a', 'opus', 'wav'})
+WINDOWS_RESERVED_STEMS = frozenset({
+    'CON', 'PRN', 'AUX', 'NUL',
+    *(f'COM{i}' for i in range(1, 10)),
+    *(f'LPT{i}' for i in range(1, 10)),
+})
 PROGRESS_PERCENT_RE = re.compile(r'\[download\]\s+(\d+(?:\.\d+)?)%')
 
 
@@ -47,13 +61,17 @@ def is_valid_http_url(raw_url):
 
 
 def sanitize_output_stem(raw_name):
-    """Sanitizes a user-supplied filename stem against invalid characters and traversal."""
+    """Sanitizes a user-supplied filename stem against invalid chars, traversal, and yt-dlp templates."""
     if not isinstance(raw_name, str) or not raw_name.strip():
         return ''
     leaf = raw_name.replace('\\', '/').split('/')[-1]
     stem = re.sub(r'\.[^.]+$', '', leaf)
-    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', stem).strip(' ._')
-    return cleaned[:96]
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f%]', '_', stem).strip(' ._')
+    if not cleaned:
+        return ''
+    if cleaned.upper() in WINDOWS_RESERVED_STEMS:
+        cleaned = f'_{cleaned}'
+    return cleaned[:MAX_OUTPUT_STEM_LENGTH]
 
 
 def resolve_output_dir(base_dir=None):
@@ -70,7 +88,7 @@ def build_ytdlp_command(ytdlp_bin, ffmpeg_bin, payload, output_dir):
         raise ValueError('INVALID_URL')
 
     stem = sanitize_output_stem(payload.get('filename', ''))
-    template_name = f'{stem}.%(ext)s' if stem else '%(title).100B.%(ext)s'
+    template_name = f'{stem}.%(ext)s' if stem else f'%(title).{DEFAULT_TITLE_MAX_BYTES}B.%(ext)s'
     output_template = str(Path(output_dir) / template_name)
 
     quality = payload.get('quality', 'best')
@@ -125,7 +143,7 @@ def query_ytdlp_version(ytdlp_bin):
             capture_output=True,
             text=True,
             shell=False,
-            timeout=10,
+            timeout=VERSION_QUERY_TIMEOUT_SECONDS,
             check=False,
         )
         return proc.stdout.strip() if proc.returncode == 0 else ''
@@ -202,51 +220,177 @@ def write_native_message(payload, stream=None):
     writer.flush()
 
 
-def stream_download(payload, stream=None):
-    """Streams yt-dlp progress events over Native Messaging stdout before emitting completion."""
+def safe_write_native_message(payload, stream=None):
+    """Writes a Native Messaging frame and returns False if the pipe is closed."""
+    try:
+        write_native_message(payload, stream)
+        return True
+    except (BrokenPipeError, OSError):
+        return False
+
+
+def terminate_process_tree(proc):
+    """Terminates a subprocess and any child ffmpeg/yt-dlp processes without leaving orphans."""
+    if proc is None:
+        return
+    try:
+        if proc.poll() is not None:
+            return
+    except OSError:
+        return
+    try:
+        if os.name == 'nt':
+            subprocess.run(
+                ['taskkill', '/PID', str(proc.pid), '/T', '/F'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                shell=False,
+                timeout=PROCESS_KILL_WAIT_SECONDS,
+                check=False,
+            )
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            try:
+                proc.wait(timeout=PROCESS_KILL_WAIT_SECONDS)
+                return
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (OSError, ProcessLookupError, subprocess.SubprocessError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=PROCESS_KILL_WAIT_SECONDS)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def stream_download(payload, stream=None, stdin_stream=None, timeout_seconds=DOWNLOAD_TIMEOUT_SECONDS):
+    """Streams yt-dlp progress events over Native Messaging stdout with wall-clock timeout and cancellation."""
     ytdlp_bin = shutil.which('yt-dlp') or ''
     ffmpeg_bin = shutil.which('ffmpeg') or ''
     if not ytdlp_bin:
-        write_native_message({'event': 'done', 'ok': False, 'error': 'YTDLP_NOT_FOUND'}, stream)
+        safe_write_native_message({'event': 'done', 'ok': False, 'error': 'YTDLP_NOT_FOUND'}, stream)
         return
+
+    popen_kwargs = {
+        'stdout': subprocess.PIPE,
+        'stderr': subprocess.STDOUT,
+        'text': True,
+        'shell': False,
+    }
+    if os.name == 'nt':
+        popen_kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs['start_new_session'] = True
+
     try:
         out_dir = resolve_output_dir()
         cmd = build_ytdlp_command(ytdlp_bin, ffmpeg_bin, payload, out_dir)
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            shell=False,
-        )
+        proc = subprocess.Popen(cmd, **popen_kwargs)
     except ValueError as exc:
-        write_native_message({'event': 'done', 'ok': False, 'error': str(exc)}, stream)
+        safe_write_native_message({'event': 'done', 'ok': False, 'error': str(exc)}, stream)
         return
     except OSError:
-        write_native_message({'event': 'done', 'ok': False, 'error': 'COMPANION_FAILED'}, stream)
+        safe_write_native_message({'event': 'done', 'ok': False, 'error': 'COMPANION_FAILED'}, stream)
         return
 
+    line_queue = queue.Queue()
+    cancel_event = threading.Event()
+    disconnect_event = threading.Event()
+    done_event = threading.Event()
+
+    def read_stdout():
+        try:
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    line_queue.put(line)
+        except OSError:
+            pass
+        finally:
+            line_queue.put(None)
+
+    stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+    stdout_thread.start()
+
+    watch_stdin = stdin_stream if stdin_stream is not None else (sys.stdin.buffer if stream is None else None)
+    if watch_stdin is not None:
+        def read_control():
+            while not done_event.is_set():
+                try:
+                    msg = read_native_message(watch_stdin)
+                except (ValueError, OSError):
+                    disconnect_event.set()
+                    cancel_event.set()
+                    return
+                if msg is None:
+                    disconnect_event.set()
+                    cancel_event.set()
+                    return
+                if isinstance(msg, dict) and msg.get('action') == 'cancel':
+                    cancel_event.set()
+                    return
+
+        threading.Thread(target=read_control, daemon=True).start()
+
+    deadline = time.monotonic() + max(0.1, float(timeout_seconds))
     last_percent = -1
-    if proc.stdout is not None:
-        for line in proc.stdout:
+    eof_reached = False
+
+    try:
+        while not eof_reached:
+            if cancel_event.is_set():
+                terminate_process_tree(proc)
+                if not disconnect_event.is_set():
+                    safe_write_native_message({'event': 'done', 'ok': False, 'error': 'CANCELLED'}, stream)
+                return
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                terminate_process_tree(proc)
+                safe_write_native_message({'event': 'done', 'ok': False, 'error': 'COMPANION_TIMEOUT'}, stream)
+                return
+
+            try:
+                line = line_queue.get(timeout=min(STREAM_POLL_INTERVAL_SECONDS, remaining))
+            except queue.Empty:
+                continue
+
+            if line is None:
+                eof_reached = True
+                break
+
             match = PROGRESS_PERCENT_RE.search(line)
             if match:
                 pct = int(float(match.group(1)))
                 if pct != last_percent:
                     last_percent = pct
-                    write_native_message({'event': 'progress', 'percent': pct}, stream)
+                    if not safe_write_native_message({'event': 'progress', 'percent': pct}, stream):
+                        terminate_process_tree(proc)
+                        return
 
-    try:
-        code = proc.wait(timeout=DOWNLOAD_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        write_native_message({'event': 'done', 'ok': False, 'error': 'COMPANION_FAILED'}, stream)
-        return
+        remaining = max(0.1, deadline - time.monotonic())
+        try:
+            code = proc.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            terminate_process_tree(proc)
+            safe_write_native_message({'event': 'done', 'ok': False, 'error': 'COMPANION_TIMEOUT'}, stream)
+            return
 
-    if code != 0:
-        write_native_message({'event': 'done', 'ok': False, 'error': 'COMPANION_FAILED'}, stream)
-        return
-    write_native_message({'event': 'done', 'ok': True, 'outputDir': str(out_dir)}, stream)
+        if cancel_event.is_set():
+            if not disconnect_event.is_set():
+                safe_write_native_message({'event': 'done', 'ok': False, 'error': 'CANCELLED'}, stream)
+            return
+
+        if code != 0:
+            safe_write_native_message({'event': 'done', 'ok': False, 'error': 'COMPANION_FAILED'}, stream)
+            return
+        safe_write_native_message({'event': 'done', 'ok': True, 'outputDir': str(out_dir)}, stream)
+    finally:
+        done_event.set()
+        if proc.poll() is None:
+            terminate_process_tree(proc)
 
 
 def main():
@@ -254,7 +398,7 @@ def main():
         try:
             message = read_native_message()
         except (ValueError, OSError):
-            write_native_message({'ok': False, 'error': 'COMPANION_FAILED'})
+            safe_write_native_message({'ok': False, 'error': 'COMPANION_FAILED'})
             break
         if message is None:
             break
@@ -262,7 +406,8 @@ def main():
             stream_download(message)
         else:
             response = handle_message(message)
-            write_native_message(response)
+            if not safe_write_native_message(response):
+                break
 
 
 if __name__ == '__main__':

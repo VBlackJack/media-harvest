@@ -20,8 +20,14 @@
     STORAGE_SETTINGS_KEY: 'user_settings',
     DEFAULT_BUFFER_CAP_BYTES: 150 * 1024 * 1024,
     DEFAULT_SLICE_BYTES: 2 * 1024 * 1024,
+    BASE64_SLICE_BYTES: 0x8000,
+    MAX_KNOWN_STREAMS: 32,
+    MAX_MSE_ID_LENGTH: 128,
     EXPORT_TIMEOUT_MS: 30000,
     EVENTS: Object.freeze({
+      HANDSHAKE_INIT: 'MSE_HANDSHAKE_INIT',
+      HANDSHAKE_READY: 'MSE_HANDSHAKE_READY',
+      HANDSHAKE_ACK: 'MSE_HANDSHAKE_ACK',
       CONFIG: 'MSE_CONFIG',
       STREAM_UPDATED: 'MSE_STREAM_UPDATED',
       EXPORT_REQUEST: 'MSE_EXPORT_REQUEST',
@@ -41,15 +47,42 @@
   window.__mediaHarvestMseBridgeInstalled = true;
 
   let captureEnabled = true;
+  let hookPort = null;
+  let handshakeAcked = false;
+  const candidatePorts = new Set();
+  const pendingToHook = [];
   const knownStreams = new Map();
   const pendingExports = new Map();
 
   function postToHook(kind, payload) {
-    window.postMessage({
+    const message = {
       source: BRIDGE_CONFIG.WINDOW_SOURCE,
       kind,
       payload
-    }, '*');
+    };
+    if (hookPort && handshakeAcked) {
+      try {
+        hookPort.postMessage(message);
+      } catch {
+        // Ignore failures on closed ports
+      }
+      return;
+    }
+    pendingToHook.push(message);
+  }
+
+  function flushPendingToHook() {
+    if (!hookPort || !handshakeAcked) {
+      return;
+    }
+    while (pendingToHook.length > 0) {
+      const msg = pendingToHook.shift();
+      try {
+        hookPort.postMessage(msg);
+      } catch {
+        break;
+      }
+    }
   }
 
   function applySettings(rawSettings) {
@@ -85,33 +118,9 @@
     }
   }
 
-  if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.sync) {
-    try {
-      chrome.storage.sync.get(BRIDGE_CONFIG.STORAGE_SETTINGS_KEY, (data) => {
-        if (chrome.runtime && chrome.runtime.lastError) {
-          return;
-        }
-        applySettings(data && data[BRIDGE_CONFIG.STORAGE_SETTINGS_KEY]);
-      });
-    } catch {
-      // Ignore storage failures when extension context is invalidated
-    }
-    if (chrome.storage.onChanged) {
-      try {
-        chrome.storage.onChanged.addListener((changes, areaName) => {
-          if (areaName === 'sync' && changes[BRIDGE_CONFIG.STORAGE_SETTINGS_KEY]) {
-            applySettings(changes[BRIDGE_CONFIG.STORAGE_SETTINGS_KEY].newValue);
-          }
-        });
-      } catch {
-        // Ignore listener errors after context invalidation
-      }
-    }
-  }
-
   function arrayBufferToBase64(buffer) {
     const bytes = new Uint8Array(buffer);
-    const chunkSize = 0x8000;
+    const chunkSize = BRIDGE_CONFIG.BASE64_SLICE_BYTES;
     const parts = [];
     for (let i = 0; i < bytes.length; i += chunkSize) {
       const slice = bytes.subarray(i, i + chunkSize);
@@ -131,20 +140,67 @@
     pendingExports.delete(requestId);
   }
 
-  window.addEventListener('message', (event) => {
-    if (!event || event.source !== window || !event.data) {
+  function isValidStreamUpdatePayload(payload) {
+    if (!payload || typeof payload !== 'object') {
+      return false;
+    }
+    if (
+      typeof payload.mseId !== 'string' ||
+      !payload.mseId ||
+      payload.mseId.length > BRIDGE_CONFIG.MAX_MSE_ID_LENGTH
+    ) {
+      return false;
+    }
+    if (!Number.isFinite(payload.totalBytes) || payload.totalBytes <= 0 || payload.totalBytes > BRIDGE_CONFIG.DEFAULT_BUFFER_CAP_BYTES * 2) {
+      return false;
+    }
+    return true;
+  }
+
+  function rememberStreamLru(mseId, streamPayload) {
+    if (knownStreams.has(mseId)) {
+      knownStreams.delete(mseId);
+    }
+    knownStreams.set(mseId, streamPayload);
+    while (knownStreams.size > BRIDGE_CONFIG.MAX_KNOWN_STREAMS) {
+      const oldestKey = knownStreams.keys().next().value;
+      knownStreams.delete(oldestKey);
+    }
+  }
+
+  function handleHookMessage(data, sourcePort) {
+    if (!data || data.source !== BRIDGE_CONFIG.WINDOW_SOURCE || !data.payload) {
       return;
     }
-    const { source, kind, payload } = event.data;
-    if (source !== BRIDGE_CONFIG.WINDOW_SOURCE || !payload) {
+    const { kind, payload } = data;
+
+    if (kind === BRIDGE_CONFIG.EVENTS.HANDSHAKE_ACK) {
+      if (!handshakeAcked) {
+        handshakeAcked = true;
+        hookPort = sourcePort || hookPort;
+        for (const port of candidatePorts) {
+          if (port !== hookPort && typeof port.close === 'function') {
+            try {
+              port.close();
+            } catch {
+              // Ignore port close error
+            }
+          }
+        }
+        candidatePorts.clear();
+        if (typeof window.removeEventListener === 'function') {
+          window.removeEventListener('message', onWindowHandshakeReady, true);
+        }
+        flushPendingToHook();
+      }
       return;
     }
 
     if (kind === BRIDGE_CONFIG.EVENTS.STREAM_UPDATED) {
-      if (!captureEnabled || !payload.mseId) {
+      if (!captureEnabled || !isValidStreamUpdatePayload(payload)) {
         return;
       }
-      knownStreams.set(payload.mseId, payload);
+      rememberStreamLru(payload.mseId, payload);
       sendRuntimeMessageSafe({
         type: BRIDGE_CONFIG.RUNTIME_MESSAGES.MSE_STREAM_UPDATED,
         stream: payload
@@ -157,6 +213,15 @@
       if (!pending || pending.settled || pending.queueError || !(payload.buffer instanceof ArrayBuffer)) {
         return;
       }
+      if (payload.track !== 'video' && payload.track !== 'audio') {
+        pending.queueError = new Error('MSE_INVALID_TRACK');
+        return;
+      }
+      if (pending.receivedBytes + payload.buffer.byteLength > BRIDGE_CONFIG.DEFAULT_BUFFER_CAP_BYTES) {
+        pending.queueError = new Error('MSE_BUFFER_LIMIT');
+        return;
+      }
+      pending.receivedBytes += payload.buffer.byteLength;
       pending.queue = pending.queue
         .then(() => {
           if (pending.settled || pending.queueError) {
@@ -207,8 +272,8 @@
             requestId: payload.requestId,
             audioOnly: Boolean(pending.audioOnly),
             audioFormat: pending.audioFormat || 'm4a',
-            videoMime: payload.videoMime || '',
-            audioMime: payload.audioMime || ''
+            videoMime: typeof payload.videoMime === 'string' ? payload.videoMime : '',
+            audioMime: typeof payload.audioMime === 'string' ? payload.audioMime : ''
           }, { propagateError: true });
           pending.resolve(result || { ok: false, error: 'MSE_EXPORT_FAILED' });
         })
@@ -219,7 +284,70 @@
           cleanupPendingExport(payload.requestId);
         });
     }
-  });
+  }
+
+  function initiateHandshake() {
+    if (handshakeAcked || typeof MessageChannel !== 'function') {
+      return;
+    }
+    const channel = new MessageChannel();
+    const port1 = channel.port1;
+    candidatePorts.add(port1);
+    port1.onmessage = (portEvent) => {
+      handleHookMessage(portEvent && portEvent.data, port1);
+    };
+    if (typeof port1.start === 'function') {
+      port1.start();
+    }
+    try {
+      window.postMessage({
+        source: BRIDGE_CONFIG.WINDOW_SOURCE,
+        kind: BRIDGE_CONFIG.EVENTS.HANDSHAKE_INIT,
+        payload: {}
+      }, '*', [channel.port2]);
+    } catch {
+      // Ignore postMessage failures on restricted contexts
+    }
+  }
+
+  function onWindowHandshakeReady(event) {
+    if (handshakeAcked || !event || event.source !== window || !event.data) {
+      return;
+    }
+    if (
+      event.data.source === BRIDGE_CONFIG.WINDOW_SOURCE &&
+      event.data.kind === BRIDGE_CONFIG.EVENTS.HANDSHAKE_READY
+    ) {
+      initiateHandshake();
+    }
+  }
+
+  window.addEventListener('message', onWindowHandshakeReady, true);
+  initiateHandshake();
+
+  if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.sync) {
+    try {
+      chrome.storage.sync.get(BRIDGE_CONFIG.STORAGE_SETTINGS_KEY, (data) => {
+        if (chrome.runtime && chrome.runtime.lastError) {
+          return;
+        }
+        applySettings(data && data[BRIDGE_CONFIG.STORAGE_SETTINGS_KEY]);
+      });
+    } catch {
+      // Ignore storage failures when extension context is invalidated
+    }
+    if (chrome.storage.onChanged) {
+      try {
+        chrome.storage.onChanged.addListener((changes, areaName) => {
+          if (areaName === 'sync' && changes[BRIDGE_CONFIG.STORAGE_SETTINGS_KEY]) {
+            applySettings(changes[BRIDGE_CONFIG.STORAGE_SETTINGS_KEY].newValue);
+          }
+        });
+      } catch {
+        // Ignore listener errors after context invalidation
+      }
+    }
+  }
 
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -240,6 +368,7 @@
           timer,
           settled: false,
           queueError: null,
+          receivedBytes: 0,
           audioOnly: Boolean(message.audioOnly),
           audioFormat: typeof message.audioFormat === 'string' ? message.audioFormat : 'm4a',
           queue: Promise.resolve()

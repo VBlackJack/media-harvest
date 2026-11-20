@@ -691,7 +691,7 @@ export function extractAudioOnlyFromFmp4Parts(initInput, fragmentInputs = []) {
         }
       }
       const newMoofSize = BOX_HEADER_SIZE + prebuiltChildren.reduce((sum, c) => sum + c.byteLength, 0);
-      const offsetDelta = box.data.byteLength - newMoofSize;
+      const offsetDelta = newMoofSize - box.data.byteLength;
       const adjustedChildren = prebuiltChildren.map((childData) => {
         if (readBoxType(childData, 4) === 'traf') {
           return shiftTrafTrunDataOffsets(childData, offsetDelta);

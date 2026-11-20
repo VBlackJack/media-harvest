@@ -64,7 +64,10 @@ import {
 import {
   addTemporaryRefererRule,
   attachDownloadDnrRule,
+  attachSaverTabDnrRule,
   detachDownloadDnrRule,
+  detachSaverTabDnrRule,
+  pruneOrphanedSessionDnrRules,
   removeTemporaryRefererRule,
   withTemporaryRefererRule
 } from './dnr_manager.js';
@@ -76,8 +79,36 @@ import {
 
 const tabWriteQueues = new Map();
 const activeBuilds = new Map();
+const activeCompanionPorts = new Map();
 let offscreenLifecycleQueue = Promise.resolve();
 let activeOffscreenBuilds = 0;
+
+pruneOrphanedSessionDnrRules().catch(() => {});
+
+/**
+ * Returns true when a runtime message sender belongs to an extension page or the SW itself.
+ * Handles extension pages opened in tabs (e.g. stream_saver.html, options.html) and test mocks.
+ * @param {chrome.runtime.MessageSender | undefined} sender
+ * @returns {boolean}
+ */
+function isExtensionSender(sender) {
+  if (!sender || typeof sender !== 'object') {
+    return true;
+  }
+  const extOrigin = typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.getURL === 'function'
+    ? chrome.runtime.getURL('')
+    : '';
+  if (sender.id && typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id && sender.id !== chrome.runtime.id) {
+    return false;
+  }
+  if (sender.tab) {
+    return Boolean(extOrigin && typeof sender.url === 'string' && sender.url.startsWith(extOrigin));
+  }
+  if (typeof sender.url === 'string' && sender.url && extOrigin) {
+    return sender.url.startsWith(extOrigin);
+  }
+  return true;
+}
 
 /**
  * Serializes async storage updates per tabId to prevent concurrent race conditions.
@@ -441,6 +472,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  detachSaverTabDnrRule(tabId).catch(() => {});
   enqueueTabWrite(tabId, async () => {
     await chrome.storage.session.remove([
       tabStorageKey(tabId),
@@ -472,6 +504,38 @@ async function ensureOffscreenDocument() {
 }
 
 /**
+ * Queries the offscreen document for active builds/recordings/blobs with a short timeout.
+ * @returns {Promise<{ activeCount: number, activeBlobCount: number, builds: Array<object> } | null>}
+ */
+async function queryOffscreenActiveBuilds() {
+  let timeoutId = null;
+  try {
+    const queryPromise = chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: MESSAGE_TYPES.OFFSCREEN_GET_ACTIVE_BUILDS
+    });
+    const timeoutPromise = new Promise((resolve) => {
+      timeoutId = setTimeout(() => resolve(null), LIMITS.OFFSCREEN_QUERY_TIMEOUT_MS);
+    });
+    const resp = await Promise.race([queryPromise, timeoutPromise]);
+    if (resp && typeof resp === 'object' && resp.ok) {
+      return {
+        activeCount: Number.isFinite(resp.activeCount) ? resp.activeCount : 0,
+        activeBlobCount: Number.isFinite(resp.activeBlobCount) ? resp.activeBlobCount : 0,
+        builds: Array.isArray(resp.builds) ? resp.builds : []
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
+/**
  * Closes the offscreen document when no builds or active Blob downloads remain.
  * Must run inside enqueueOffscreenOp.
  * @returns {Promise<void>}
@@ -495,6 +559,10 @@ async function maybeCloseOffscreenDocument() {
     documentUrls: [chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH)]
   });
   if (existingContexts.length > 0) {
+    const offscreenState = await queryOffscreenActiveBuilds();
+    if (offscreenState && (offscreenState.activeCount > 0 || offscreenState.activeBlobCount > 0)) {
+      return;
+    }
     await chrome.offscreen.closeDocument();
   }
 }
@@ -1059,14 +1127,20 @@ async function executeOffscreenBlobDownload({
       throw new Error('DOWNLOAD_FAILED');
     }
 
+    let storedBlobKey = '';
     await chrome.storage.session.set({ [downloadBlobKey(downloadId)]: blobUrl });
+    storedBlobKey = downloadBlobKey(downloadId);
     const [dlItem] = await chrome.downloads.search({ id: downloadId });
     if (dlItem && dlItem.state !== 'in_progress') {
       await cleanupDownloadBlob(downloadId, blobUrl);
+      storedBlobKey = '';
     }
     notifyStreamFinished(requestId, targetUrl, true);
     return { downloadId, requestId };
   } catch (err) {
+    if (typeof buildState.downloadId === 'number' && chrome.storage && chrome.storage.session) {
+      await chrome.storage.session.remove(downloadBlobKey(buildState.downloadId)).catch(() => {});
+    }
     if (blobUrl) {
       await revokeOffscreenBlob(blobUrl);
     }
@@ -1365,6 +1439,9 @@ async function downloadWithCompanion(payload) {
     throw new Error('COMPANION_UNAVAILABLE');
   }
   const settings = await loadSettings().catch(() => ({}));
+  const detectedCookieBrowser = typeof navigator !== 'undefined' && /Edg\//i.test(navigator.userAgent || '')
+    ? 'edge'
+    : 'chrome';
   const requestPayload = {
     action: NATIVE_HOST.ACTION_DOWNLOAD,
     url: payload.url,
@@ -1373,13 +1450,14 @@ async function downloadWithCompanion(payload) {
     quality: typeof payload.quality === 'string' ? payload.quality : 'best',
     audioOnly: Boolean(payload.audioOnly),
     audioFormat: typeof payload.audioFormat === 'string' ? payload.audioFormat : 'mp3',
-    cookiesBrowser: settings && settings.enableCompanionCookies ? 'chrome' : ''
+    cookiesBrowser: settings && settings.enableCompanionCookies ? detectedCookieBrowser : ''
   };
 
   if (hasConnect) {
     return new Promise((resolve, reject) => {
       let settled = false;
       let port = null;
+      const companionKey = payload.url;
       try {
         port = chrome.runtime.connectNative(NATIVE_HOST.NAME);
       } catch (err) {
@@ -1387,8 +1465,12 @@ async function downloadWithCompanion(payload) {
         reject(new Error((err && err.message) || 'COMPANION_FAILED'));
         return;
       }
+      activeCompanionPorts.set(companionKey, port);
 
       const cleanup = () => {
+        if (activeCompanionPorts.get(companionKey) === port) {
+          activeCompanionPorts.delete(companionKey);
+        }
         if (port && typeof port.disconnect === 'function') {
           try {
             port.disconnect();
@@ -1427,6 +1509,9 @@ async function downloadWithCompanion(payload) {
       });
 
       port.onDisconnect.addListener(() => {
+        if (activeCompanionPorts.get(companionKey) === port) {
+          activeCompanionPorts.delete(companionKey);
+        }
         if (settled) {
           return;
         }
@@ -1665,20 +1750,17 @@ async function handleOpenStreamSaver(payload) {
   await chrome.storage.session.set({
     [`${STORAGE_KEYS.STREAM_SAVER_JOB_PREFIX}${jobId}`]: jobRecord
   });
-  const refererRuleId = jobRecord.referer
-    ? await addTemporaryRefererRule(targetUrl, jobRecord.referer).catch(() => null)
-    : null;
   const saverUrl = chrome.runtime.getURL(`${STREAM_SAVER_PATH}?jobId=${encodeURIComponent(jobId)}`);
   const createdTab = await chrome.tabs.create({ url: saverUrl });
   const saverTabId = createdTab && typeof createdTab.id === 'number' ? createdTab.id : -1;
-  if (refererRuleId !== null && saverTabId >= 0 && chrome.tabs && chrome.tabs.onRemoved) {
-    const cleanupOnClose = (closedTabId) => {
-      if (closedTabId === saverTabId) {
-        chrome.tabs.onRemoved.removeListener(cleanupOnClose);
-        removeTemporaryRefererRule(refererRuleId).catch(() => {});
-      }
-    };
-    chrome.tabs.onRemoved.addListener(cleanupOnClose);
+  const refererRuleId = jobRecord.referer && saverTabId >= 0
+    ? await addTemporaryRefererRule(targetUrl, jobRecord.referer, {
+        extensionInitiatorOnly: true,
+        tabIds: [saverTabId]
+      }).catch(() => null)
+    : null;
+  if (saverTabId >= 0) {
+    await attachSaverTabDnrRule(saverTabId, refererRuleId, jobId);
   }
   return { jobId, tabId: saverTabId };
 }
@@ -1821,8 +1903,21 @@ async function handleDownloadMedia(payload) {
   }
 }
 
+const CONTENT_SCRIPT_ALLOWED_MESSAGES = new Set([
+  MESSAGE_TYPES.MSE_STREAM_UPDATED,
+  MESSAGE_TYPES.DOWNLOAD_TWEET_VIDEO,
+  MESSAGE_TYPES.DOWNLOAD_SITE_VIDEO,
+  MESSAGE_TYPES.CANCEL_DOWNLOAD
+]);
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.target === 'offscreen') {
+    return false;
+  }
+
+  const fromExtension = isExtensionSender(sender);
+  if (!fromExtension && !CONTENT_SCRIPT_ALLOWED_MESSAGES.has(message.type)) {
+    sendResponse({ ok: false, error: 'FORBIDDEN_SENDER' });
     return false;
   }
 
@@ -1863,8 +1958,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       isTabCapture: Boolean(build.isTabCapture),
       bytes: Number.isFinite(build.bytes) ? build.bytes : 0
     }));
-    sendResponse({ ok: true, builds });
-    return false;
+    if (builds.length > 0) {
+      sendResponse({ ok: true, builds });
+      return false;
+    }
+    chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT'],
+      documentUrls: [chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH)]
+    })
+      .then(async (existingContexts) => {
+        if (!existingContexts || existingContexts.length === 0) {
+          sendResponse({ ok: true, builds: [] });
+          return;
+        }
+        const offscreenState = await queryOffscreenActiveBuilds();
+        sendResponse({
+          ok: true,
+          builds: offscreenState && Array.isArray(offscreenState.builds) ? offscreenState.builds : []
+        });
+      })
+      .catch(() => sendResponse({ ok: true, builds: [] }));
+    return true;
   }
 
   if (message.type === MESSAGE_TYPES.GET_MEDIA_FOR_TAB) {
@@ -1941,7 +2055,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === MESSAGE_TYPES.CANCEL_COMPANION_DOWNLOAD) {
+    const targetUrl = typeof message.url === 'string' ? message.url : '';
+    const port = targetUrl ? activeCompanionPorts.get(targetUrl) : null;
+    if (port && typeof port.postMessage === 'function') {
+      try {
+        port.postMessage({ action: NATIVE_HOST.ACTION_CANCEL });
+      } catch {
+        // Port may already be closed
+      }
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
+
   if (message.type === MESSAGE_TYPES.CANCEL_DOWNLOAD) {
+    if (!fromExtension) {
+      const senderTabId = sender && sender.tab && typeof sender.tab.id === 'number' ? sender.tab.id : -1;
+      const ownedBuild = typeof message.requestId === 'string' ? activeBuilds.get(message.requestId) : null;
+      if (!ownedBuild || ownedBuild.tabId !== senderTabId) {
+        sendResponse({ ok: false, error: 'FORBIDDEN_SENDER' });
+        return false;
+      }
+    }
     cancelDownloadBuild(message.requestId)
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
