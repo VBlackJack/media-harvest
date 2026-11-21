@@ -2,6 +2,11 @@
 
 All notable engineering changes to Media Harvest are documented in this file.
 
+## [1.5.1] - 2026-11-21
+
+### Documentation
+- Synced `README.md`, `README.fr.md`, `docs/ARCHITECTURE.md`, and `docs/fr/ARCHITECTURE.md` with all v1.4.0 and v1.5.0 features, modules, settings (`disabledOverlayHosts`), storage keys, message contracts, OPFS disk spooling, Firefox MV3 packaging, and automated release workflow.
+
 ## [1.5.0] - 2026-11-20
 
 ### Added
